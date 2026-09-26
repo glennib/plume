@@ -1,0 +1,152 @@
+# name: test/sql/charts.test
+# description: series constructors, modifiers and outputs
+# group: [duckers]
+
+require duckers
+
+statement ok
+CREATE TABLE w AS
+SELECT (DATE '2024-01-01' + INTERVAL (i) DAY) AS day, city, i::DOUBLE AS temp
+FROM range(10) t(i), (VALUES ('Oslo'), ('Bergen')) c(city);
+
+# Series constructors return CHART, which casts to a summary
+query TT
+SELECT typeof(c), c::VARCHAR
+FROM (SELECT line_series(list(day ORDER BY day), list(temp ORDER BY day)) AS c FROM w WHERE city = 'Oslo');
+----
+CHART	CHART(line, 1 series, 10 points)
+
+# Integer and DATE lists cast implicitly
+query T
+SELECT point_series(list(i), list(i))::VARCHAR FROM range(5) t(i);
+----
+CHART(point, 1 series, 5 points)
+
+# A label list splits points into series, in order of first appearance
+query T
+SELECT line_series(list(day ORDER BY city, day), list(temp ORDER BY city, day), list(city ORDER BY city, day))::VARCHAR FROM w;
+----
+CHART(line, 2 series, 20 points)
+
+# A constant label names the single series
+query T
+SELECT contains(line_series(list(i), list(i), 'squares').to_svg(), 'squares') FROM range(3) t(i);
+----
+true
+
+# Points with a NULL x or y are left out
+query T
+SELECT line_series([1, NULL, 3], [1, 2, NULL])::VARCHAR;
+----
+CHART(line, 1 series, 1 points)
+
+query T
+SELECT bar_series(list(c ORDER BY c), list(v ORDER BY c))::VARCHAR FROM (VALUES ('a', 1), ('b', 2)) t(c, v);
+----
+CHART(bar, 1 series, 2 points)
+
+# NULL in gives NULL out
+query TTT
+SELECT line_series(NULL::DOUBLE[], [1.0]) IS NULL, caption(NULL::CHART, 'x') IS NULL, to_svg(line_series([1], [1]).caption(NULL)) IS NULL;
+----
+true	true	true
+
+statement error
+SELECT line_series([1, 2], [1]);
+----
+x and y lists must have the same length, got 2 and 1
+
+statement error
+SELECT line_series([1, 2], [1, 2], ['a']);
+----
+the label list must have one label per point
+
+# Modifiers chain like plotters builder methods
+query T
+SELECT line_series([1, 2], [3, 4]).caption('Hello').x_desc('ex').y_desc('why')::VARCHAR;
+----
+CHART(line, 1 series, 2 points, caption 'Hello')
+
+query TTTT
+SELECT starts_with(s, '<svg'), contains(s, 'Hello'), contains(s, 'ex'), contains(s, 'why')
+FROM (SELECT line_series([1, 2], [3, 4]).caption('Hello', 20).x_desc('ex').y_desc('why').to_svg(320, 240) AS s);
+----
+true	true	true	true
+
+query T
+SELECT contains(line_series([1, 2], [3, 4]).to_svg(320, 240), 'width="320"');
+----
+true
+
+# draw_series overlays the series of another chart
+query T
+SELECT line_series(list(i), list(i)).draw_series(point_series(list(i), list(i)))::VARCHAR FROM range(3) t(i);
+----
+CHART(line+point, 2 series, 6 points)
+
+statement error
+SELECT line_series([1], [1]).draw_series(bar_series(['a'], [1]));
+----
+cannot draw numeric and categorical x values on the same chart
+
+# Axis ranges
+query T
+SELECT line_series([1, 2], [3, 4]).x_range(0, 10).y_range(-1, 1).to_svg() IS NOT NULL;
+----
+true
+
+query T
+SELECT line_series(list(day), list(temp)).x_range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-02-01').to_svg() IS NOT NULL FROM w;
+----
+true
+
+statement error
+SELECT line_series([1, 2], [3, 4]).y_range(1, 1);
+----
+range start must be below its end
+
+statement error
+SELECT line_series([1, 2], [3, 4]).x_range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-02-01').to_svg();
+----
+x_range is timestamp but the chart's x axis is numeric
+
+# PNG output
+query T
+SELECT hex(line_series([1, 2], [3, 4]).to_png(64, 48))[1:16];
+----
+89504E470D0A1A0A
+
+statement error
+SELECT line_series([1, 2], [3, 4]).to_png(0, 48);
+----
+chart size must be between 1 and 8192 pixels per side
+
+# A plain BLOB is not a CHART
+statement error
+SELECT to_svg('hello'::BLOB);
+----
+No function matches
+
+# Writing files with COPY ... (FORMAT blob)
+statement ok
+COPY (SELECT bar_series(list(city ORDER BY city), list(temp ORDER BY city)).to_png() FROM w) TO '__TEST_DIR__/bars.png' (FORMAT blob);
+
+query T
+SELECT hex(content)[1:8] FROM read_blob('__TEST_DIR__/bars.png');
+----
+89504E47
+
+statement ok
+COPY (SELECT point_series(list(temp), list(temp)).to_svg().encode() FROM w) TO '__TEST_DIR__/points.svg' (FORMAT blob);
+
+query T
+SELECT starts_with(content::VARCHAR, '<svg') FROM read_text('__TEST_DIR__/points.svg');
+----
+true
+
+# One chart per group, across multiple DataChunks (STANDARD_VECTOR_SIZE = 2048)
+query II
+SELECT count(*), count(DISTINCT c::VARCHAR)
+FROM (SELECT line_series(list(i // 3000 ORDER BY i), list(i // 3000 ORDER BY i)).caption('g').to_svg(40, 30) AS c FROM range(6000) t(i) GROUP BY i % 3000);
+----
+3000	1

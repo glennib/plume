@@ -19,6 +19,11 @@ path = "src/wasm_lib.rs"
 crate-type = ["staticlib"]
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 # The crate version encodes the DuckDB version: 1.10505.x is DuckDB v1.5.5.
 # Keep it in sync with TARGET_DUCKDB_VERSION in the Makefile.
 duckdb = { version = "~1.10505.0", features = ["loadable-extension", "vscalar"] }
+plotters = { version = "0.3.7", default-features = false, features = ["svg_backend", "bitmap_backend", "ab_glyph", "chrono", "line_series", "point_series"] }
+png = "0.18.1"
+postcard = { version = "1.1.3", features = ["alloc"] }
+serde = { version = "1.0.229", features = ["derive"] }

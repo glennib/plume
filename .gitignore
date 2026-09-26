@@ -4,3 +4,7 @@
 /extension-ci-tools
 duckdb_unittest_tempdir
 /test/bin
+
+# Files written by test/sql/*.test through __TEST_DIR__
+test/sql/*.png
+test/sql/*.svg
