@@ -1,17 +1,23 @@
 # duckers
 
-A DuckDB extension that brings the Rust plotting library [`plotters`](https://github.com/plotters-rs/plotters) to SQL.
+duckers is a DuckDB extension for drawing charts from SQL with the Rust plotting library
+[`plotters`](https://github.com/plotters-rs/plotters).
+It is written in Rust against DuckDB's C extension API
+and started from [`duckdb/extension-template-rs`](https://github.com/duckdb/extension-template-rs),
+so building it needs no DuckDB source tree and no C or C++ code.
 
-It is written in pure Rust against DuckDB's C extension API,
-based on [`duckdb/extension-template-rs`](https://github.com/duckdb/extension-template-rs).
+## Status
+
+The extension builds and passes its tests, but the only function it registers so far is `duckers_version()`.
+`plotters` is not a dependency yet, and the SQL interface for plotting has not been designed.
 
 ## Requirements
 
 - A Rust toolchain, `make`, `git` and `python3`
-- [uv](https://docs.astral.sh/uv/) (optional, used for the Python test environment when present)
-- The `duckdb` CLI for `make shell`
+- [uv](https://docs.astral.sh/uv/), optional; when present it builds the Python test environment
+- The `duckdb` CLI, for `make shell`
 
-`mise install` provides `uv` and `duckdb` at the versions in `mise.toml`.
+`mise install` installs `uv` and `duckdb` at the versions pinned in `mise.toml`.
 
 ## Building and testing
 
@@ -23,12 +29,16 @@ make release       # optimized build into build/release
 make clean_all     # remove build output and configure state
 ```
 
-The first `make` clones [`extension-ci-tools`](https://github.com/duckdb/extension-ci-tools) into `./extension-ci-tools`
-at `CI_TOOLS_REF`.
-`make configure` creates the Python test environment in `configure/venv`,
-with `uv sync` from `pyproject.toml` and `uv.lock` when uv is available, and with pip otherwise (as in CI).
+The build files come from [`extension-ci-tools`](https://github.com/duckdb/extension-ci-tools).
+The first `make` clones that repository into `./extension-ci-tools` at the ref in `CI_TOOLS_REF`.
+`make configure` then creates the Python test environment in `configure/venv`:
+with uv it runs `uv sync` against `pyproject.toml` and `uv.lock`, and without uv it falls back to pip, as CI does.
 
-To load a build manually:
+Tests are SQLLogicTest files in `test/sql`, run with DuckDB's Python test runner.
+
+## Loading the extension
+
+The build is unsigned, so DuckDB has to be started with `-unsigned`:
 
 ```sql
 -- duckdb -unsigned
@@ -38,11 +48,12 @@ SELECT duckers_version();
 
 ## DuckDB version
 
-`duckdb-rs` uses the unstable C API, so a build loads only on the exact DuckDB version it targets, currently v1.5.5.
-To move to a new version, update all of these together:
+The `duckdb` crate uses DuckDB's unstable C API, so a build loads only in the exact DuckDB version it was built for,
+currently v1.5.5.
+When moving to another version, update these together:
 
-- `duckdb` crate version in `Cargo.toml` (`1.10505.x` is v1.5.5)
+- the `duckdb` crate version in `Cargo.toml` (`1.10505.x` corresponds to v1.5.5)
 - `TARGET_DUCKDB_VERSION` in `Makefile`
 - `duckdb` in `pyproject.toml` and `mise.toml`
 - `duckdb_version` and `ci_tools_version` in `.github/workflows/MainDistributionPipeline.yml`,
-  plus `CI_TOOLS_REF` in `Makefile`
+  and `CI_TOOLS_REF` in `Makefile`
