@@ -1,0 +1,16 @@
+# Python environment for the SQLLogicTest runner and the extension-ci-tools
+# helper scripts. It mirrors the `configure/venv` target of
+# extension-ci-tools/makefiles/c_api_extensions/base.Makefile, which CI uses.
+# `make configure` syncs it into configure/venv with uv when uv is available.
+[project]
+name = "duckers-dev"
+version = "0"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb==1.5.5",
+    "duckdb-sqllogictest @ git+https://github.com/duckdb/duckdb-sqllogictest-python@2ac8dbc012ddbd96a57dca37784fd8ee3c0eb021",
+    "packaging",
+]
+
+[tool.uv]
+package = false

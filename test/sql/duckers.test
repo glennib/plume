@@ -1,0 +1,23 @@
+# name: test/sql/duckers.test
+# description: test that the duckers extension loads
+# group: [duckers]
+
+# Before we load the extension, this will fail
+statement error
+SELECT duckers_version();
+----
+Catalog Error: Scalar Function with name duckers_version does not exist!
+
+# Require statement will ensure the extension is loaded from now on
+require duckers
+
+query T
+SELECT duckers_version();
+----
+0.1.0
+
+# One value per input row, across multiple DataChunks (STANDARD_VECTOR_SIZE = 2048)
+query II
+SELECT count(*), count(DISTINCT duckers_version()) FROM range(3000);
+----
+3000	1

@@ -1,1 +1,6 @@
-target/
+/target
+/build
+/configure
+/extension-ci-tools
+duckdb_unittest_tempdir
+/test/bin
