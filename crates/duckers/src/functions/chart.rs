@@ -1,11 +1,12 @@
 //! `chart()` and the methods on `CHART`, `MESH` and `SERIES_LABELS`, `font()` and `color()` for
 //! `FONT`, `mix`, and the output functions `to_svg` and `to_png`.
 
+use duckers_chart::spec::MeshSetting;
 use duckers_chart::{
     Chart, Font, Mesh, Series, SeriesLabels, Value, image_size, mix, to_png, to_svg,
 };
 
-use super::args::{check_range_bound, scalar};
+use super::args::{Args, check_range_bound, scalar};
 use crate::capi::{Extension, LogicalType, Result, ScalarFunction};
 use crate::types::Types;
 
@@ -211,19 +212,152 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )
 }
 
-/// A method on `MESH` that takes one `VARCHAR` and returns the mesh.
-fn mesh_text(t: &Types, name: &'static str, f: fn(Mesh, &str) -> Mesh) -> ScalarFunction {
-    scalar(name, &t.mesh, move |a| {
-        let mesh: Mesh = a.value(0)?;
-        Ok(f(mesh, a.str(1)?).encode())
+/// A method on a duckers value that returns a value of the same type: `receiver` is the SQL
+/// name of the first parameter, `params` the rest.
+fn method<T: Value + 'static>(
+    ty: &LogicalType,
+    receiver: &str,
+    name: &'static str,
+    params: &[(&str, &LogicalType)],
+    f: fn(T, &Args<'_, '_>) -> Result<T>,
+) -> ScalarFunction {
+    let mut function = scalar(name, ty, move |a| {
+        let value: T = a.value(0)?;
+        Ok(f(value, a)?.encode())
     })
-    .param("mesh", &t.mesh)
-    .param("text", &t.varchar)
+    .param(receiver, ty);
+    for (param, ty) in params {
+        function = function.param(param, ty);
+    }
+    function
+}
+
+/// A text-style method (`IntoTextStyle`), registered twice: with a `BIGINT` size, which is
+/// sans-serif of that size, and with a `FONT`.
+fn text_style_methods<T: Value + 'static>(
+    ext: &Extension<'_>,
+    t: &Types,
+    ty: &LogicalType,
+    receiver: &str,
+    name: &'static str,
+    f: fn(T, Font) -> T,
+) -> Result<()> {
+    let sized = scalar(name, ty, move |a| {
+        let value: T = a.value(0)?;
+        let font = a.check(Font::sans_serif(a.i64(1)?))?;
+        Ok(f(value, font).encode())
+    })
+    .param(receiver, ty)
+    .param("size", &t.bigint);
+    ext.register_scalar(sized)?;
+    let font = scalar(name, ty, move |a| {
+        let value: T = a.value(0)?;
+        let font: Font = a.value(1)?;
+        Ok(f(value, font).encode())
+    })
+    .param(receiver, ty)
+    .param("font", &t.font);
+    ext.register_scalar(font)
 }
 
 fn register_mesh(ext: &Extension<'_>, t: &Types) -> Result<()> {
-    ext.register_scalar(mesh_text(t, "x_desc", |m, s| m.x_desc(s)))?;
-    ext.register_scalar(mesh_text(t, "y_desc", |m, s| m.y_desc(s)))?;
+    type MeshMethod = fn(Mesh, &Args<'_, '_>) -> Result<Mesh>;
+    let mesh = |name: &'static str, params: &[(&str, &LogicalType)], f: MeshMethod| {
+        method(&t.mesh, "mesh", name, params, f)
+    };
+    let text = [("text", &t.varchar)];
+    ext.register_scalar(mesh("x_desc", &text, |m, a| Ok(m.x_desc(a.str(1)?))))?;
+    ext.register_scalar(mesh("y_desc", &text, |m, a| Ok(m.y_desc(a.str(1)?))))?;
+    let format = [("format", &t.varchar)];
+    ext.register_scalar(mesh("x_label_formatter", &format, |m, a| {
+        a.check(m.x_label_formatter(a.str(1)?))
+    }))?;
+    ext.register_scalar(mesh("y_label_formatter", &format, |m, a| {
+        a.check(m.y_label_formatter(a.str(1)?))
+    }))?;
+
+    type TextStyleMethod = fn(Mesh, Font) -> Mesh;
+    let text_styles: [(&'static str, TextStyleMethod); 4] = [
+        ("axis_desc_style", Mesh::axis_desc_style),
+        ("label_style", Mesh::label_style),
+        ("x_label_style", Mesh::x_label_style),
+        ("y_label_style", Mesh::y_label_style),
+    ];
+    for (name, f) in text_styles {
+        text_style_methods(ext, t, &t.mesh, "mesh", name, f)?;
+    }
+
+    let n = [("n", &t.bigint)];
+    ext.register_scalar(mesh("x_labels", &n, |m, a| a.check(m.x_labels(a.i64(1)?))))?;
+    ext.register_scalar(mesh("y_labels", &n, |m, a| a.check(m.y_labels(a.i64(1)?))))?;
+    ext.register_scalar(mesh("x_max_light_lines", &n, |m, a| {
+        a.check(m.x_max_light_lines(a.i64(1)?))
+    }))?;
+    ext.register_scalar(mesh("y_max_light_lines", &n, |m, a| {
+        a.check(m.y_max_light_lines(a.i64(1)?))
+    }))?;
+    ext.register_scalar(mesh("max_light_lines", &n, |m, a| {
+        a.check(m.max_light_lines(a.i64(1)?))
+    }))?;
+
+    let px = [("px", &t.bigint)];
+    ext.register_scalar(mesh("x_label_offset", &px, |m, a| {
+        a.check(m.x_label_offset(a.i64(1)?))
+    }))?;
+    ext.register_scalar(mesh("y_label_offset", &px, |m, a| {
+        a.check(m.y_label_offset(a.i64(1)?))
+    }))?;
+    ext.register_scalar(mesh("set_all_tick_mark_size", &px, |m, a| {
+        a.check(m.set_all_tick_mark_size(a.i64(1)?))
+    }))?;
+    ext.register_scalar(mesh(
+        "set_tick_mark_size",
+        &[("position", &t.varchar), ("px", &t.bigint)],
+        |m, a| a.check(m.set_tick_mark_size(a.str(1)?, a.i64(2)?)),
+    ))?;
+
+    type LineMethod = fn(Mesh, &str, Option<i64>) -> duckers_chart::Result<Mesh>;
+    let lines: [(&'static str, LineMethod); 3] = [
+        ("light_line_style", Mesh::light_line_style),
+        ("bold_line_style", Mesh::bold_line_style),
+        ("axis_style", Mesh::axis_style),
+    ];
+    for (name, f) in lines {
+        let color = scalar(name, &t.mesh, move |a| {
+            let m: Mesh = a.value(0)?;
+            Ok(a.check(f(m, a.str(1)?, None))?.encode())
+        })
+        .param("mesh", &t.mesh)
+        .param("color", &t.varchar);
+        ext.register_scalar(color)?;
+        let width = scalar(name, &t.mesh, move |a| {
+            let m: Mesh = a.value(0)?;
+            Ok(a.check(f(m, a.str(1)?, Some(a.i64(2)?)))?.encode())
+        })
+        .param("mesh", &t.mesh)
+        .param("color", &t.varchar)
+        .param("stroke_width", &t.bigint);
+        ext.register_scalar(width)?;
+    }
+
+    let disables = [
+        ("disable_x_mesh", MeshSetting::DisableXMesh),
+        ("disable_y_mesh", MeshSetting::DisableYMesh),
+        ("disable_mesh", MeshSetting::DisableMesh),
+        ("disable_x_axis", MeshSetting::DisableXAxis),
+        ("disable_y_axis", MeshSetting::DisableYAxis),
+        ("disable_axes", MeshSetting::DisableAxes),
+    ];
+    for (name, setting) in disables {
+        ext.register_scalar(
+            scalar(name, &t.mesh, move |a| {
+                let m: Mesh = a.value(0)?;
+                Ok(m.set(setting.clone()).encode())
+            })
+            .param("mesh", &t.mesh),
+        )?;
+    }
+
     ext.register_scalar(
         scalar("draw", &t.chart, |a| {
             let mesh: Mesh = a.value(0)?;

@@ -78,6 +78,40 @@ impl AxisCoord {
     }
 }
 
+/// What a label formatter formats: the number, category name or date-time at a key point.
+pub(crate) enum LabelValue {
+    Number(f64),
+    Text(String),
+    /// A date is its midnight.
+    Time(NaiveDateTime),
+}
+
+impl AxisCoord {
+    /// The kind of the axis, for label formatters and their errors.
+    pub(crate) fn kind(&self) -> AxisKind {
+        match self {
+            AxisCoord::Linear(_) | AxisCoord::Log(_) => AxisKind::Numeric,
+            AxisCoord::Date(_) => AxisKind::Date,
+            AxisCoord::Timestamp(_) => AxisKind::Timestamp,
+            AxisCoord::Band(b) => match b.labels {
+                BandLabels::Integer(_) => AxisKind::Integer,
+                BandLabels::Date(_) => AxisKind::Date,
+                BandLabels::Category(..) => AxisKind::Category,
+            },
+        }
+    }
+
+    /// The value a label at `value` stands for; `None` outside a band axis.
+    pub(crate) fn label_value(&self, value: f64) -> Option<LabelValue> {
+        match self {
+            AxisCoord::Linear(_) | AxisCoord::Log(_) => Some(LabelValue::Number(value)),
+            AxisCoord::Date(_) => day_of(value).map(|d| LabelValue::Time(d.into())),
+            AxisCoord::Timestamp(_) => instant_of(value).map(LabelValue::Time),
+            AxisCoord::Band(b) => b.label_value(value),
+        }
+    }
+}
+
 /// A date axis value (days since the epoch) as the date, `None` beyond chrono's range.
 fn day_of(value: f64) -> Option<NaiveDate> {
     date(value.round() as i32)
@@ -599,6 +633,22 @@ impl BandCoord {
             }
             _ => None,
         }
+    }
+
+    /// The bucket of the band at `value`.
+    fn label_value(&self, value: f64) -> Option<LabelValue> {
+        let i = value.floor();
+        if i < 0.0 || i >= self.n as f64 {
+            return None;
+        }
+        let i = i as usize;
+        Some(match &self.labels {
+            BandLabels::Integer(lo) => LabelValue::Number((lo + i as i64) as f64),
+            BandLabels::Date(first) => {
+                LabelValue::Time((*first + TimeDelta::days(i as i64)).into())
+            }
+            BandLabels::Category(names, _) => LabelValue::Text(names.get(i)?.clone()),
+        })
     }
 
     fn band(&self, column: &Column, i: usize) -> Option<(f64, f64)> {

@@ -1,0 +1,181 @@
+# name: test/sql/mesh.test
+# description: every MeshStyle method on MESH, replayed on plotters' MeshStyle in chain order
+# group: [duckers]
+
+require duckers
+
+# Each method appends its setter call; the summary lists them in chain order.
+query T
+SELECT chart().configure_mesh()
+    .x_desc('x').y_desc('y')
+    .axis_desc_style(14).axis_desc_style(font('serif', 16, 'italic'))
+    .x_labels(5).y_labels(0)
+    .x_label_formatter('{:.1f}').y_label_formatter('%b %d')
+    .label_style(10).x_label_style(font('serif', 11)).y_label_style(font('serif', 12).color('red'))
+    .x_label_offset(-4).y_label_offset(3)
+    .x_max_light_lines(2).y_max_light_lines(0).max_light_lines(4)
+    .light_line_style('grey_100').bold_line_style('grey_300', 2).axis_style('black', 3)
+    .disable_x_mesh().disable_y_mesh().disable_mesh()
+    .disable_x_axis().disable_y_axis().disable_axes()
+    .set_tick_mark_size('Top', -5).set_all_tick_mark_size(7)::VARCHAR
+----
+MESH(x_desc 'x', y_desc 'y', axis_desc_style FONT(sans-serif, 14), axis_desc_style FONT(serif, 16, italic), x_labels 5, y_labels 0, x_label_formatter '{:.1f}', y_label_formatter '%b %d', label_style FONT(sans-serif, 10), x_label_style FONT(serif, 11), y_label_style FONT(serif, 12, #ff0000), x_label_offset -4px, y_label_offset 3px, x_max_light_lines 2, y_max_light_lines 0, max_light_lines 4, light_line_style #f5f5f5 1px, bold_line_style #e0e0e0 2px, axis_style #000000 3px, disable_x_mesh, disable_y_mesh, disable_mesh, disable_x_axis, disable_y_axis, disable_axes, set_tick_mark_size top -5px, set_all_tick_mark_size 7px) of CHART(empty)
+
+query T
+SELECT __duckers_debug(chart().configure_mesh().light_line_style(mix('black', 0.1)).set_tick_mark_size('left', 2).label_style(font('mono', 9))).regexp_extract('settings: .*\] \}')
+----
+settings: [LightLineStyle(LineStyle { color: Color { r: 0, g: 0, b: 0, a: 0.1 }, stroke_width: 1 }), SetTickMarkSize(Left, 2), LabelStyle(Font { family: "mono", size: 9, style: Normal, color: None })] }
+
+# The labels come out of the formatters: a format() template on a numeric axis, a strftime
+# pattern on a date axis, a template on a category axis.
+query TT
+SELECT regexp_matches(svg, '\n\+4\.0 °C\n'), regexp_matches(svg, '\nJan 15\n')
+FROM (
+    SELECT chart().configure_mesh().y_label_formatter('{:+.1f} °C').x_label_formatter('%b %d').draw()
+             .draw_series(line_series(DATE '2024-01-01' + i::INTEGER, i / 4)).to_svg() AS svg
+    FROM range(60) r(i)
+)
+----
+true	true
+
+query T
+SELECT regexp_matches(svg, '\n\[news\]\n') AND regexp_matches(svg, '\n1,000\n')
+FROM (
+    SELECT chart().configure_mesh().x_label_formatter('[{}]').y_label_formatter('{:,.0f}').draw()
+             .draw_series(histogram_vertical(s, n)).to_svg() AS svg
+    FROM (VALUES ('news', 1500), ('sport', 900)) t(s, n)
+)
+----
+true
+
+# Integer buckets take numeric templates; date buckets take strftime patterns.
+query TT
+SELECT regexp_matches(chart().configure_mesh().x_label_formatter('#{:d}').draw().draw_series(histogram_vertical(i, 1)).to_svg(), '\n#2\n'),
+       regexp_matches(chart().configure_mesh().x_label_formatter('%d.%m.').draw().draw_series(histogram_vertical(DATE '2024-03-01' + i::INTEGER, 1)).to_svg(), '\n02\.03\.\n')
+FROM range(4) r(i)
+----
+true	true
+
+# Log axes format through the same templates.
+query T
+SELECT regexp_matches(chart().y_log_scale().configure_mesh().y_label_formatter('[{:,.0f}]').draw()
+         .draw_series(line_series(i, pow(10, i))).to_svg(), '\n\[1,000\]\n')
+FROM range(1, 5) r(i)
+----
+true
+
+# Disabled axes draw no labels; the descriptions stay.
+query TT
+SELECT regexp_matches(svg, '\n0\.0\n'), regexp_matches(svg, '\nthe x\n')
+FROM (SELECT chart().configure_mesh().x_desc('the x').disable_axes().draw().draw_series(line_series(i, i)).to_svg() AS svg FROM range(3) r(i))
+----
+false	true
+
+# A format that does not suit the axis kind is an error when the chart renders.
+statement error
+SELECT chart().configure_mesh().x_label_formatter('%Y').draw().draw_series(line_series(i, i)).to_svg() FROM range(3) r(i)
+----
+Invalid Input Error: to_svg: x_label_formatter: a strftime pattern does not apply to the numeric x axis; use a format() template such as '{:.1f}'
+
+statement error
+SELECT chart().configure_mesh().x_label_formatter('{:.1f}').draw().draw_series(line_series(DATE '2024-01-01' + i::INTEGER, i)).to_png() FROM range(3) r(i)
+----
+Invalid Input Error: to_png: x_label_formatter: a format() template does not apply to the date x axis; use a strftime pattern such as '%Y-%m-%d'
+
+statement error
+SELECT chart().configure_mesh().x_label_formatter('{:.1f}').draw().draw_series(histogram_vertical('a', 1)).to_svg()
+----
+Invalid Input Error: to_svg: x_label_formatter: the template formats numbers, and the x axis is category: category labels take only fill, alignment, width and precision ('{:>10}', '{:.3}')
+
+# Bad values are errors from the method that received them.
+statement error
+SELECT chart().configure_mesh().x_label_formatter('no placeholder')
+----
+Invalid Input Error: x_label_formatter: 'no placeholder' is neither a format() template with one {} placeholder (numeric and category axes, e.g. '{:.1f} °C') nor a strftime pattern (date and timestamp axes, e.g. '%b %d')
+
+statement error
+SELECT chart().configure_mesh().y_label_formatter('{} and {}')
+----
+Invalid Input Error: y_label_formatter: the template '{} and {}' has 2 placeholders; a label template takes exactly one '{}'
+
+statement error
+SELECT chart().configure_mesh().y_label_formatter('{:.2q}')
+----
+Invalid Input Error: y_label_formatter: the template '{:.2q}' has an unsupported spec ':.2q': unknown type 'q' (expected f, e, g, d or %)
+
+statement error
+SELECT chart().configure_mesh().x_label_formatter('%Z')
+----
+Invalid Input Error: x_label_formatter: the strftime pattern '%Z' needs a time zone (%z, %Z), which duckers' dates and timestamps do not have
+
+statement error
+SELECT chart().configure_mesh().x_labels(-1)
+----
+Invalid Input Error: x_labels must be between 0 and 1000, got -1
+
+statement error
+SELECT chart().configure_mesh().max_light_lines(1000)
+----
+Invalid Input Error: max_light_lines must be between 0 and 100, got 1000
+
+statement error
+SELECT chart().configure_mesh().x_label_offset(-9000)
+----
+Invalid Input Error: x_label_offset must be between -8192 and 8192 px, got -9000
+
+statement error
+SELECT chart().configure_mesh().set_tick_mark_size('middle', 3)
+----
+Invalid Input Error: set_tick_mark_size: unknown LabelAreaPosition 'middle': expected 'top', 'bottom', 'left' or 'right'
+
+statement error
+SELECT chart().configure_mesh().axis_style('nope')
+----
+Invalid Input Error: axis_style: unknown colour 'nope'
+
+statement error
+SELECT chart().configure_mesh().light_line_style('red', -1)
+----
+Invalid Input Error: light_line_style: stroke_width must be between 0 and 8192 px, got -1
+
+statement error
+SELECT chart().configure_mesh().label_style(0)
+----
+Invalid Input Error: label_style: font size must be at least 1 px
+
+# Wrong argument types are bind errors, and MESH methods do not apply to other values.
+statement error
+SELECT chart().configure_mesh().label_style('big')
+----
+Binder Error
+
+statement error
+SELECT chart().configure_mesh().x_labels([1])
+----
+Binder Error
+
+statement error
+SELECT chart().disable_mesh()
+----
+Binder Error
+
+statement error
+SELECT chart().configure_series_labels().x_labels(3)
+----
+Binder Error
+
+# NULL in, NULL out.
+query TTTTTTTT
+SELECT (NULL::MESH).disable_mesh() IS NULL, chart().configure_mesh().x_labels(NULL) IS NULL,
+       chart().configure_mesh().x_label_formatter(NULL) IS NULL, chart().configure_mesh().label_style(NULL::FONT) IS NULL,
+       chart().configure_mesh().label_style(NULL::BIGINT) IS NULL, chart().configure_mesh().axis_style('red', NULL) IS NULL,
+       chart().configure_mesh().set_tick_mark_size('top', NULL) IS NULL, chart().configure_mesh().set_tick_mark_size(NULL, 1) IS NULL
+----
+true	true	true	true	true	true	true	true
+
+query TTTTT
+SELECT chart().configure_mesh().axis_desc_style(NULL::FONT) IS NULL, chart().configure_mesh().x_label_offset(NULL) IS NULL,
+       chart().configure_mesh().max_light_lines(NULL) IS NULL, chart().configure_mesh().light_line_style(NULL) IS NULL,
+       chart().configure_mesh().set_all_tick_mark_size(NULL) IS NULL
+----
+true	true	true	true	true

@@ -1,14 +1,16 @@
 //! Replaying a chart's calls on a plotters `ChartContext`.
 
-use super::axis::{self, AxisCoord, bucket_sums};
+use super::axis::{self, AxisCoord, LabelValue, bucket_sums};
 use crate::color::Color;
 use crate::error::{Error, Result};
+use crate::label_format::{LabelFormat, strftime};
 use crate::spec::{
-    Axis, Chart, DrawOp, Font, FontStyle, LabelPosition, Marker, MeshSetting, MeshStyle, Series,
-    SeriesKind, SeriesLabelSetting, SeriesLabelStyle,
+    Axis, AxisKind, Chart, DrawOp, Font, FontStyle, LabelPosition, LineStyle, Marker, MeshSetting,
+    MeshStyle, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle, TickPosition,
 };
 use plotters::chart::SeriesAnno;
 use plotters::coord::Shift;
+use plotters::coord::ranged1d::ValueFormatter;
 use plotters::prelude::*;
 
 /// The px width of a legend glyph, inside plotters' default 30 px glyph column.
@@ -135,16 +137,7 @@ fn draw_on<DB: DrawingBackend>(
 
     for op in ops {
         match op {
-            Op::Mesh(style) => {
-                let mut mesh = ctx.configure_mesh();
-                for setting in &style.settings {
-                    match setting {
-                        MeshSetting::XDesc(text) => mesh.x_desc(text.as_str()),
-                        MeshSetting::YDesc(text) => mesh.y_desc(text.as_str()),
-                    };
-                }
-                mesh.draw().map_err(plotters_error)?;
-            }
+            Op::Mesh(style) => draw_mesh(&mut ctx, style, &x, &y)?,
             Op::Series(series, index) => draw_series(&mut ctx, series, *index, &x, &y)?,
             Op::SeriesLabels(style) => {
                 let mut labels = ctx.configure_series_labels();
@@ -169,6 +162,132 @@ fn draw_on<DB: DrawingBackend>(
         }
     }
     Ok(())
+}
+
+/// A label formatter closure, what `x_label_formatter`/`y_label_formatter` take.
+type Formatter = Box<dyn Fn(&f64) -> String>;
+
+/// The closure for a `format()` template or strftime pattern on `axis`, or the error for a
+/// format that does not suit the axis kind.
+fn formatter(what: &str, format: &str, axis: &AxisCoord, name: &str) -> Result<Formatter> {
+    let format = LabelFormat::parse(what, format)?;
+    let kind = axis.kind();
+    let coord = axis.clone();
+    Ok(match (format, kind) {
+        (LabelFormat::Template(t), AxisKind::Numeric | AxisKind::Integer) => {
+            Box::new(move |v| match coord.label_value(*v) {
+                Some(LabelValue::Number(n)) => t.number(n, &coord.format_ext(v)),
+                _ => String::new(),
+            })
+        }
+        (LabelFormat::Template(t), AxisKind::Category) => {
+            if !t.fits_text() {
+                return Err(Error::invalid(format!(
+                    "{what}: the template formats numbers, and the {name} axis is category: \
+                     category labels take only fill, alignment, width and precision \
+                     ('{{:>10}}', '{{:.3}}')"
+                )));
+            }
+            Box::new(move |v| match coord.label_value(*v) {
+                Some(LabelValue::Text(s)) => t.text(&s),
+                _ => String::new(),
+            })
+        }
+        (LabelFormat::Strftime(p), AxisKind::Date | AxisKind::Timestamp) => {
+            Box::new(move |v| match coord.label_value(*v) {
+                Some(LabelValue::Time(t)) => strftime(&p, t),
+                _ => String::new(),
+            })
+        }
+        (format, kind) => {
+            let example = match format {
+                LabelFormat::Template(_) => "a strftime pattern such as '%Y-%m-%d'",
+                LabelFormat::Strftime(_) => "a format() template such as '{:.1f}'",
+            };
+            return Err(Error::invalid(format!(
+                "{what}: a {} does not apply to the {kind} {name} axis; use {example}",
+                format.kind_name()
+            )));
+        }
+    })
+}
+
+fn line_style(style: &LineStyle) -> ShapeStyle {
+    ShapeStyle {
+        color: style.color.to_plotters(),
+        filled: false,
+        stroke_width: style.stroke_width,
+    }
+}
+
+fn tick_position(p: TickPosition) -> LabelAreaPosition {
+    match p {
+        TickPosition::Top => LabelAreaPosition::Top,
+        TickPosition::Bottom => LabelAreaPosition::Bottom,
+        TickPosition::Left => LabelAreaPosition::Left,
+        TickPosition::Right => LabelAreaPosition::Right,
+    }
+}
+
+/// `configure_mesh()`, the setter calls in chain order, then `draw()`.
+fn draw_mesh<'a, DB: DrawingBackend + 'a>(
+    ctx: &mut ChartContext<'a, DB, Cartesian2d<AxisCoord, AxisCoord>>,
+    style: &MeshStyle,
+    x: &AxisCoord,
+    y: &AxisCoord,
+) -> Result<()> {
+    // A later formatter call replaces an earlier one, as in plotters, so only the last counts.
+    let last = |f: fn(&MeshSetting) -> Option<&String>| style.settings.iter().rev().find_map(f);
+    let format_x = last(|s| match s {
+        MeshSetting::XLabelFormatter(f) => Some(f),
+        _ => None,
+    })
+    .map(|f| formatter("x_label_formatter", f, x, "x"))
+    .transpose()?;
+    let format_y = last(|s| match s {
+        MeshSetting::YLabelFormatter(f) => Some(f),
+        _ => None,
+    })
+    .map(|f| formatter("y_label_formatter", f, y, "y"))
+    .transpose()?;
+
+    let mut mesh = ctx.configure_mesh();
+    for setting in &style.settings {
+        match setting {
+            MeshSetting::XDesc(text) => mesh.x_desc(text.as_str()),
+            MeshSetting::YDesc(text) => mesh.y_desc(text.as_str()),
+            MeshSetting::AxisDescStyle(f) => mesh.axis_desc_style(text_style(f)),
+            MeshSetting::XLabels(n) => mesh.x_labels(*n as usize),
+            MeshSetting::YLabels(n) => mesh.y_labels(*n as usize),
+            MeshSetting::XLabelFormatter(_) | MeshSetting::YLabelFormatter(_) => &mut mesh,
+            MeshSetting::LabelStyle(f) => mesh.label_style(text_style(f)),
+            MeshSetting::XLabelStyle(f) => mesh.x_label_style(text_style(f)),
+            MeshSetting::YLabelStyle(f) => mesh.y_label_style(text_style(f)),
+            MeshSetting::XLabelOffset(px) => mesh.x_label_offset(*px),
+            MeshSetting::YLabelOffset(px) => mesh.y_label_offset(*px),
+            MeshSetting::XMaxLightLines(n) => mesh.x_max_light_lines(*n as usize),
+            MeshSetting::YMaxLightLines(n) => mesh.y_max_light_lines(*n as usize),
+            MeshSetting::MaxLightLines(n) => mesh.max_light_lines(*n as usize),
+            MeshSetting::LightLineStyle(l) => mesh.light_line_style(line_style(l)),
+            MeshSetting::BoldLineStyle(l) => mesh.bold_line_style(line_style(l)),
+            MeshSetting::AxisStyle(l) => mesh.axis_style(line_style(l)),
+            MeshSetting::DisableXMesh => mesh.disable_x_mesh(),
+            MeshSetting::DisableYMesh => mesh.disable_y_mesh(),
+            MeshSetting::DisableMesh => mesh.disable_mesh(),
+            MeshSetting::DisableXAxis => mesh.disable_x_axis(),
+            MeshSetting::DisableYAxis => mesh.disable_y_axis(),
+            MeshSetting::DisableAxes => mesh.disable_axes(),
+            MeshSetting::SetTickMarkSize(p, px) => mesh.set_tick_mark_size(tick_position(*p), *px),
+            MeshSetting::SetAllTickMarkSize(px) => mesh.set_all_tick_mark_size(*px),
+        };
+    }
+    if let Some(f) = &format_x {
+        mesh.x_label_formatter(f.as_ref());
+    }
+    if let Some(f) = &format_y {
+        mesh.y_label_formatter(f.as_ref());
+    }
+    mesh.draw().map_err(plotters_error)
 }
 
 fn draw_series<'a, DB: DrawingBackend + 'a>(

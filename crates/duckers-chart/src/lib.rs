@@ -20,6 +20,7 @@ pub mod color;
 pub mod envelope;
 mod error;
 mod full_palette;
+pub mod label_format;
 pub mod methods;
 pub mod render;
 pub mod spec;

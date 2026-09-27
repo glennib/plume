@@ -6,10 +6,11 @@
 
 use crate::color::Color;
 use crate::error::{Error, Result};
+use crate::label_format::LabelFormat;
 use crate::spec::{
     Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, DrawOp, Font, FontStyle, LabelPosition,
-    Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting,
-    SeriesLabelStyle, SeriesLabels, Sides,
+    LineStyle, Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting,
+    SeriesLabelStyle, SeriesLabels, Sides, TickPosition,
 };
 
 /// The largest pixel size any size argument accepts, the same as the largest image side.
@@ -58,6 +59,42 @@ pub(crate) fn px(what: &str, value: i64) -> Result<u32> {
                 "{what} must be between 0 and {MAX_PX} px, got {value}"
             ))
         })
+}
+
+/// The most labels `x_labels`/`y_labels` accept.
+pub const MAX_LABELS: u32 = 1000;
+/// The most light lines per bold interval `*_max_light_lines` accept.
+pub const MAX_LIGHT_LINES: u32 = 100;
+
+/// A count argument between 0 and `max`.
+fn count(what: &str, value: i64, max: u32) -> Result<u32> {
+    u32::try_from(value)
+        .ok()
+        .filter(|v| *v <= max)
+        .ok_or_else(|| Error::invalid(format!("{what} must be between 0 and {max}, got {value}")))
+}
+
+/// A px argument plotters allows to be negative (`SizeDesc` as `i32`).
+fn signed_px(what: &str, value: i64) -> Result<i32> {
+    i32::try_from(value)
+        .ok()
+        .filter(|v| v.unsigned_abs() <= MAX_PX)
+        .ok_or_else(|| {
+            Error::invalid(format!(
+                "{what} must be between -{MAX_PX} and {MAX_PX} px, got {value}"
+            ))
+        })
+}
+
+/// `color [, stroke_width]` as a line's `ShapeStyle`; the width defaults to 1.
+fn line_style(color: &str, stroke_width: Option<i64>) -> Result<LineStyle> {
+    Ok(LineStyle {
+        color: Color::parse(color)?,
+        stroke_width: match stroke_width {
+            Some(w) => px("stroke_width", w)?,
+            None => 1,
+        },
+    })
 }
 
 fn not_applicable(method: &str, plotters: &str, series: &Series) -> Error {
@@ -543,6 +580,131 @@ impl Mesh {
     pub fn y_desc(mut self, text: impl Into<String>) -> Mesh {
         self.style.settings.push(MeshSetting::YDesc(text.into()));
         self
+    }
+
+    /// Appends a setter call.
+    pub fn set(mut self, setting: MeshSetting) -> Mesh {
+        self.style.settings.push(setting);
+        self
+    }
+
+    /// `MeshStyle::axis_desc_style`.
+    pub fn axis_desc_style(self, font: Font) -> Mesh {
+        self.set(MeshSetting::AxisDescStyle(font))
+    }
+
+    /// `MeshStyle::x_labels`: at most this many labels and bold lines on the x axis.
+    pub fn x_labels(self, n: i64) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::XLabels(count("x_labels", n, MAX_LABELS)?)))
+    }
+
+    /// `MeshStyle::y_labels`.
+    pub fn y_labels(self, n: i64) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::YLabels(count("y_labels", n, MAX_LABELS)?)))
+    }
+
+    /// `MeshStyle::x_label_formatter`, with a `format()` template or a strftime pattern in
+    /// place of the closure.
+    pub fn x_label_formatter(self, format: &str) -> Result<Mesh> {
+        LabelFormat::parse("x_label_formatter", format)?;
+        Ok(self.set(MeshSetting::XLabelFormatter(format.to_string())))
+    }
+
+    /// `MeshStyle::y_label_formatter`.
+    pub fn y_label_formatter(self, format: &str) -> Result<Mesh> {
+        LabelFormat::parse("y_label_formatter", format)?;
+        Ok(self.set(MeshSetting::YLabelFormatter(format.to_string())))
+    }
+
+    /// `MeshStyle::label_style`: both axes' labels.
+    pub fn label_style(self, font: Font) -> Mesh {
+        self.set(MeshSetting::LabelStyle(font))
+    }
+
+    /// `MeshStyle::x_label_style`.
+    pub fn x_label_style(self, font: Font) -> Mesh {
+        self.set(MeshSetting::XLabelStyle(font))
+    }
+
+    /// `MeshStyle::y_label_style`.
+    pub fn y_label_style(self, font: Font) -> Mesh {
+        self.set(MeshSetting::YLabelStyle(font))
+    }
+
+    /// `MeshStyle::x_label_offset`: px along the axis; may be negative.
+    pub fn x_label_offset(self, offset: i64) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::XLabelOffset(signed_px(
+            "x_label_offset",
+            offset,
+        )?)))
+    }
+
+    /// `MeshStyle::y_label_offset`.
+    pub fn y_label_offset(self, offset: i64) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::YLabelOffset(signed_px(
+            "y_label_offset",
+            offset,
+        )?)))
+    }
+
+    /// `MeshStyle::x_max_light_lines`: light lines per bold interval on the x axis.
+    pub fn x_max_light_lines(self, n: i64) -> Result<Mesh> {
+        let n = count("x_max_light_lines", n, MAX_LIGHT_LINES)?;
+        Ok(self.set(MeshSetting::XMaxLightLines(n)))
+    }
+
+    /// `MeshStyle::y_max_light_lines`.
+    pub fn y_max_light_lines(self, n: i64) -> Result<Mesh> {
+        let n = count("y_max_light_lines", n, MAX_LIGHT_LINES)?;
+        Ok(self.set(MeshSetting::YMaxLightLines(n)))
+    }
+
+    /// `MeshStyle::max_light_lines`: both axes.
+    pub fn max_light_lines(self, n: i64) -> Result<Mesh> {
+        let n = count("max_light_lines", n, MAX_LIGHT_LINES)?;
+        Ok(self.set(MeshSetting::MaxLightLines(n)))
+    }
+
+    /// `MeshStyle::light_line_style(color [, stroke_width])`.
+    pub fn light_line_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::LightLineStyle(line_style(
+            color,
+            stroke_width,
+        )?)))
+    }
+
+    /// `MeshStyle::bold_line_style(color [, stroke_width])`.
+    pub fn bold_line_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::BoldLineStyle(line_style(color, stroke_width)?)))
+    }
+
+    /// `MeshStyle::axis_style(color [, stroke_width])`: the axis lines and tick marks.
+    pub fn axis_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
+        Ok(self.set(MeshSetting::AxisStyle(line_style(color, stroke_width)?)))
+    }
+
+    /// `MeshStyle::set_tick_mark_size(position, px)`; `position` is `'top'`, `'bottom'`,
+    /// `'left'` or `'right'` (`LabelAreaPosition`).
+    pub fn set_tick_mark_size(self, position: &str, size: i64) -> Result<Mesh> {
+        let key = position.trim().to_ascii_lowercase();
+        let position = TickPosition::NAMED
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, p)| *p)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unknown LabelAreaPosition '{position}': expected 'top', 'bottom', 'left' \
+                     or 'right'"
+                ))
+            })?;
+        let size = signed_px("set_tick_mark_size", size)?;
+        Ok(self.set(MeshSetting::SetTickMarkSize(position, size)))
+    }
+
+    /// `MeshStyle::set_all_tick_mark_size(px)`.
+    pub fn set_all_tick_mark_size(self, size: i64) -> Result<Mesh> {
+        let size = signed_px("set_all_tick_mark_size", size)?;
+        Ok(self.set(MeshSetting::SetAllTickMarkSize(size)))
     }
 
     /// `MeshStyle::draw`: draws the mesh at this point of the chain and returns the chart.
@@ -1109,6 +1271,76 @@ mod tests {
                 .y_log_scale(None)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn mesh_settings_in_chain_order() {
+        let mesh = Chart::new()
+            .configure_mesh()
+            .x_labels(5)
+            .unwrap()
+            .x_label_formatter("{:.1f}")
+            .unwrap()
+            .y_label_formatter("%b %d")
+            .unwrap()
+            .light_line_style("red", None)
+            .unwrap()
+            .axis_style("black", Some(2))
+            .unwrap()
+            .x_label_offset(-3)
+            .unwrap()
+            .set_tick_mark_size("Left", -5)
+            .unwrap()
+            .set(MeshSetting::DisableXMesh)
+            .label_style(Font::sans_serif(10).unwrap());
+        assert_eq!(
+            mesh.style.settings,
+            [
+                MeshSetting::XLabels(5),
+                MeshSetting::XLabelFormatter("{:.1f}".into()),
+                MeshSetting::YLabelFormatter("%b %d".into()),
+                MeshSetting::LightLineStyle(LineStyle {
+                    color: Color::rgb(255, 0, 0),
+                    stroke_width: 1
+                }),
+                MeshSetting::AxisStyle(LineStyle {
+                    color: Color::BLACK,
+                    stroke_width: 2
+                }),
+                MeshSetting::XLabelOffset(-3),
+                MeshSetting::SetTickMarkSize(TickPosition::Left, -5),
+                MeshSetting::DisableXMesh,
+                MeshSetting::LabelStyle(Font {
+                    size: 10,
+                    ..Font::default()
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn mesh_argument_errors() {
+        let mesh = Chart::new().configure_mesh();
+        let err = |r: Result<Mesh>| r.unwrap_err().message().to_string();
+        assert_eq!(
+            err(mesh.clone().x_labels(-1)),
+            "x_labels must be between 0 and 1000, got -1"
+        );
+        assert_eq!(
+            err(mesh.clone().max_light_lines(101)),
+            "max_light_lines must be between 0 and 100, got 101"
+        );
+        assert_eq!(
+            err(mesh.clone().y_label_offset(10_000)),
+            "y_label_offset must be between -8192 and 8192 px, got 10000"
+        );
+        assert_eq!(
+            err(mesh.clone().set_tick_mark_size("middle", 3)),
+            "unknown LabelAreaPosition 'middle': expected 'top', 'bottom', 'left' or 'right'"
+        );
+        assert!(err(mesh.clone().x_label_formatter("abc")).starts_with("x_label_formatter: 'abc'"));
+        assert!(err(mesh.clone().bold_line_style("nope", None)).starts_with("unknown colour"));
+        assert!(mesh.axis_style("red", Some(-1)).is_err());
     }
 
     #[test]

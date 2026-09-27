@@ -341,17 +341,85 @@ pub struct MeshStyle {
     pub settings: Vec<MeshSetting>,
 }
 
-/// One `MeshStyle` setter call. Further setters are appended as new variants.
+/// One `MeshStyle` setter call, named as plotters names it. Further setters are appended as
+/// new variants.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum MeshSetting {
     XDesc(String),
     YDesc(String),
+    AxisDescStyle(Font),
+    XLabels(u32),
+    YLabels(u32),
+    /// A `format()` template or strftime pattern, checked by
+    /// [`crate::label_format::LabelFormat::parse`] when set.
+    XLabelFormatter(String),
+    YLabelFormatter(String),
+    LabelStyle(Font),
+    XLabelStyle(Font),
+    YLabelStyle(Font),
+    /// px; plotters' `SizeDesc` allows negative offsets.
+    XLabelOffset(i32),
+    YLabelOffset(i32),
+    XMaxLightLines(u32),
+    YMaxLightLines(u32),
+    MaxLightLines(u32),
+    LightLineStyle(LineStyle),
+    BoldLineStyle(LineStyle),
+    AxisStyle(LineStyle),
+    DisableXMesh,
+    DisableYMesh,
+    DisableMesh,
+    DisableXAxis,
+    DisableYAxis,
+    DisableAxes,
+    /// px; a negative size points the ticks into the plotting area.
+    SetTickMarkSize(TickPosition, i32),
+    SetAllTickMarkSize(i32),
 }
 
 impl MeshSetting {
     /// The font the setting names, if it takes one.
     pub fn font(&self) -> Option<&Font> {
-        None
+        match self {
+            MeshSetting::AxisDescStyle(f)
+            | MeshSetting::LabelStyle(f)
+            | MeshSetting::XLabelStyle(f)
+            | MeshSetting::YLabelStyle(f) => Some(f),
+            _ => None,
+        }
+    }
+}
+
+/// An `Into<ShapeStyle>` for lines: a colour and a stroke width, not filled.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct LineStyle {
+    pub color: Color,
+    pub stroke_width: u32,
+}
+
+/// `LabelAreaPosition`, the label area a tick mark size applies to.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TickPosition {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TickPosition {
+    pub(crate) const NAMED: [(&'static str, TickPosition); 4] = [
+        ("top", TickPosition::Top),
+        ("bottom", TickPosition::Bottom),
+        ("left", TickPosition::Left),
+        ("right", TickPosition::Right),
+    ];
+
+    pub fn name(self) -> &'static str {
+        TickPosition::NAMED
+            .iter()
+            .find(|(_, p)| *p == self)
+            .map(|(n, _)| *n)
+            .expect("every position is named")
     }
 }
 

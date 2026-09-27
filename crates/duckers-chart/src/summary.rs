@@ -1,13 +1,18 @@
 //! One-line summaries, the `VARCHAR` casts of the SQL values.
 
 use crate::spec::{
-    Chart, Font, FontStyle, LabelPosition, Mesh, MeshSetting, Series, SeriesKind,
+    Chart, Font, FontStyle, LabelPosition, LineStyle, Mesh, MeshSetting, Series, SeriesKind,
     SeriesLabelSetting, SeriesLabels,
 };
 
 /// A SQL-style string literal: single quotes, embedded quotes doubled.
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
+}
+
+/// A line style as `#rrggbb 2px`.
+fn line(style: &LineStyle) -> String {
+    format!("{} {}px", style.color, style.stroke_width)
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -72,6 +77,32 @@ impl Mesh {
             .map(|s| match s {
                 MeshSetting::XDesc(text) => format!("x_desc {}", quote(text)),
                 MeshSetting::YDesc(text) => format!("y_desc {}", quote(text)),
+                MeshSetting::AxisDescStyle(f) => format!("axis_desc_style {}", f.summary()),
+                MeshSetting::XLabels(n) => format!("x_labels {n}"),
+                MeshSetting::YLabels(n) => format!("y_labels {n}"),
+                MeshSetting::XLabelFormatter(f) => format!("x_label_formatter {}", quote(f)),
+                MeshSetting::YLabelFormatter(f) => format!("y_label_formatter {}", quote(f)),
+                MeshSetting::LabelStyle(f) => format!("label_style {}", f.summary()),
+                MeshSetting::XLabelStyle(f) => format!("x_label_style {}", f.summary()),
+                MeshSetting::YLabelStyle(f) => format!("y_label_style {}", f.summary()),
+                MeshSetting::XLabelOffset(px) => format!("x_label_offset {px}px"),
+                MeshSetting::YLabelOffset(px) => format!("y_label_offset {px}px"),
+                MeshSetting::XMaxLightLines(n) => format!("x_max_light_lines {n}"),
+                MeshSetting::YMaxLightLines(n) => format!("y_max_light_lines {n}"),
+                MeshSetting::MaxLightLines(n) => format!("max_light_lines {n}"),
+                MeshSetting::LightLineStyle(l) => format!("light_line_style {}", line(l)),
+                MeshSetting::BoldLineStyle(l) => format!("bold_line_style {}", line(l)),
+                MeshSetting::AxisStyle(l) => format!("axis_style {}", line(l)),
+                MeshSetting::DisableXMesh => "disable_x_mesh".into(),
+                MeshSetting::DisableYMesh => "disable_y_mesh".into(),
+                MeshSetting::DisableMesh => "disable_mesh".into(),
+                MeshSetting::DisableXAxis => "disable_x_axis".into(),
+                MeshSetting::DisableYAxis => "disable_y_axis".into(),
+                MeshSetting::DisableAxes => "disable_axes".into(),
+                MeshSetting::SetTickMarkSize(p, px) => {
+                    format!("set_tick_mark_size {} {px}px", p.name())
+                }
+                MeshSetting::SetAllTickMarkSize(px) => format!("set_all_tick_mark_size {px}px"),
             })
             .collect();
         format!("MESH({}) of {}", settings.join(", "), self.chart.summary())
@@ -198,6 +229,21 @@ mod tests {
         assert_eq!(
             mesh.summary(),
             "MESH(x_desc 'day', y_desc '°C') of CHART(empty)"
+        );
+        let styled = Chart::new()
+            .configure_mesh()
+            .x_label_formatter("{:.1f} °C")
+            .unwrap()
+            .label_style(Font::new("serif", 10, None).unwrap())
+            .bold_line_style("red", Some(2))
+            .unwrap()
+            .set_tick_mark_size("bottom", -3)
+            .unwrap()
+            .set(crate::spec::MeshSetting::DisableAxes);
+        assert_eq!(
+            styled.summary(),
+            "MESH(x_label_formatter '{:.1f} °C', label_style FONT(serif, 10), bold_line_style \
+             #ff0000 2px, set_tick_mark_size bottom -3px, disable_axes) of CHART(empty)"
         );
         let labels = Chart::new()
             .configure_series_labels()

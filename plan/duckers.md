@@ -708,6 +708,21 @@ Each item records the choice, the alternative, and why.
     Labels use plotters' float printer with scientific notation
     (`1`, `100`, `1e6`)
     instead of `LogCoord`'s `{:?}` (`1000000.0`), and `x_label_formatter`/`y_label_formatter` apply as on a linear axis.
+19. **Label formatters are a `format()` template or a strftime pattern, chosen by the text.**
+    A formatter with a `{}` placeholder is a template: literal text around exactly one placeholder,
+    `{{`/`}}` for braces, and an optional fmt spec `{:[[fill]align][sign][0][width][,][.precision][type]}` with `type`
+    one of `f`, `e`, `g`, `d` (rounded to an integer) and `%`.
+    `{}` without a spec is the axis' own label
+    (plotters' text, e.g. `2.5`, the category name, a log decade), so `'{} °C'` only adds a unit.
+    Anything else must contain a strftime conversion (`'%b %d'`).
+    The text is checked when the formatter is set; whether it suits the axis is checked when the chart renders,
+    since the axis kind may come from series drawn later: templates label numeric,
+    log and integer-bucket axes (numbers) and category axes
+    (fill, alignment, width and precision only),
+    strftime patterns label date, timestamp and date-bucket axes; a mismatch is an error naming the axis kind.
+    Alternative: DuckDB's full `format()` or `printf()`.
+    Rejected because an extension cannot call them per label, and the fmt-spec subset covers what axis labels need.
+    The last formatter call on an axis wins, as in plotters.
 
 ## Open questions
 
