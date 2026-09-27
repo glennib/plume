@@ -49,6 +49,8 @@ They are the contract; the tables below follow from them.
    (`x.f(y)` is `f(x, y)`)
    makes the SQL read like the Rust chain: `ChartBuilder::caption` is `caption`, `LineSeries` is `line_series`,
    `MeshStyle::x_desc` is `x_desc`.
+   Where the name is taken by a DuckDB built-in that an extension cannot overload, the plotters receiver qualifies it:
+   `Histogram::vertical` is `histogram_vertical`, `root.fill` is `root_fill`.
 3. **Rows become series through aggregates.**
    `LineSeries::new(iter, style)` consumes an iterator; `line_series(x, y)` consumes the rows of a group.
    A SQL group has no order, so the aggregate sorts by `x` unless `order_by := expr` says otherwise.
@@ -106,7 +108,8 @@ which is what lets `draw()` hand the chart back.
 |---|---|---|
 | `line_series(x, y)` | `LineSeries::new(iter, style)` | One polyline through the points. |
 | `point_series(x, y)` | `PointSeries::new(iter, size, style)` | One marker per point. |
-| `histogram(bucket, value)` | `Histogram::vertical(&chart).data(iter)` | Sums `value` per distinct `bucket`; `histogram(x, 1)` counts rows. Vertical unless `.horizontal()`. |
+| `histogram_vertical(bucket, value)` | `Histogram::vertical(&chart).data(iter)` | Sums `value` per distinct `bucket`; `histogram_vertical(x, 1)` counts rows. |
+| `histogram_horizontal(bucket, value)` | `Histogram::horizontal(&chart).data(iter)` | The same with horizontal bars. |
 | `area_series(x, y)` | `AreaSeries::new(iter, baseline, style)` | Polygon from the points down to the baseline (0). |
 | `dashed_line_series(x, y)` | `DashedLineSeries::new(points, size, spacing, style)` | |
 | `error_bar_vertical(x, min, avg, max)` / `error_bar_horizontal(y, min, avg, max)` | `ErrorBar::new_vertical` / `new_horizontal` per row | One element per row. |
@@ -162,9 +165,8 @@ These are scalar functions on `SERIES` and return `SERIES`.
 | `point_size(px)` | `LineSeries::point_size` | `line_series` | 0 |
 | `size(px)` | the `size` argument of `PointSeries::new` | `point_series` | 3 |
 | `marker(name)` | the element type parameter of `PointSeries::new` (`'circle'`, `'cross'`, `'triangle'`, `'pixel'`) | `point_series` | `'circle'` |
-| `margin(px)` | `Histogram::margin` | `histogram` | 5 |
-| `baseline(v)` | `Histogram::baseline`, the `baseline` argument of `AreaSeries::new` | `histogram`, `area_series` | 0 |
-| `horizontal()` | `Histogram::horizontal` instead of `vertical` | `histogram` | vertical |
+| `margin(px)` | `Histogram::margin` | histograms | 5 |
+| `baseline(v)` | `Histogram::baseline`, the `baseline` argument of `AreaSeries::new` | histograms, `area_series` | 0 |
 | `border_style(color [, stroke_width])` | `AreaSeries::border_style` | `area_series` | transparent |
 | `size(px)`, `spacing(px)` | the `size` and `spacing` arguments of `DashedLineSeries::new` | `dashed_line_series` | 5, 5 |
 | `width(px)` | the `width` argument of `ErrorBar`, `CandleStick`, `Boxplot::width` | error bars, candles, boxplots | 10 |
@@ -188,7 +190,7 @@ These scalar functions take and return `CHART`.
 | `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)` | same | |
 | `x_range(lo, hi)`, `y_range(lo, hi)` | the range arguments of `build_cartesian_2d` | the data extent, see [Coordinates](#coordinates-and-ranges) |
 | `x_log_scale([base])`, `y_log_scale([base])` | `(lo..hi).log_scale().base(b)` | linear |
-| `fill(color)` | `root.fill(&WHITE)` | `'white'` (plotters: black bitmap, transparent SVG) |
+| `root_fill(color)` | `root.fill(&WHITE)` | `'white'` (plotters: black bitmap, transparent SVG) |
 | `draw_series(series \| series[])` | `ChartContext::draw_series` | |
 | `configure_mesh()` | `ChartContext::configure_mesh()` | returns `MESH` |
 | `configure_series_labels()` | `ChartContext::configure_series_labels()` | returns `SERIES_LABELS` |
@@ -389,7 +391,7 @@ Bars from rows aggregated in SQL, ordered by the count:
 
 ```sql
 SELECT chart().caption('Articles per section')
-         .draw_series(histogram(section, n, order_by := -n).style('blue_400'))
+         .draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
          .to_svg()
 FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
 ```
@@ -491,8 +493,8 @@ Each spike answers a question that a later milestone assumes.
 
 ### M2: first charts
 
-- `line_series`, `point_series`, `histogram`, with `key` and `order_by`.
-- `chart()`, `draw_series`, `caption`, `x_range`, `y_range`, `fill`.
+- `line_series`, `point_series`, `histogram_vertical`, with `key` and `order_by`.
+- `chart()`, `draw_series`, `caption`, `x_range`, `y_range`, `root_fill`.
 - `configure_mesh` with `x_desc`, `y_desc`, `draw`; the default mesh.
 - `label` with the automatic legend; `configure_series_labels` with `position` and `draw`.
 - `style`, `stroke_width`, `point_size`, `size`, `filled`; colour strings; default palette.
@@ -515,12 +517,12 @@ Each spike answers a question that a later milestone assumes.
 - All `SERIES_LABELS` methods.
 - `margin*`, `*_label_area_size`, `x_log_scale`, `y_log_scale`.
 - `font()`, `FONT` colour and style; `mix`.
-- `marker` for points; `histogram` `margin`, `baseline`, `horizontal`.
+- `marker` for points; `histogram_horizontal`; histogram `margin` and `baseline`.
 
 ### M5: more series
 
 - `area_series`, `dashed_line_series`, `error_bar_*`, `candle_stick`, `boxplot_*`.
-- `histogram(...).step(s)` for numeric buckets (`.step(s).use_round().into_segmented()`).
+- `histogram_vertical(...).step(s)` (and horizontal) for numeric buckets (`.step(s).use_round().into_segmented()`).
 - Time-axis niceties: monthly and yearly key points, `strftime` formatters.
 
 ### M6: layout
@@ -608,6 +610,17 @@ Each item records the choice, the alternative, and why.
     Named parameters are DuckDB-idiomatic
     (table functions use them),
     and `duckers_set` plus environment variables cover session defaults until the shim can register real options.
+12. **Names taken by DuckDB built-ins are qualified with the plotters receiver.**
+    DuckDB has an aggregate `histogram` and a window function `fill`.
+    The v2 C API cannot add an overload to an aggregate
+    (registration fails with "GetAlterInfo not implemented"),
+    and a scalar cannot share a name with a window function,
+    so `histogram(bucket, value)` and `fill(color)` cannot be registered.
+    They are `histogram_vertical` (`Histogram::vertical`,
+    and `histogram_horizontal` for `Histogram::horizontal` in place of a `.horizontal()` method)
+    and `root_fill` (`root.fill`).
+    Scalars that share a name with a DuckDB scalar, such as `position`, are overloads and keep their plotters names.
+    Alternative: `histogram_series` or `bar_series`; rejected because they name no plotters item.
 
 ## Open questions
 
@@ -618,5 +631,5 @@ Each item records the choice, the alternative, and why.
 - How the shim is enabled (`active_grammar_extensions` is per-connection) and how it ensures the core is loaded
   (M8).
 - How far the grammar-extension API moves before v2.0 GA (M8).
-- Grouped bars (`histogram` with `key`) need bar offsets plotters does not provide; left out until someone needs
-  it.
+- Grouped bars (`histogram_vertical` with `key`) need bar offsets plotters does not provide;
+  left out until someone needs it.

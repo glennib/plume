@@ -13,17 +13,17 @@ DuckDB v2 is in preview, and duckers is built and tested against a pinned previe
 
 ## M1: skeleton
 
-The extension loads and defines its value types, but draws nothing yet.
+The extension loads and defines its value types.
 
 - `duckers_version()` returns the extension version, e.g. `v0.1.0`.
 - The types `CHART`, `MESH`, `SERIES_LABELS`, `SERIES` and `FONT` exist.
   Each is a custom type over `BLOB`, with casts to `VARCHAR`
-  (a one-line summary such as `CHART(3 bytes)`, which is also how the DuckDB shell displays the value)
-  and to and from `BLOB`.
+  (a one-line summary such as `CHART(line, 2 series, 240 points)`,
+  which is also how the DuckDB shell displays the value) and to and from `BLOB`.
   Casting a `BLOB` that is not a duckers value of that type fails, and `TRY_CAST` gives `NULL`.
-- There are no functions that build these values yet.
-  Two internal functions exist for the tests, `__duckers_envelope` and `__duckers_agg_probe`;
-  they are not part of the API and will change.
+- Internal functions for the tests start with `__duckers_`
+  (`__duckers_debug(value)` prints a decoded value, `__duckers_agg_probe` exercises the aggregate layer);
+  they are not part of the API and may change in any release.
 
 ### Building
 
@@ -80,6 +80,10 @@ make test_release   # the same on the release build
 - `make test_sql_debug`: the sqllogictests in `test/sql/`,
   run with DuckDB's Python sqllogictest runner against the pinned `duckdb` preview wheel.
   `make venv` (run automatically) syncs the uv environment from `pyproject.toml` and `uv.lock`.
+- `make test_svg_debug`: SVG snapshots.
+  Each `test/svg/<name>.sql` renders a chart through the wheel
+  (after `test/svg/_setup.sql`), and the SVG must equal `test/svg/<name>.svg`.
+  `make update_svg` rewrites the expected files, to be reviewed like any other change.
 - `make test_cli_debug`: each `test/cli/<name>.sql` runs in the preview CLI and must print `test/cli/<name>.out`.
   These cover the shell's rendering of duckers values, which the Python runner cannot see.
 
@@ -94,7 +98,112 @@ CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64
 - `crates/duckers`: the extension.
   `src/capi/` is a small safe layer over the C API
   (scalar functions, aggregates, custom types, casts, vectors),
-  `src/types.rs` registers the custom types, `src/envelope.rs` defines the byte layout of their values,
-  and `src/functions/` holds the SQL functions.
-- `scripts/append_footer.py`: the footer step.
-- `test/sql/`, `test/cli/`: the SQL tests.
+  `src/types.rs` registers the custom types, and `src/functions/` holds the SQL functions,
+  which convert DuckDB vectors to calls on `duckers-chart`.
+- `crates/duckers-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
+  and the plotters renderer with the embedded font; it does not depend on DuckDB.
+- `crates/duckers-view`: the viewers `show()` will use (M3).
+- `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner.
+- `test/sql/`, `test/svg/`, `test/cli/`: the SQL tests.
+
+## M2: first charts
+
+Charts are built with plotters' vocabulary and rendered to SVG or PNG.
+The paradigm and every name are in the [plan](plan/duckers.md#the-user-api); M2 covers the following.
+
+- Series aggregates: `line_series(x, y)`, `point_series(x, y)` and `histogram_vertical(bucket, value)`
+  (plotters' `Histogram::vertical`; it sums `value` per bucket, so `histogram_vertical(x, 1)` counts rows).
+  Each takes `key := expr`, which returns a `SERIES[]` with one series per distinct key,
+  ordered by key and labelled `key::VARCHAR`, and `order_by := expr`, the drawing order within a series
+  (default: `x`, ties broken by `y`).
+  `x` is any numeric type (a continuous axis), `DATE` or any `TIMESTAMP` type (a time axis), or `VARCHAR`
+  (a category axis); a histogram bucket is `VARCHAR`, an integer or `DATE`.
+  Rows with a `NULL`, `NaN` or infinite value are skipped, and zero usable rows give an empty series.
+- Chart builder, on `CHART`: `chart()`, `caption(text [, size])`, `margin(px)`, `x_label_area_size(px)`,
+  `y_label_area_size(px)`, `x_range(lo, hi)`, `y_range(lo, hi)` (numbers, dates or timestamps; `lo > hi` reverses
+  the axis), `root_fill(color)` (plotters' `root.fill`), `draw_series(series | series[])`,
+  `configure_mesh()` and `configure_series_labels()`.
+- Mesh, on `MESH`: `x_desc(text)`, `y_desc(text)`, `draw()`.
+  Without a `configure_mesh().draw()` in the chain, duckers draws the default mesh before the first series.
+- Legend, on `SERIES_LABELS`: `position(name)`, `position(x, y)`, `border_style(color [, stroke_width])`,
+  `background_style(color)`, `draw()`.
+  A chain with a labelled series and no legend call gets the default legend last.
+- Series methods, on `SERIES`: `style(color [, stroke_width])`, `stroke_width(px)`, `label(text)`, `point_size(px)`
+  (lines), `size(px)` (points), `filled()`.
+  Series without a style are coloured from `Palette99` in draw order.
+- Colours are strings: plotters' names (`'red'`), `full_palette` names (`'blue_400'`), `'#rrggbb'`, `'#rrggbbaa'`,
+  `'rgb(r, g, b)'`, `'rgba(r, g, b, a)'`, `'hsl(h, s, l)'` and `'palette99:n'`.
+  `mix(color, alpha)` mirrors `WHITE.mix(0.8)`.
+- Output: `to_svg(chart [, width, height])` returns `VARCHAR`, `to_png(chart [, width, height])` returns `BLOB`;
+  the default size is 640×480 and the maximum 8192 px per side.
+  Text is laid out with an embedded DejaVu Sans, so rendering needs no system fonts and is deterministic.
+
+`margin`, `x_label_area_size`, `y_label_area_size`, `border_style`, `background_style` and `mix` are M4 items,
+available early with the API the plan gives them.
+Every scalar returns `NULL` for a `NULL` argument.
+Wrong argument types are bind errors; bad values
+(an unknown colour, `x_range(1, 1)`, series with different x axis kinds on one chart)
+are errors from the function that received them.
+
+```sql
+SELECT chart()
+         .caption('Oslo temperature', 30)
+         .y_range(-10, 30)
+         .configure_mesh().x_desc('day').y_desc('°C').draw()
+         .draw_series(line_series(day, temp).style('red').label('temp'))
+         .configure_series_labels().border_style('black').draw()
+         .to_svg(800, 600)
+FROM weather
+WHERE city = 'Oslo';
+
+-- One line per city; per-series styling of the list with a lambda.
+SELECT chart()
+         .draw_series(list_transform(line_series(day, temp, key := city), lambda s: s.stroke_width(2)))
+         .to_png()
+FROM weather;
+
+-- Bars in descending order.
+SELECT chart().caption('Articles per section')
+         .draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
+         .to_svg()
+FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
+```
+
+A chart expression in a query with `GROUP BY` gives one chart per group.
+
+### Writing files
+
+Until duckers has its own copy function (M7), files are written with DuckDB's `COPY ... (FORMAT blob)`,
+which takes exactly one `BLOB` column, so SVG needs `.encode()`.
+`PARTITION_BY` writes one file per group, as `charts/city=Oslo/data_0.blob` and so on:
+
+```sql
+COPY (SELECT chart().draw_series(line_series(i, i * i)).to_png(800, 600) FROM range(10) r(i))
+TO 'squares.png' (FORMAT blob);
+
+COPY (SELECT chart().draw_series(line_series(i, i * i)).to_svg().encode() FROM range(10) r(i))
+TO 'squares.svg' (FORMAT blob);
+
+COPY (SELECT city, chart().draw_series(line_series(day, temp)).to_png() AS png FROM weather GROUP BY city)
+TO 'charts' (FORMAT blob, PARTITION_BY city);
+```
+
+A `CHART` passes the `FORMAT blob` check too
+(the custom type is a tagged `BLOB`), and the file then holds the encoded chart, not an image.
+
+### Caveats
+
+- `ORDER BY` inside a series aggregate
+  (`line_series(x, y ORDER BY t)`)
+  is ignored: DuckDB v2 crashes on `ORDER BY` inside C-API aggregates
+  ([duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)), so the aggregates are declared order-independent and
+  the planner drops it.
+  Use `order_by := t`.
+- `line_series(x, y) OVER ()` crashes DuckDB (the same bug), so the series aggregates are not supported as window
+  functions until it is fixed.
+- Two plotters names clash with DuckDB built-ins that an extension cannot overload:
+  the aggregate `histogram` and the window function `fill`.
+  They are qualified with their plotters receiver: `histogram_vertical` for `Histogram::vertical`,
+  `root_fill` for `root.fill`.
+- The shell's `json` output mode prints the elements of a `SERIES[]` as raw bytes;
+  the other modes use the summary.
