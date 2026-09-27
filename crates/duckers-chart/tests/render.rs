@@ -1,6 +1,7 @@
 //! Render tests: the plan's worked examples that M2 covers, built with the calls the SQL layer
 //! makes, plus the axis kinds and edge cases, and M4's styling (mesh, legend, log scales,
-//! horizontal histograms, markers, builder sizes) as `test/svg/` renders it from SQL.
+//! horizontal histograms, markers, builder sizes) and M5's series kinds, stepped histograms and
+//! monthly and yearly axes, as `test/svg/` renders them from SQL.
 //!
 //! Set `DUCKERS_CHART_PNG_DIR` to also write every chart as a PNG into that directory.
 
@@ -508,6 +509,391 @@ fn builder_sizes() -> Chart {
         .unwrap()
 }
 
+/// Runs an aggregate with several value arguments (error bars, candlesticks) or none keyed,
+/// over `(x, values)` rows, as two partial states combined.
+fn many(aggregate: SeriesAggregate, x: SqlType, rows: Vec<(XValue, Vec<f64>)>) -> Series {
+    let binding = SeriesBinding::new(aggregate, x).unwrap();
+    let mut parts = [Accumulator::new(), Accumulator::new()];
+    for (i, (x, values)) in rows.into_iter().enumerate() {
+        let values: Vec<Option<f64>> = values.into_iter().map(Some).collect();
+        parts[i % 2]
+            .push_values(&binding, Some(x), &values, None, None)
+            .unwrap();
+    }
+    let [mut a, b] = parts;
+    a.combine(b);
+    a.finish(&binding).unwrap()
+}
+
+/// `test/svg/area.sql`: an area with a border and a baseline, over a line.
+fn area() -> Chart {
+    let rows = || {
+        (0..41)
+            .map(|i| row(XValue::Integer(i), 20.0 + 10.0 * (i as f64 / 5.0).sin()))
+            .collect()
+    };
+    let area = one(SeriesAggregate::AreaSeries, SqlType::Integer, rows())
+        .style(&mix("blue_400", 0.3).unwrap(), None)
+        .unwrap()
+        .border_style("blue_800", Some(2))
+        .unwrap()
+        .baseline(5.0)
+        .unwrap()
+        .label("level");
+    let rows = (0..41)
+        .map(|i| row(XValue::Integer(i), 15.0 + 5.0 * (i as f64 / 3.0).cos()))
+        .collect();
+    let under = one(SeriesAggregate::AreaSeries, SqlType::Integer, rows)
+        .style(&mix("orange", 0.5).unwrap(), None)
+        .unwrap()
+        .baseline(5.0)
+        .unwrap()
+        .label("inflow");
+    Chart::new()
+        .caption("area_series", Some(20))
+        .unwrap()
+        .draw_series(area)
+        .unwrap()
+        .draw_series(under)
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_right")
+        .unwrap()
+        .border_style("black", None)
+        .unwrap()
+        .background_style("white")
+        .unwrap()
+        .draw()
+}
+
+/// `test/svg/dashed_line.sql`: a dashed line next to a solid one, with the default and a
+/// custom dash.
+fn dashed_line() -> Chart {
+    let rows = |city: usize| {
+        weather(city)
+            .into_iter()
+            .map(|(d, t)| row(XValue::Date(d), t))
+            .collect()
+    };
+    let oslo = one(SeriesAggregate::LineSeries, SqlType::Date, rows(0)).label("Oslo");
+    let bergen = one(SeriesAggregate::DashedLineSeries, SqlType::Date, rows(1))
+        .stroke_width(2)
+        .unwrap()
+        .label("Bergen");
+    let tromso = one(SeriesAggregate::DashedLineSeries, SqlType::Date, rows(2))
+        .size(12)
+        .unwrap()
+        .spacing(4)
+        .unwrap()
+        .label("Tromsø");
+    Chart::new()
+        .caption("dashed_line_series", Some(20))
+        .unwrap()
+        .draw_series_list([oslo, bergen, tromso])
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_left")
+        .unwrap()
+        .draw()
+}
+
+/// The rows of `test/svg/error_bars.sql`: `i`, and `avg - 1 - i % 3`, `avg`, `avg + 2` with
+/// `avg = i * i / 10`.
+fn error_rows(n: i64) -> Vec<(i64, [f64; 3])> {
+    (0..n)
+        .map(|i| {
+            let avg = (i * i) as f64 / 10.0;
+            (i, [avg - 1.0 - (i % 3) as f64, avg, avg + 2.0])
+        })
+        .collect()
+}
+
+/// `test/svg/error_bars.sql`: vertical error bars with filled dots, over a line through the
+/// averages.
+fn error_bars() -> Chart {
+    let rows = error_rows(11)
+        .into_iter()
+        .map(|(i, v)| (XValue::Integer(i), v.to_vec()))
+        .collect();
+    let bars = many(SeriesAggregate::ErrorBarVertical, SqlType::Integer, rows)
+        .style("red", None)
+        .unwrap()
+        .width(8)
+        .unwrap()
+        .filled()
+        .unwrap()
+        .label("measured");
+    let line = one(
+        SeriesAggregate::LineSeries,
+        SqlType::Integer,
+        error_rows(11)
+            .into_iter()
+            .map(|(i, v)| row(XValue::Integer(i), v[1]))
+            .collect(),
+    )
+    .style("grey", None)
+    .unwrap();
+    Chart::new()
+        .caption("error_bar_vertical", Some(20))
+        .unwrap()
+        .draw_series(line)
+        .unwrap()
+        .draw_series(bars)
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_left")
+        .unwrap()
+        .draw()
+}
+
+/// `test/svg/error_bars_horizontal.sql`: horizontal error bars on a category y axis.
+fn error_bars_horizontal() -> Chart {
+    let rows = [
+        ("alpha", [2.0, 3.5, 4.0]),
+        ("beta", [1.0, 2.0, 2.5]),
+        ("gamma", [3.0, 5.0, 7.5]),
+        ("delta", [0.5, 1.5, 4.0]),
+    ]
+    .into_iter()
+    .map(|(k, v)| (XValue::Category(k.into()), v.to_vec()))
+    .collect();
+    let bars = many(SeriesAggregate::ErrorBarHorizontal, SqlType::Varchar, rows)
+        .style("blue_700", Some(2))
+        .unwrap()
+        .width(14)
+        .unwrap()
+        .label("estimate");
+    Chart::new()
+        .caption("error_bar_horizontal", Some(20))
+        .unwrap()
+        .y_label_area_size(60)
+        .unwrap()
+        .x_range(RangeValue::Number(0.0), RangeValue::Number(8.0))
+        .unwrap()
+        .draw_series(bars)
+        .unwrap()
+}
+
+/// The rows of `test/svg/candles.sql`: day `i` of January 2024, open, high, low, close.
+fn candle_rows() -> Vec<(i32, [f64; 4])> {
+    (0..30)
+        .map(|i: i32| {
+            let t = f64::from(i);
+            let open = (100.0 + 10.0 * (t / 4.0).sin()).round();
+            let close = (open + 3.0 * (t * 1.7).cos()).round();
+            let high = open.max(close) + 1.0 + f64::from(i % 3);
+            let low = open.min(close) - 1.0 - f64::from(i % 2);
+            (JAN_1_2024 + i, [open, high, low, close])
+        })
+        .collect()
+}
+
+/// `test/svg/candles.sql`: candlesticks on a date axis, filled, with custom gain and loss
+/// colours.
+fn candles() -> Chart {
+    let rows = candle_rows()
+        .into_iter()
+        .map(|(d, v)| (XValue::Date(d), v.to_vec()))
+        .collect();
+    let candles = many(SeriesAggregate::CandleStick, SqlType::Date, rows)
+        .gain_style("green_600")
+        .unwrap()
+        .loss_style("red_600")
+        .unwrap()
+        .width(9)
+        .unwrap()
+        .filled()
+        .unwrap()
+        .label("price");
+    Chart::new()
+        .caption("candle_stick", Some(20))
+        .unwrap()
+        .configure_mesh()
+        .x_label_formatter("%b %d")
+        .unwrap()
+        .draw()
+        .draw_series(candles)
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_right")
+        .unwrap()
+        .border_style("black", None)
+        .unwrap()
+        .draw()
+}
+
+/// The rows of `test/svg/boxplots.sql`: 40 values for each of four groups, and an outlier.
+fn box_rows() -> Vec<(String, f64)> {
+    let mut rows = Vec::new();
+    for (g, name) in ["north", "south", "east", "west"].into_iter().enumerate() {
+        for i in 0..40i64 {
+            let v = 10.0 + 3.0 * g as f64 + ((i * 37 + g as i64 * 11) % 40) as f64 / 4.0;
+            rows.push((name.to_string(), v));
+        }
+    }
+    rows.push(("east".into(), 45.0));
+    rows
+}
+
+/// `test/svg/boxplots.sql`: vertical boxplots, one per category.
+fn boxplots() -> Chart {
+    let rows = box_rows()
+        .into_iter()
+        .map(|(k, v)| row(XValue::Category(k), v))
+        .collect();
+    let boxes = one(SeriesAggregate::BoxplotVertical, SqlType::Varchar, rows)
+        .style("indigo", Some(2))
+        .unwrap()
+        .width(30)
+        .unwrap()
+        .label("spread");
+    Chart::new()
+        .caption("boxplot_vertical", Some(20))
+        .unwrap()
+        .draw_series(boxes)
+        .unwrap()
+}
+
+/// `test/svg/boxplots_horizontal.sql`: horizontal boxplots in `order_by` order.
+fn boxplots_horizontal() -> Chart {
+    let order = |k: &str| {
+        ["west", "east", "south", "north"]
+            .iter()
+            .position(|n| *n == k)
+    };
+    let rows = box_rows()
+        .into_iter()
+        .map(|(k, v)| Row {
+            order_by: Some(SortKey::Int(order(&k).unwrap() as i128)),
+            ..row(XValue::Category(k), v)
+        })
+        .collect();
+    let boxes = one(SeriesAggregate::BoxplotHorizontal, SqlType::Varchar, rows)
+        .width(20)
+        .unwrap();
+    Chart::new()
+        .caption("boxplot_horizontal", Some(20))
+        .unwrap()
+        .y_label_area_size(50)
+        .unwrap()
+        .draw_series(boxes)
+        .unwrap()
+}
+
+/// The values of `test/svg/histogram_step.sql`: a bumpy distribution of 400 numbers between
+/// about 10 and 90.
+fn step_values() -> Vec<f64> {
+    (0..400)
+        .map(|i| {
+            let t = f64::from(i);
+            let v = 50.0 + 25.0 * (t * 0.37).sin() * (t * 0.011).cos() + 8.0 * (t * 1.3).sin();
+            (v * 100.0).round() / 100.0
+        })
+        .collect()
+}
+
+/// `test/svg/histogram_step.sql`: numeric buckets binned by `.step(5)`, labelled with the bin
+/// starts through a formatter.
+fn histogram_step() -> Chart {
+    let rows = step_values()
+        .into_iter()
+        .map(|v| row(XValue::Number(v), 1.0))
+        .collect();
+    let bars = one(SeriesAggregate::Histogram, SqlType::Float, rows)
+        .step(5.0)
+        .unwrap()
+        .style("teal_400", None)
+        .unwrap()
+        .margin(1)
+        .unwrap();
+    Chart::new()
+        .caption("histogram_vertical(x, 1).step(5)", Some(20))
+        .unwrap()
+        .configure_mesh()
+        .x_desc("x")
+        .y_desc("count")
+        .x_label_formatter("{:.0f}")
+        .unwrap()
+        .draw()
+        .draw_series(bars)
+        .unwrap()
+}
+
+/// `test/svg/monthly.sql`: a year of daily values on a date axis with monthly key points.
+fn monthly() -> Chart {
+    let rows = |f: fn(f64) -> f64| {
+        (0..366)
+            .map(|d| row(XValue::Date(JAN_1_2024 + d), f(f64::from(d))))
+            .collect::<Vec<_>>()
+    };
+    let temp = one(
+        SeriesAggregate::LineSeries,
+        SqlType::Date,
+        rows(|d| 5.0 - 12.0 * (d / 58.0).cos()),
+    )
+    .style("red", None)
+    .unwrap();
+    Chart::new()
+        .caption("x_monthly()", Some(20))
+        .unwrap()
+        .x_monthly()
+        .unwrap()
+        .draw_series(temp)
+        .unwrap()
+}
+
+/// `test/svg/monthly_bands.sql`: a date-bucket histogram of 100 days with monthly key points.
+fn monthly_bands() -> Chart {
+    let rows = (0..100)
+        .map(|d| row(XValue::Date(JAN_1_2024 + d), f64::from((d * 37) % 11)))
+        .collect();
+    Chart::new()
+        .caption("x_monthly() on date buckets", Some(20))
+        .unwrap()
+        .x_monthly()
+        .unwrap()
+        .configure_mesh()
+        .x_label_formatter("%b")
+        .unwrap()
+        .draw()
+        .draw_series(
+            one(SeriesAggregate::Histogram, SqlType::Date, rows)
+                .margin(0)
+                .unwrap(),
+        )
+        .unwrap()
+}
+
+/// `test/svg/yearly.sql`: ten years of monthly timestamps with yearly key points.
+fn yearly() -> Chart {
+    let rows = (0..120)
+        .map(|m: i64| {
+            let (year, month) = (2015 + m / 12, m % 12 + 1);
+            let t = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_micros();
+            row(
+                XValue::Timestamp(t),
+                100.0 + m as f64 + 15.0 * (m as f64 / 2.0).sin(),
+            )
+        })
+        .collect();
+    Chart::new()
+        .caption("x_yearly()", Some(20))
+        .unwrap()
+        .x_yearly()
+        .unwrap()
+        .draw_series(
+            one(SeriesAggregate::LineSeries, SqlType::Timestamp, rows)
+                .style("purple", Some(2))
+                .unwrap(),
+        )
+        .unwrap()
+}
+
 /// All charts, with the size they are rendered at.
 fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
     vec![
@@ -527,6 +913,17 @@ fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
         ("histogram_horizontal", histogram_horizontal(), (640, 480)),
         ("markers", markers(), (640, 480)),
         ("builder_sizes", builder_sizes(), (640, 480)),
+        ("area", area(), (640, 480)),
+        ("dashed_line", dashed_line(), (640, 480)),
+        ("error_bars", error_bars(), (640, 480)),
+        ("error_bars_horizontal", error_bars_horizontal(), (640, 480)),
+        ("candles", candles(), (800, 480)),
+        ("boxplots", boxplots(), (640, 480)),
+        ("boxplots_horizontal", boxplots_horizontal(), (640, 480)),
+        ("histogram_step", histogram_step(), (640, 480)),
+        ("monthly", monthly(), (800, 400)),
+        ("monthly_bands", monthly_bands(), (640, 400)),
+        ("yearly", yearly(), (800, 400)),
     ]
 }
 
@@ -694,6 +1091,17 @@ mod snapshots {
     snapshot!(histogram_horizontal);
     snapshot!(markers);
     snapshot!(builder_sizes);
+    snapshot!(area);
+    snapshot!(dashed_line);
+    snapshot!(error_bars);
+    snapshot!(error_bars_horizontal);
+    snapshot!(candles);
+    snapshot!(boxplots);
+    snapshot!(boxplots_horizontal);
+    snapshot!(histogram_step);
+    snapshot!(monthly);
+    snapshot!(monthly_bands);
+    snapshot!(yearly);
 }
 
 #[test]

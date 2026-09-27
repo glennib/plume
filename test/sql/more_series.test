@@ -1,0 +1,424 @@
+# name: test/sql/more_series.test
+# description: area_series, dashed_line_series, error_bar_*, candle_stick, boxplot_*, stepped histograms, and monthly and yearly axes
+# group: [duckers]
+
+require duckers
+
+# area_series: a polygon from the points down to the baseline, filled, with a transparent border.
+query T
+SELECT __duckers_debug(area_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
+----
+Series { kind: Area(AreaOptions { baseline: 0.0, border_style: LineStyle { color: Color { r: 0, g: 0, b: 0, a: 0.0 }, stroke_width: 1 } }), x: Numeric([1.0, 2.0]), y: Numeric([3.0, 1.0]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+
+query T
+SELECT __duckers_debug(area_series(x, y).baseline(-2).border_style('black', 2).filled()).regexp_extract('kind: (.*), x: ', 1)
+FROM (VALUES (1, 1)) t(x, y)
+----
+Area(AreaOptions { baseline: -2.0, border_style: LineStyle { color: Color { r: 0, g: 0, b: 0, a: 1.0 }, stroke_width: 2 } })
+
+query T
+SELECT __duckers_debug(area_series(x, y).border_style('red')).regexp_extract('border_style: LineStyle \{[^}]*\}[^}]*\}')
+FROM (VALUES (1, 1)) t(x, y)
+----
+border_style: LineStyle { color: Color { r: 255, g: 0, b: 0, a: 1.0 }, stroke_width: 1 }
+
+# dashed_line_series: size and spacing are the dash and gap in px.
+query T
+SELECT __duckers_debug(dashed_line_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
+----
+Series { kind: DashedLine(DashedLineOptions { size: 5, spacing: 5 }), x: Numeric([1.0, 2.0]), y: Numeric([3.0, 1.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+query T
+SELECT __duckers_debug(dashed_line_series(d, 1).size(10).spacing(2)).regexp_extract('kind: (.*), x: ', 1)
+FROM (VALUES (DATE '2024-01-01')) t(d)
+----
+DashedLine(DashedLineOptions { size: 10, spacing: 2 })
+
+# error_bar_vertical(x, min, avg, max): the averages are the y column, min and max the options.
+query T
+SELECT __duckers_debug(error_bar_vertical(x, lo, m, hi)) FROM (VALUES (2, 1, 2, 3), (1, 4, 5, 6)) t(x, lo, m, hi)
+----
+Series { kind: ErrorBarVertical(ErrorBarOptions { width: 10, min: [4.0, 1.0], max: [6.0, 3.0] }), x: Numeric([1.0, 2.0]), y: Numeric([5.0, 2.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+# error_bar_horizontal(y, min, avg, max): the key on y, the averages on x.
+query T
+SELECT __duckers_debug(error_bar_horizontal(k, lo, m, hi).width(4).filled()) FROM (VALUES ('b', 1, 2, 3), ('a', 4, 5, 6)) t(k, lo, m, hi)
+----
+Series { kind: ErrorBarHorizontal(ErrorBarOptions { width: 4, min: [4.0, 1.0], max: [6.0, 3.0] }), x: Numeric([5.0, 2.0]), y: Category(["a", "b"]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+
+query T
+SELECT __duckers_debug(error_bar_horizontal(ts, 1, 2, 3)).regexp_extract('y: [^)]*\)')
+FROM (VALUES (TIMESTAMP '2024-01-01 00:00:01')) t(ts)
+----
+y: Timestamp([1704067201000000])
+
+# candle_stick(x, open, high, low, close): the closes are the y column.
+query T
+SELECT __duckers_debug(candle_stick(d, o, h, l, c)) FROM (VALUES (DATE '2024-01-02', 1, 4, 0.5, 2), (DATE '2024-01-01', 2, 3, 1, 1)) t(d, o, h, l, c)
+----
+Series { kind: CandleStick(CandleStickOptions { width: 10, gain: Color { r: 0, g: 255, b: 0, a: 1.0 }, loss: Color { r: 255, g: 0, b: 0, a: 1.0 }, open: [2.0, 1.0], high: [3.0, 4.0], low: [1.0, 0.5] }), x: Date([19723, 19724]), y: Numeric([1.0, 2.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+query T
+SELECT __duckers_debug(candle_stick(1, 1, 2, 0, 1).gain_style('blue').loss_style('#000000').width(6).filled().stroke_width(2)).regexp_extract('width: 6, gain: [^}]*\}, loss: [^}]*\}|style: .*')
+----
+width: 6, gain: Color { r: 0, g: 0, b: 255, a: 1.0 }, loss: Color { r: 0, g: 0, b: 0, a: 1.0 }
+
+query T
+SELECT __duckers_debug(candle_stick(1, 1, 2, 0, 1).filled().stroke_width(2)).regexp_extract('style: Style \{[^}]*\}')
+----
+style: Style { color: None, stroke_width: 2, filled: true }
+
+# boxplot_vertical(bucket, value): one box per distinct bucket, with plotters' Quartiles
+# (lower fence, lower quartile, median, upper quartile, upper fence); the medians are the y column.
+query T
+SELECT __duckers_debug(boxplot_vertical(k, v)) FROM (VALUES ('b', 10), ('b', 20), ('b', 30), ('b', 40), ('a', 5)) t(k, v)
+----
+Series { kind: BoxplotVertical(BoxplotOptions { width: 10, quartiles: [[5.0, 5.0, 5.0, 5.0, 5.0], [-5.0, 17.5, 25.0, 32.5, 55.0]] }), x: Category(["a", "b"]), y: Numeric([5.0, 25.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+# boxplot_horizontal: the buckets on y; integer and date buckets as for histograms.
+query T
+SELECT __duckers_debug(boxplot_horizontal(k, v).width(20)) FROM (VALUES (2, 10), (1, 20), (2, 30)) t(k, v)
+----
+Series { kind: BoxplotHorizontal(BoxplotOptions { width: 20, quartiles: [[20.0, 20.0, 20.0, 20.0, 20.0], [0.0, 15.0, 20.0, 25.0, 40.0]] }), x: Numeric([20.0, 20.0]), y: Integer([1, 2]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+query T
+SELECT __duckers_debug(boxplot_vertical(d, 1)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (DATE '2024-01-02'), (DATE '2024-01-01')) t(d)
+----
+x: Date([19723, 19724])
+
+# The buckets of a boxplot follow order_by, as a histogram's do.
+query T
+SELECT __duckers_debug(boxplot_vertical(k, v, order_by := -v)).regexp_extract('x: [^)]*\)')
+FROM (VALUES ('a', 1), ('b', 3), ('c', 2)) t(k, v)
+----
+x: Category(["b", "c", "a"])
+
+# Summaries.
+query TTTTTTT
+SELECT area_series(1, 1)::VARCHAR, dashed_line_series(1, 1)::VARCHAR, error_bar_vertical(1, 1, 1, 1)::VARCHAR,
+       error_bar_horizontal(1, 1, 1, 1)::VARCHAR, candle_stick(1, 1, 1, 1, 1)::VARCHAR, boxplot_vertical('a', 1)::VARCHAR,
+       boxplot_horizontal('a', 1)::VARCHAR
+----
+SERIES(area, 1 point)	SERIES(dashed line, 1 point)	SERIES(error bar, 1 bar)	SERIES(horizontal error bar, 1 bar)	SERIES(candlestick, 1 candle)	SERIES(boxplot, 1 box)	SERIES(horizontal boxplot, 1 box)
+
+query T
+SELECT chart().draw_series(area_series(i, i)).draw_series(candle_stick(i, i, i, i, i))::VARCHAR FROM range(3) r(i)
+----
+CHART(area+candlestick, 2 series, 6 points)
+
+# key := splits every aggregate; order_by := orders the points or buckets.
+query T
+SELECT error_bar_vertical(x, x, x, x, key := x % 2, order_by := -x)::VARCHAR FROM range(5) r(x)
+----
+['SERIES(error bar \'0\', 3 bars)', 'SERIES(error bar \'1\', 2 bars)']
+
+query T
+SELECT list_transform(candle_stick(x, 1, 2, 0, 1, key := x > 1, order_by := -x), lambda s: __duckers_debug(s).regexp_extract('x: [^)]*\)'))
+FROM range(4) r(x)
+----
+['x: Numeric([1.0, 0.0])', 'x: Numeric([3.0, 2.0])']
+
+query T
+SELECT boxplot_horizontal(k, v, key := g)::VARCHAR FROM (VALUES ('a', 1, 'x'), ('b', 2, 'x'), ('a', 3, 'y')) t(k, v, g)
+----
+['SERIES(horizontal boxplot \'x\', 2 boxes)', 'SERIES(horizontal boxplot \'y\', 1 box)']
+
+query T
+SELECT __duckers_debug(area_series(x, y, order_by := -x)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, 1), (2, 2), (3, 3)) t(x, y)
+----
+x: Numeric([3.0, 2.0, 1.0])
+
+query T
+SELECT dashed_line_series(i, i, key := i % 3)::VARCHAR FROM range(10) r(i)
+----
+['SERIES(dashed line \'0\', 4 points)', 'SERIES(dashed line \'1\', 3 points)', 'SERIES(dashed line \'2\', 3 points)']
+
+# Rows with a NULL, NaN or infinite value in any argument are skipped; zero usable rows give an
+# empty series.
+query T
+SELECT __duckers_debug(error_bar_vertical(x, lo, m, hi)).regexp_extract('min: [^\]]*\]|x: .*')
+FROM (VALUES (1, 0, 1, 2), (2, NULL, 1, 2), (3, 0, 'nan'::DOUBLE, 2), (4, 0, 1, 'inf'::DOUBLE), (NULL, 0, 1, 2)) t(x, lo, m, hi)
+----
+min: [0.0]
+
+query TTT
+SELECT candle_stick(x, o, 1, 1, 1)::VARCHAR, boxplot_vertical(k, o)::VARCHAR, area_series(x, o)::VARCHAR
+FROM (VALUES (1, NULL, 'a'), (NULL, 1, NULL)) t(x, o, k)
+----
+SERIES(candlestick, 0 candles)	SERIES(boxplot, 0 boxes)	SERIES(area, 0 points)
+
+query T
+SELECT len(boxplot_vertical(i::VARCHAR, i, key := i)) FROM range(0) r(i)
+----
+0
+
+# Enough rows for several threads: the quartiles do not depend on how the rows are split.
+query T
+SELECT __duckers_debug(boxplot_vertical(i % 2, i)).regexp_extract('quartiles: .*\]\] \}')
+FROM range(100000) r(i)
+----
+quartiles: [[-49999.0, 24999.5, 49999.0, 74998.5, 149997.0], [-49998.0, 25000.5, 50000.0, 74999.5, 149998.0]] }
+
+# Argument types are checked at bind time.
+statement error
+SELECT error_bar_vertical(1, 'a', 2, 3)
+----
+Binder Error: error_bar_vertical: min must be a number, got VARCHAR
+
+statement error
+SELECT error_bar_horizontal(true, 1, 2, 3)
+----
+Binder Error: error_bar_horizontal: y must be a number, DATE, TIMESTAMP or VARCHAR, got BOOLEAN
+
+statement error
+SELECT candle_stick(1, 1, 2, DATE '2024-01-01', 1)
+----
+Binder Error: candle_stick: low must be a number, got DATE
+
+statement error
+SELECT area_series(1, 'y')
+----
+Binder Error: area_series: y must be a number, got VARCHAR
+
+statement error
+SELECT dashed_line_series([1], 1)
+----
+Binder Error: dashed_line_series: x must be a number, DATE, TIMESTAMP or VARCHAR, got INTEGER[]
+
+statement error
+SELECT boxplot_vertical(1.5, 1)
+----
+Binder Error: boxplot_vertical: boxplot buckets cannot be DOUBLE or DECIMAL: plotters' Boxplot draws one box per distinct key on a segmented axis; cast them to an integer or VARCHAR, or bin them first (for example floor(x / 10)::INTEGER * 10)
+
+statement error
+SELECT boxplot_horizontal(TIMESTAMP '2024-01-01', 1)
+----
+Binder Error: boxplot_horizontal: boxplot buckets cannot be TIMESTAMP: cast them to DATE for one band per day, or bin them to integers
+
+statement error
+SELECT boxplot_vertical(true, 1)
+----
+Binder Error: boxplot_vertical: bucket must be VARCHAR, an integer or DATE, got BOOLEAN
+
+statement error
+SELECT boxplot_vertical('a', 'b')
+----
+Binder Error: boxplot_vertical: value must be a number, got VARCHAR
+
+statement error
+SELECT candle_stick(1, 1, 1, 1)
+----
+Binder Error
+
+# Methods that do not apply to a kind are errors naming the plotters term.
+statement error
+SELECT line_series(1, 1).width(3)
+----
+Invalid Input Error: width does not apply to line_series values: it is the width argument of ErrorBar and CandleStick, or Boxplot::width, and applies to error_bar_vertical, error_bar_horizontal, candle_stick, boxplot_vertical and boxplot_horizontal
+
+statement error
+SELECT point_series(1, 1).gain_style('red')
+----
+Invalid Input Error: gain_style does not apply to point_series values: it is the gain_style argument of CandleStick::new and applies to candle_stick
+
+statement error
+SELECT line_series(1, 1).loss_style('red')
+----
+Invalid Input Error: loss_style does not apply to line_series values: it is the loss_style argument of CandleStick::new and applies to candle_stick
+
+statement error
+SELECT candle_stick(1, 1, 1, 1, 1).style('red')
+----
+Invalid Input Error: style does not apply to candle_stick values: CandleStick::new takes a gain and a loss style; use gain_style(color) and loss_style(color), and stroke_width(px) for the width
+
+statement error
+SELECT candle_stick(1, 1, 1, 1, 1).style('red', 2)
+----
+Invalid Input Error: style does not apply to candle_stick values
+
+statement error
+SELECT point_series(1, 1).spacing(3)
+----
+Invalid Input Error: spacing does not apply to point_series values: it is the spacing argument of DashedLineSeries::new and applies to dashed_line_series
+
+statement error
+SELECT line_series(1, 1).border_style('red')
+----
+Invalid Input Error: border_style does not apply to line_series values: it is AreaSeries::border_style and applies to area_series
+
+statement error
+SELECT boxplot_vertical('a', 1).filled()
+----
+Invalid Input Error: filled does not apply to boxplot_vertical values: it is ShapeStyle::filled, and plotters draws a Boxplot's box unfilled
+
+statement error
+SELECT dashed_line_series(1, 1).filled()
+----
+Invalid Input Error: filled does not apply to dashed_line_series values: it is ShapeStyle::filled, and a DashedLineSeries has nothing to fill
+
+statement error
+SELECT error_bar_vertical(1, 1, 1, 1).baseline(0)
+----
+Invalid Input Error: baseline does not apply to error_bar_vertical values
+
+statement error
+SELECT boxplot_vertical('a', 1).width(-1)
+----
+Invalid Input Error: width must be between 0 and 8192 px, got -1
+
+statement error
+SELECT candle_stick(1, 1, 1, 1, 1).gain_style('nope')
+----
+Invalid Input Error: gain_style: unknown colour 'nope'
+
+# NULL in, NULL out.
+query TTTT
+SELECT area_series(1, 1).border_style(NULL) IS NULL, candle_stick(1, 1, 1, 1, 1).width(NULL) IS NULL,
+       histogram_vertical(1.5, 1).step(NULL) IS NULL, chart().x_monthly() IS NULL
+----
+true	true	true	false
+
+query T
+SELECT (NULL::CHART).x_yearly() IS NULL
+----
+true
+
+# step(s): numeric buckets binned into bands of width s from multiples of s.
+query T
+SELECT __duckers_debug(histogram_vertical(x, 1).step(5)).regexp_extract('kind: [^}]*\}|x: .*y: Numeric\(\[[^\]]*\]\)')
+FROM (VALUES (1.5), (7.0), (2.5)) t(x)
+----
+kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0, step: Some(5.0) }
+
+# The summary counts the bins.
+query T
+SELECT histogram_vertical(x, 1).step(5)::VARCHAR FROM (VALUES (1.5), (7.0), (2.5)) t(x)
+----
+SERIES(histogram, 2 buckets)
+
+# Integer buckets can be stepped too: they become numbers.
+query T
+SELECT __duckers_debug(histogram_horizontal(i, 1).step(10)).regexp_extract('y: [A-Za-z]*\(\[[^\]]*\]\)')
+FROM range(3) r(i)
+----
+y: Numeric([0.0, 1.0, 2.0])
+
+# Numeric buckets without .step(s) cannot be drawn.
+statement error
+SELECT chart().draw_series(histogram_vertical(x, 1)) FROM (VALUES (1.5)) t(x)
+----
+Invalid Input Error: draw_series: histogram_vertical has numeric buckets, which need .step(s) to bin them into bands, as plotters' (lo..hi).step(s).into_segmented() does: histogram_vertical(x, value).step(10)
+
+statement error
+SELECT histogram_vertical(s, 1).step(1) FROM (VALUES ('a')) t(s)
+----
+Invalid Input Error: step applies to numeric histogram buckets, and these are category: category buckets are one band per value
+
+statement error
+SELECT histogram_vertical(DATE '2024-01-01', 1).step(1)
+----
+Invalid Input Error: step applies to numeric histogram buckets, and these are date: date buckets are one band per value
+
+statement error
+SELECT line_series(1, 1).step(1)
+----
+Invalid Input Error: step does not apply to line_series values: it is the step of the histogram's bucket range ((lo..hi).step(s)) and applies to histogram_vertical and histogram_horizontal
+
+statement error
+SELECT histogram_vertical(1.5, 1).step(0)
+----
+Invalid Input Error: step must be a positive finite number, got 0
+
+statement error
+SELECT histogram_vertical(1.5, 1).step(-2.5)
+----
+Invalid Input Error: step must be a positive finite number, got -2.5
+
+statement error
+SELECT chart().draw_series(histogram_vertical(1.5, 1).step(1)).draw_series(histogram_vertical(1.5, 1).step(2))
+----
+Invalid Input Error: draw_series: cannot draw histogram_vertical with step 2 on a chart whose x axis has bands of step 1
+
+statement error
+SELECT chart().draw_series(histogram_vertical(1.5, 1).step(1)).x_log_scale()
+----
+Invalid Input Error: x_log_scale does not apply to the stepped bucket x axis of histogram_vertical: plotters' log_scale (LogCoord) has no segmented form
+
+# A stepped histogram renders, with a line on the same axis and an x_range.
+query T
+SELECT chart().x_range(0, 100).draw_series(histogram_vertical(x, 1).step(10)).draw_series(line_series(x, 1)).to_svg() LIKE '<svg%'
+FROM (SELECT i * 1.7 AS x FROM range(50) r(i))
+----
+true
+
+# Monthly and yearly key points: date and timestamp axes only, checked at the call when the axis
+# kind is known and at draw_series otherwise.
+query T
+SELECT __duckers_debug(chart().x_monthly().y_yearly()).regexp_extract('x_axis: .*y_axis: [^}]*\}')
+----
+x_axis: AxisSpec { range: None, scale: Monthly }, y_axis: AxisSpec { range: None, scale: Yearly }
+
+statement error
+SELECT chart().draw_series(line_series(1, 1)).x_monthly()
+----
+Invalid Input Error: x_monthly does not apply to the numeric x axis: plotters' monthly (IntoMonthly) needs a date or timestamp axis
+
+statement error
+SELECT chart().y_yearly().draw_series(line_series(DATE '2024-01-01', 1))
+----
+Invalid Input Error: draw_series: y_yearly does not apply to the numeric y axis: plotters' yearly (IntoYearly) needs a date or timestamp axis
+
+statement error
+SELECT chart().x_yearly().draw_series(histogram_vertical('a', 1))
+----
+Invalid Input Error: draw_series: x_yearly does not apply to the category x axis: plotters' yearly (IntoYearly) needs a date or timestamp axis
+
+statement error
+SELECT chart().x_monthly().x_range(0, 1)
+----
+Invalid Input Error: x_range: x_monthly does not apply to the numeric x axis: plotters' monthly (IntoMonthly) needs a date or timestamp axis
+
+# They render on date, timestamp and date-bucket axes, with plotters' labels or a strftime
+# formatter.
+query T
+SELECT chart().x_monthly().draw_series(line_series(d, 1)).to_svg().contains(chr(10) || '2024-3' || chr(10))
+FROM (SELECT DATE '2024-01-01' + i::INTEGER AS d FROM range(120) r(i))
+----
+true
+
+query T
+SELECT chart().x_yearly().configure_mesh().x_label_formatter('%Y').draw()
+         .draw_series(line_series(t, 1)).to_svg().contains(chr(10) || '2019' || chr(10))
+FROM (SELECT TIMESTAMP '2015-01-01' + INTERVAL (i) MONTH AS t FROM range(120) r(i))
+----
+true
+
+query T
+SELECT chart().x_monthly().draw_series(histogram_vertical(d, 1)).to_svg().contains(chr(10) || '2024-2' || chr(10))
+FROM (SELECT DATE '2024-01-01' + i::INTEGER AS d FROM range(90) r(i))
+----
+true
+
+# Every kind renders, with a legend entry.
+query T
+SELECT list_bool_and([
+    chart().draw_series(area_series(i, i).label('a')).to_svg() LIKE '<svg%',
+    chart().draw_series(dashed_line_series(i, i).label('a')).to_svg() LIKE '<svg%',
+    chart().draw_series(error_bar_vertical(i, i - 1, i, i + 1).label('a')).to_svg() LIKE '<svg%',
+    chart().draw_series(error_bar_horizontal(i::VARCHAR, i - 1, i, i + 1).label('a')).to_svg() LIKE '<svg%',
+    chart().draw_series(candle_stick(i, i, i + 2, i - 1, i + 1).label('a')).to_png()[1:4] = '\x89PNG'::BLOB,
+    chart().draw_series(boxplot_vertical(i % 2, i).label('a')).to_svg() LIKE '<svg%',
+    chart().draw_series(boxplot_horizontal((i % 2)::VARCHAR, i).label('a')).to_png()[1:4] = '\x89PNG'::BLOB
+])
+FROM range(10) r(i)
+----
+true
+
+# The value axis spans the extremes: error bars from min to max, candles from low to high,
+# boxplots between the fences, areas down to the baseline.
+query T
+SELECT chart().draw_series(candle_stick(1, 5, 50, -20, 6)).to_svg().contains(chr(10) || '-20.0' || chr(10))
+----
+true
