@@ -1,0 +1,296 @@
+# name: test/sql/copy.test
+# description: COPY ... TO with FORMAT png and FORMAT svg, the duckers copy functions
+# group: [duckers]
+
+require duckers
+
+# Files go to build/test-sql/copy_*, in the directory the Makefile creates.
+
+# A PNG starts with the signature and an IHDR chunk with the width, the height, 8-bit RGB.
+statement ok
+CREATE MACRO png_header(png) AS
+    CASE WHEN hex(png[1:16]) = '89504E470D0A1A0A0000000D49484452' AND hex(png[25:26]) = '0802'
+    THEN ('0x' || hex(png[17:20]))::INTEGER || 'x' || ('0x' || hex(png[21:24]))::INTEGER
+    ELSE 'not a PNG' END
+
+# The size an SVG declares on its root element.
+statement ok
+CREATE MACRO svg_size(svg) AS
+    regexp_extract(svg, '^<svg width="(\d+)"', 1) || 'x' || regexp_extract(svg, '^<svg width="\d+" height="(\d+)"', 1)
+
+statement ok
+CREATE TABLE weather AS
+SELECT city, DATE '2024-01-01' + d::INTEGER AS day,
+       round(-2 + 4 * c + 0.3 * d + 5 * sin(d / 5 + c), 1) AS temp
+FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(60) r(d)
+
+# FORMAT png takes the CHART itself.
+statement ok
+COPY (
+    SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo'
+) TO '__WORKING_DIRECTORY__/build/test-sql/copy_oslo.png' (FORMAT png)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_oslo.png')
+----
+640x480
+
+# The file holds exactly what to_png() returns.
+query T
+SELECT content = (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)).to_png()
+                  FROM weather WHERE city = 'Oslo')
+FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_oslo.png')
+----
+true
+
+statement ok
+COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo')
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_oslo.svg' (FORMAT svg)
+
+query TT
+SELECT svg_size(content), content = (
+    SELECT chart().caption('Oslo').draw_series(line_series(day, temp)).to_svg() FROM weather WHERE city = 'Oslo')
+FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_oslo.svg')
+----
+640x480	true
+
+# WIDTH and HEIGHT set the size, in either order and case.
+statement ok
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_sized.png' (FORMAT png, WIDTH 800, HEIGHT 600)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_sized.png')
+----
+800x600
+
+statement ok
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_sized.svg' (height 200, FORMAT svg, width 300)
+
+query T
+SELECT svg_size(content) FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_sized.svg')
+----
+300x200
+
+# One side alone keeps the default for the other.
+statement ok
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_tall.png' (FORMAT png, HEIGHT 8192)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_tall.png')
+----
+640x8192
+
+# Without FORMAT, DuckDB takes the format from the file extension, in any case.
+statement ok
+COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i))
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_inferred.png'
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_inferred.png')
+----
+640x480
+
+statement ok
+COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i))
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_inferred.SVG' (WIDTH 320, HEIGHT 240)
+
+query T
+SELECT svg_size(content) FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_inferred.SVG')
+----
+320x240
+
+# Writing over an existing file replaces it.
+statement ok
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_inferred.png' (WIDTH 10, HEIGHT 20)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_inferred.png')
+----
+10x20
+
+# A file:// path is a local path.
+statement ok
+COPY (SELECT chart()) TO 'file://__WORKING_DIRECTORY__/build/test-sql/copy_url.png' (FORMAT png)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_url.png')
+----
+640x480
+
+# PARTITION_BY writes one file per partition. DuckDB names them data_0.<FILE_EXTENSION>; the C API
+# gives a copy function no way to declare its extension, so FILE_EXTENSION is needed.
+statement ok
+COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png', OVERWRITE)
+
+query TT
+SELECT replace(filename, '__WORKING_DIRECTORY__/build/test-sql/', ''), png_header(content)
+FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_cities/*/*')
+ORDER BY filename
+----
+copy_cities/city=Bergen/data_0.png	640x480
+copy_cities/city=Oslo/data_0.png	640x480
+copy_cities/city=Troms%C3%B8/data_0.png	640x480
+
+# Each file holds its own partition's chart.
+query T
+SELECT content = (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)).to_png() FROM weather WHERE city = 'Oslo')
+FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_cities/city=Oslo/data_0.png')
+----
+true
+
+statement ok
+COPY (SELECT day.month() AS month, chart().draw_series(line_series(day, temp, key := city)) FROM weather GROUP BY month)
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_months' (FORMAT svg, PARTITION_BY month, FILE_EXTENSION 'svg', WIDTH 400, HEIGHT 300, OVERWRITE)
+
+query TT
+SELECT replace(filename, '__WORKING_DIRECTORY__/build/test-sql/', ''), svg_size(content)
+FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_months/*/*')
+ORDER BY filename
+----
+copy_months/month=1/data_0.svg	400x300
+copy_months/month=2/data_0.svg	400x300
+
+# Many partitions, written from several threads.
+statement ok
+SET threads = 4
+
+statement ok
+COPY (SELECT i % 200 AS k, chart().caption('k=' || k).draw_series(point_series(i, i % 7)) FROM range(400000) r(i) GROUP BY k)
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_many' (FORMAT svg, PARTITION_BY k, FILE_EXTENSION 'svg', WIDTH 64, HEIGHT 48, OVERWRITE)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE contains(content, chr(10) || 'k=' || regexp_extract(filename, 'k=(\d+)/', 1) || chr(10)))
+FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_many/*/*.svg')
+----
+200	200
+
+# Errors. None of them leaves a file behind.
+
+# The column must be the CHART.
+statement error
+COPY (SELECT chart().to_png()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
+----
+Binder Error: FORMAT png takes a CHART column, got to_png(chart()) of type BLOB; FORMAT png renders the CHART itself, so pass the chart without to_png() (or write the BLOB with FORMAT blob)
+
+statement error
+COPY (SELECT chart().to_svg() AS svg) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg'
+----
+Binder Error: FORMAT svg takes a CHART column, got svg of type VARCHAR; FORMAT svg renders the CHART itself, so pass the chart without to_svg() (or write to_svg().encode() with FORMAT blob)
+
+statement error
+COPY (SELECT line_series(1, 2) AS s) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png'
+----
+Binder Error: FORMAT png takes a CHART column, got s of type SERIES
+
+statement error
+COPY (SELECT 42 AS n) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg'
+----
+Binder Error: FORMAT svg takes a CHART column, got n of type INTEGER
+
+statement error
+COPY (SELECT 'Oslo' AS city, chart() AS c) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png'
+----
+Binder Error: FORMAT png takes exactly one column, a CHART, got 2 columns (city, c)
+
+# Options.
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png, DPI 300)
+----
+Binder Error: FORMAT png: unknown option DPI; the options are WIDTH and HEIGHT
+
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png, COMPRESSION 'gzip')
+----
+Binder Error: FORMAT png: unknown option COMPRESSION; the options are WIDTH and HEIGHT
+
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png, WIDTH 'wide')
+----
+Binder Error: FORMAT png: WIDTH must be an integer number of px, got wide
+
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg' (FORMAT svg, HEIGHT 2.5)
+----
+Binder Error: FORMAT svg: HEIGHT must be an integer number of px, got 2.5
+
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png, WIDTH 0)
+----
+Binder Error: FORMAT png: chart size must be between 1 and 8192 px per side, got 0x480
+
+statement error
+COPY (SELECT chart()) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg' (FORMAT svg, WIDTH 100, HEIGHT 8193)
+----
+Binder Error: FORMAT svg: chart size must be between 1 and 8192 px per side, got 100x8193
+
+# Remote paths: the C API gives a copy function no file system, so it writes local files only.
+statement error
+COPY (SELECT chart()) TO 's3://bucket/chart.png' (FORMAT png)
+----
+Binder Error: FORMAT png writes local files only, and 's3://bucket/chart.png' is a remote path
+
+# One chart per file.
+statement error
+COPY (SELECT chart() FROM range(2)) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
+----
+<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*/build/test-sql/copy_error\.png'; use PARTITION_BY to write one file per group, or one COPY per chart
+
+statement error
+COPY (SELECT chart() FROM range(1000000)) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
+----
+Invalid Input Error: FORMAT png: a file holds one chart
+
+statement error
+COPY (SELECT chart() WHERE false) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg' (FORMAT svg)
+----
+<REGEX>:Invalid Input Error: FORMAT svg: no chart to write to '.*/build/test-sql/copy_error\.svg'
+
+statement error
+COPY (SELECT NULL::CHART) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
+----
+<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*/build/test-sql/copy_error\.png' is NULL
+
+# A bad value in the chart fails when it is rendered.
+statement error
+COPY (SELECT chart().root_fill(c) FROM (VALUES ('nocolour')) v(c)) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
+----
+Invalid Input Error: root_fill: unknown colour 'nocolour'
+
+query I
+SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_error.*')
+----
+0
+
+# With PARTITION_BY, a partition with two rows fails the COPY, and DuckDB removes the files and
+# directories the statement created.
+statement error
+COPY (SELECT i % 2 AS k, chart() FROM range(3) r(i))
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_doubled' (FORMAT png, PARTITION_BY k, FILE_EXTENSION 'png')
+----
+<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*/build/test-sql/copy_doubled/k=0/data_0\.png'
+
+statement error
+COPY (SELECT k, CASE WHEN k = 3 THEN NULL ELSE chart() END FROM range(5) r(k))
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_partial' (FORMAT png, PARTITION_BY k, FILE_EXTENSION 'png')
+----
+<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*/build/test-sql/copy_partial/k=3/data_0\.png' is NULL
+
+query I
+SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_doubled/**') UNION ALL
+SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_partial/**')
+----
+0
+0
+
+# Without FILE_EXTENSION the partition files would be called data_0. with a bare dot.
+statement error
+COPY (SELECT city, chart() FROM weather GROUP BY city)
+TO '__WORKING_DIRECTORY__/build/test-sql/copy_noext' (FORMAT png, PARTITION_BY city)
+----
+<REGEX>:Invalid Input Error: FORMAT png: the file name '.*/build/test-sql/copy_noext/city=
+
+query I
+SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_noext/**')
+----
+0

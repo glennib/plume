@@ -6,6 +6,7 @@ use duckers_sys::{self as sys, ffi};
 
 use super::aggregate::{self, Aggregate, AggregateFunction};
 use super::cast::{self, CastRow};
+use super::copy::{self, CopyTo};
 use super::error::{Error, Result, check};
 use super::scalar::{self, ScalarFunction};
 use super::types::{Context, LogicalType};
@@ -33,6 +34,12 @@ impl<'a> Extension<'a> {
     pub fn register_aggregate<A: Aggregate>(&self, f: AggregateFunction<A>) -> Result<()> {
         let name = f.name.clone();
         aggregate::register(self.handle, f).map_err(|e| registration_error("aggregate", &name, e))
+    }
+
+    /// Registers a copy function: the format `name` of `COPY ... TO ... (FORMAT name)`.
+    pub fn register_copy<C: CopyTo>(&self, name: &str, f: C) -> Result<()> {
+        copy::register(self.handle, name, f)
+            .map_err(|e| registration_error("copy function", name, e))
     }
 
     /// Registers a custom type `name` over `base`, and returns it as a logical type.
