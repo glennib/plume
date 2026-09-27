@@ -1,0 +1,79 @@
+# name: test/sql/font.test
+# description: font() and color() make FONT values; every text-style parameter takes a size or a FONT
+# group: [duckers]
+
+require duckers
+
+# font(family, size [, style]) is FontDesc::new; the style is case-insensitive.
+query TTT
+SELECT font('serif', 20)::VARCHAR, font('Fira Sans', 14, 'Bold')::VARCHAR, typeof(font('serif', 20))
+----
+FONT(serif, 20)	FONT(Fira Sans, 14, bold)	FONT
+
+query T
+SELECT list_transform(['normal', 'bold', 'italic', 'oblique'], lambda s: font('serif', 10, s)::VARCHAR)
+----
+['FONT(serif, 10)', 'FONT(serif, 10, bold)', 'FONT(serif, 10, italic)', 'FONT(serif, 10, oblique)']
+
+# color(font, color) sets the TextStyle colour.
+query TT
+SELECT font('serif', 20).color('red')::VARCHAR, __duckers_debug(font('monospace', 9, 'italic').color(mix('blue', 0.5)))
+----
+FONT(serif, 20, #ff0000)	Font { family: "monospace", size: 9, style: Italic, color: Some(Color { r: 0, g: 0, b: 255, a: 0.5 }) }
+
+# caption takes a size (sans-serif) or a FONT.
+query TT
+SELECT __duckers_debug(chart().caption('c', 18)).regexp_extract('font: Font \{[^}]*\}'),
+       __duckers_debug(chart().caption('c', font('serif', 22, 'bold').color('#123456'))).regexp_extract('font: Font \{[^}]*\}')
+----
+font: Font { family: "sans-serif", size: 18, style: Normal, color: None }	font: Font { family: "serif", size: 22, style: Bold, color: Some(Color { r: 18, g: 52, b: 86, a: 1.0 }
+
+# Every family renders with the embedded font; SVG names the family and style for the viewer.
+query T
+SELECT regexp_extract(chart().caption('Hello', font('Fira Sans', 24, 'italic').color('blue_700')).to_svg(), '<text[^>]*>')
+----
+<text x="320" y="15" dy="0.76em" text-anchor="middle" font-family="Fira Sans" font-size="19.35483870967742" opacity="1" fill="#1976D2" font-style="italic">
+
+query T
+SELECT hex(chart().caption('Hello', font('No Such Family', 24, 'bold')).to_png()[1:8])
+----
+89504E470D0A1A0A
+
+# NULL in, NULL out.
+query TTTTTT
+SELECT font(NULL, 1) IS NULL, font('serif', NULL) IS NULL, font('serif', 1, NULL) IS NULL,
+       (NULL::FONT).color('red') IS NULL, font('serif', 1).color(NULL) IS NULL,
+       chart().caption('x', NULL::FONT) IS NULL
+----
+true	true	true	true	true	true
+
+# Bad values are errors from the function that received them.
+statement error
+SELECT font('serif', 0)
+----
+Invalid Input Error: font size must be at least 1 px
+
+statement error
+SELECT font(' ', 10)
+----
+Invalid Input Error: font family must not be empty
+
+statement error
+SELECT font('serif', 10, 'heavy')
+----
+Invalid Input Error: font: unknown FontStyle 'heavy': expected 'normal', 'bold', 'italic' or 'oblique'
+
+statement error
+SELECT font('serif', 10).color('nope')
+----
+Invalid Input Error: color: unknown colour 'nope'
+
+statement error
+SELECT chart().caption('x', 'big')
+----
+Binder Error
+
+statement error
+SELECT font('serif', 'big')
+----
+Conversion Error

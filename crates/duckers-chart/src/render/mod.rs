@@ -9,7 +9,7 @@ mod axis;
 mod draw;
 
 use crate::error::{Error, ErrorKind, Result};
-use crate::spec::Chart;
+use crate::spec::{Chart, DrawOp, Font};
 use plotters::prelude::*;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -60,16 +60,31 @@ fn check_size(width: u32, height: u32) -> Result<()> {
     }
 }
 
+/// Every `FONT` the chart uses: the caption's, and those of its mesh and legend settings.
+fn fonts(chart: &Chart) -> Vec<&Font> {
+    let mut fonts: Vec<&Font> = chart.caption.iter().map(|c| &c.font).collect();
+    for op in &chart.ops {
+        match op {
+            DrawOp::Mesh(style) => fonts.extend(style.settings.iter().filter_map(|s| s.font())),
+            DrawOp::SeriesLabels(style) => {
+                fonts.extend(style.settings.iter().filter_map(|s| s.font()))
+            }
+            DrawOp::Series(_) => {}
+        }
+    }
+    fonts
+}
+
 /// Registers the embedded font under the generic families and every family the chart names.
-/// `ab_glyph` looks fonts up by exact family name and fails for unregistered ones.
+/// `ab_glyph` looks fonts up by exact family name and fails for unregistered ones. The one
+/// embedded face (DejaVu Sans) serves every family and style: plotters falls back to a
+/// family's normal face for bold, italic and oblique.
 fn register_fonts(chart: &Chart) -> Result<()> {
     static REGISTERED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     let mut registered = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-    let used = chart.caption.iter().map(|c| {
-        FontFamily::from(c.font.family.as_str())
-            .as_str()
-            .to_string()
-    });
+    let used = fonts(chart)
+        .into_iter()
+        .map(|f| FontFamily::from(f.family.as_str()).as_str().to_string());
     for family in GENERIC_FAMILIES.map(String::from).into_iter().chain(used) {
         if registered.contains(&family) {
             continue;

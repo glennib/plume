@@ -246,12 +246,12 @@ impl Chart {
 
     /// `caption(text [, size])`: `ChartBuilder::caption(text, ("sans-serif", size))`.
     pub fn caption(self, text: impl Into<String>, size: Option<i64>) -> Result<Chart> {
-        let font = Font {
-            size: match size {
-                Some(size) => font_size(size)?,
-                None => DEFAULT_CAPTION_SIZE,
+        let font = match size {
+            Some(size) => Font::sans_serif(size)?,
+            None => Font {
+                size: DEFAULT_CAPTION_SIZE,
+                ..Font::default()
             },
-            ..Font::default()
         };
         Ok(self.caption_font(text, font))
     }
@@ -673,6 +673,15 @@ impl Font {
             size: font_size(size)?,
             style,
             color: None,
+        })
+    }
+
+    /// A bare size where plotters takes `IntoTextStyle`: `("sans-serif", size)`, as a `u32`
+    /// is.
+    pub fn sans_serif(size: i64) -> Result<Font> {
+        Ok(Font {
+            size: font_size(size)?,
+            ..Font::default()
         })
     }
 

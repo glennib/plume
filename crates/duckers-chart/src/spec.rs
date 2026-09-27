@@ -348,6 +348,13 @@ pub enum MeshSetting {
     YDesc(String),
 }
 
+impl MeshSetting {
+    /// The font the setting names, if it takes one.
+    pub fn font(&self) -> Option<&Font> {
+        None
+    }
+}
+
 /// The settings of a `SeriesLabelStyle`, as the list of setter calls in chain order.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct SeriesLabelStyle {
@@ -365,6 +372,13 @@ pub enum SeriesLabelSetting {
     },
     /// `SeriesLabelStyle::background_style`, drawn filled as plotters does.
     BackgroundStyle(Color),
+}
+
+impl SeriesLabelSetting {
+    /// The font the setting names, if it takes one.
+    pub fn font(&self) -> Option<&Font> {
+        None
+    }
 }
 
 /// `SeriesLabelPosition`.

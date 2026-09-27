@@ -1,13 +1,16 @@
-//! `chart()` and the methods on `CHART`, `MESH` and `SERIES_LABELS`, `mix`, and the output
-//! functions `to_svg` and `to_png`.
+//! `chart()` and the methods on `CHART`, `MESH` and `SERIES_LABELS`, `font()` and `color()` for
+//! `FONT`, `mix`, and the output functions `to_svg` and `to_png`.
 
-use duckers_chart::{Chart, Mesh, Series, SeriesLabels, Value, image_size, mix, to_png, to_svg};
+use duckers_chart::{
+    Chart, Font, Mesh, Series, SeriesLabels, Value, image_size, mix, to_png, to_svg,
+};
 
 use super::args::{check_range_bound, scalar};
 use crate::capi::{Extension, LogicalType, Result, ScalarFunction};
 use crate::types::Types;
 
 pub fn register(ext: &Extension<'_>, t: &Types) -> Result<()> {
+    register_fonts(ext, t)?;
     register_builder(ext, t)?;
     register_mesh(ext, t)?;
     register_series_labels(ext, t)?;
@@ -16,6 +19,34 @@ pub fn register(ext: &Extension<'_>, t: &Types) -> Result<()> {
         scalar("mix", &t.varchar, |a| a.check(mix(a.str(0)?, a.f64(1)?)))
             .param("color", &t.varchar)
             .param("alpha", &t.double),
+    )
+}
+
+/// `font(family, size [, style])` (`FontDesc::new`) and `color(font, color)`.
+fn register_fonts(ext: &Extension<'_>, t: &Types) -> Result<()> {
+    ext.register_scalar(
+        scalar("font", &t.font, |a| {
+            Ok(a.check(Font::new(a.str(0)?, a.i64(1)?, None))?.encode())
+        })
+        .param("family", &t.varchar)
+        .param("size", &t.bigint),
+    )?;
+    ext.register_scalar(
+        scalar("font", &t.font, |a| {
+            Ok(a.check(Font::new(a.str(0)?, a.i64(1)?, Some(a.str(2)?)))?
+                .encode())
+        })
+        .param("family", &t.varchar)
+        .param("size", &t.bigint)
+        .param("style", &t.varchar),
+    )?;
+    ext.register_scalar(
+        scalar("color", &t.font, |a| {
+            let font: Font = a.value(0)?;
+            Ok(a.check(font.color(a.str(1)?))?.encode())
+        })
+        .param("font", &t.font)
+        .param("color", &t.varchar),
     )
 }
 
@@ -73,6 +104,16 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
         .param("chart", &t.chart)
         .param("text", &t.varchar)
         .param("size", &t.bigint),
+    )?;
+    ext.register_scalar(
+        scalar("caption", &t.chart, |a| {
+            let chart: Chart = a.value(0)?;
+            let font: Font = a.value(2)?;
+            Ok(chart.caption_font(a.str(1)?, font).encode())
+        })
+        .param("chart", &t.chart)
+        .param("text", &t.varchar)
+        .param("font", &t.font),
     )?;
     let sizes: [(&'static str, ChartPx); 11] = [
         ("margin", Chart::margin),
