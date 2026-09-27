@@ -58,7 +58,7 @@ CHART(empty)
 # little-endian u16, then the spec.
 query TTTT
 SELECT
-    (chart()::BLOB)[1:6] = 'DKch\x01\x00'::BLOB,
+    (chart()::BLOB)[1:6] = 'DKch\x02\x00'::BLOB,
     (chart().configure_mesh()::BLOB)[1:4] = 'DKme'::BLOB,
     (chart().configure_series_labels()::BLOB)[1:4] = 'DKsl'::BLOB,
     (line_series(1, 1)::BLOB)[1:4] = 'DKse'::BLOB
@@ -113,7 +113,7 @@ Invalid Input Error: to_svg: not a duckers CHART value
 statement error
 SELECT ('DKch'::BLOB || '\x07\x00'::BLOB)::CHART
 ----
-Conversion Error: CHART format version 7 not supported by this duckers (it reads version 1)
+Conversion Error: CHART format version 7 not supported by this duckers (it reads version 2)
 
 statement error
 SELECT (chart()::BLOB || '\x00'::BLOB)::CHART

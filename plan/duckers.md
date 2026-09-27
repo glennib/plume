@@ -684,6 +684,16 @@ Each item records the choice, the alternative, and why.
     more series (M5) and secondary axes (M6) multiply the combinations,
     while one `f64`-valued type keeps the drawing code free of axis kinds.
     Timestamps are exact as `f64` microseconds up to about the year 2255.
+17. **A series has one column per axis, of any kind.**
+    `SERIES` holds an x column and a y column, each numeric, integer buckets, dates, timestamps or categories,
+    and the axis kinds, range checks and default extents are computed the same way for both axes.
+    A vertical histogram has its buckets in x and the summed values in y; `histogram_horizontal` the other way round,
+    so its buckets make the y axis a band axis exactly as `histogram_vertical`'s make the x axis one.
+    Every series on a chart must agree on both kinds,
+    and `y_range` is checked against the y kind as `x_range` is against the x kind
+    (before any series, the kind is open on both axes).
+    Alternative: numeric y values plus an orientation flag on histograms.
+    Rejected because M5's horizontal error bars and boxplots and M6's secondary axes need buckets or times on y too.
 
 ## Open questions
 

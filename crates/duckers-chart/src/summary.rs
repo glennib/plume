@@ -23,7 +23,9 @@ impl Series {
             out.push_str(&quote(label));
         }
         let count = match self.kind {
-            SeriesKind::Histogram(_) => plural(self.len(), "bucket", "buckets"),
+            SeriesKind::Histogram(_) | SeriesKind::HistogramHorizontal(_) => {
+                plural(self.len(), "bucket", "buckets")
+            }
             _ => plural(self.len(), "point", "points"),
         };
         out.push_str(&format!(", {count})"));
@@ -137,7 +139,7 @@ mod tests {
         Series::new(
             SeriesAggregate::LineSeries,
             Column::Numeric(vec![0.0; n]),
-            vec![0.0; n],
+            Column::Numeric(vec![0.0; n]),
         )
         .unwrap()
     }
@@ -152,11 +154,18 @@ mod tests {
         let h = Series::new(
             SeriesAggregate::Histogram,
             Column::Category(vec!["a".into(), "b".into()]),
-            vec![1.0, 2.0],
+            Column::Numeric(vec![1.0, 2.0]),
         )
         .unwrap()
         .label("it's");
         assert_eq!(h.summary(), "SERIES(histogram 'it''s', 2 buckets)");
+        let h = Series::new(
+            SeriesAggregate::HistogramHorizontal,
+            Column::Numeric(vec![1.0]),
+            Column::Integer(vec![3]),
+        )
+        .unwrap();
+        assert_eq!(h.summary(), "SERIES(horizontal histogram, 1 bucket)");
     }
 
     #[test]
@@ -169,7 +178,7 @@ mod tests {
         let point = Series::new(
             SeriesAggregate::PointSeries,
             Column::Numeric(vec![1.0]),
-            vec![1.0],
+            Column::Numeric(vec![1.0]),
         )
         .unwrap();
         let chart = chart

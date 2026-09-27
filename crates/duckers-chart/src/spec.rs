@@ -15,8 +15,8 @@ use crate::color::Color;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The column that places a series on the x axis: x values, or histogram buckets.
-/// Its variant decides the kind of x axis.
+/// The column that places a series on one axis: x or y values, or histogram buckets.
+/// Its variant decides the kind of the axis.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Column {
     /// Any numeric SQL type, drawn on a continuous `f64` axis.
@@ -84,14 +84,43 @@ impl fmt::Display for AxisKind {
     }
 }
 
+/// One of the two axes of a chart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    X,
+    Y,
+}
+
+impl Axis {
+    /// `"x"` or `"y"`, as in `x_range` and error messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Axis::X => "x",
+            Axis::Y => "y",
+        }
+    }
+
+    /// The other axis.
+    pub fn other(self) -> Axis {
+        match self {
+            Axis::X => Axis::Y,
+            Axis::Y => Axis::X,
+        }
+    }
+}
+
 /// A `SERIES` value: one plotters series with its style and legend label.
+///
+/// `x` and `y` are the series' columns on the two axes. A vertical histogram has its buckets
+/// in `x` and the bar heights in `y`; a horizontal one has the bar lengths in `x` and its
+/// buckets in `y`. Both columns have one value per point (or per bucket).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Series {
     pub kind: SeriesKind,
-    /// x values, or histogram buckets.
+    /// x values, or the buckets of a vertical histogram.
     pub x: Column,
-    /// y values, or histogram bar heights (the summed values per bucket).
-    pub y: Vec<f64>,
+    /// y values, or the buckets of a horizontal histogram.
+    pub y: Column,
     pub style: Style,
     /// `SeriesAnno::label`; a series without one is not in the legend.
     pub label: Option<String>,
@@ -99,16 +128,18 @@ pub struct Series {
 
 /// The series type and the options only that type has.
 ///
-/// New kinds (area, dashed line, error bars, candlesticks, boxplots, horizontal histograms)
-/// are appended as new variants carrying their own options and extra value columns.
+/// New kinds (area, dashed line, error bars, candlesticks, boxplots) are appended as new
+/// variants carrying their own options and extra value columns.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SeriesKind {
     /// `LineSeries`.
     Line(LineOptions),
     /// `PointSeries`.
     Point(PointOptions),
-    /// `Histogram::vertical`.
+    /// `Histogram::vertical`: buckets on x, bars up from the baseline.
     Histogram(HistogramOptions),
+    /// `Histogram::horizontal`: buckets on y, bars rightwards from the baseline.
+    HistogramHorizontal(HistogramOptions),
 }
 
 impl SeriesKind {
@@ -118,6 +149,7 @@ impl SeriesKind {
             SeriesKind::Line(_) => "line",
             SeriesKind::Point(_) => "point",
             SeriesKind::Histogram(_) => "histogram",
+            SeriesKind::HistogramHorizontal(_) => "horizontal histogram",
         }
     }
 
@@ -127,6 +159,15 @@ impl SeriesKind {
             SeriesKind::Line(_) => "line_series",
             SeriesKind::Point(_) => "point_series",
             SeriesKind::Histogram(_) => "histogram_vertical",
+            SeriesKind::HistogramHorizontal(_) => "histogram_horizontal",
+        }
+    }
+
+    /// The histogram options of either histogram kind.
+    pub fn histogram(&self) -> Option<&HistogramOptions> {
+        match self {
+            SeriesKind::Histogram(o) | SeriesKind::HistogramHorizontal(o) => Some(o),
+            _ => None,
         }
     }
 }
@@ -261,6 +302,17 @@ pub enum AxisRange {
     Timestamp(i64, i64),
 }
 
+impl AxisRange {
+    /// The axis kind the bounds' type implies, for an axis no series has set yet.
+    pub fn kind(self) -> AxisKind {
+        match self {
+            AxisRange::Numeric(..) => AxisKind::Numeric,
+            AxisRange::Date(..) => AxisKind::Date,
+            AxisRange::Timestamp(..) => AxisKind::Timestamp,
+        }
+    }
+}
+
 /// The range combinator of an axis. Log scales are appended as a new variant.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum Scale {
@@ -365,7 +417,32 @@ impl Chart {
 
     /// The x-axis kind set by the series drawn so far, if any.
     pub fn x_kind(&self) -> Option<AxisKind> {
-        self.series().next().map(Series::x_kind)
+        self.kind_on(Axis::X)
+    }
+
+    /// The y-axis kind set by the series drawn so far, if any.
+    pub fn y_kind(&self) -> Option<AxisKind> {
+        self.kind_on(Axis::Y)
+    }
+
+    /// The kind of `axis` set by the series drawn so far, if any.
+    pub fn kind_on(&self, axis: Axis) -> Option<AxisKind> {
+        self.series().next().map(|s| s.kind_on(axis))
+    }
+
+    /// The settings of `axis`.
+    pub fn axis(&self, axis: Axis) -> &AxisSpec {
+        match axis {
+            Axis::X => &self.x_axis,
+            Axis::Y => &self.y_axis,
+        }
+    }
+
+    pub(crate) fn axis_mut(&mut self, axis: Axis) -> &mut AxisSpec {
+        match axis {
+            Axis::X => &mut self.x_axis,
+            Axis::Y => &mut self.y_axis,
+        }
     }
 }
 
@@ -377,7 +454,29 @@ impl Series {
 
     /// The kind of y axis this series needs.
     pub fn y_kind(&self) -> AxisKind {
-        AxisKind::Numeric
+        self.y.axis_kind()
+    }
+
+    /// The kind of `axis` this series needs.
+    pub fn kind_on(&self, axis: Axis) -> AxisKind {
+        self.column(axis).axis_kind()
+    }
+
+    /// The column of the series on `axis`.
+    pub fn column(&self, axis: Axis) -> &Column {
+        match axis {
+            Axis::X => &self.x,
+            Axis::Y => &self.y,
+        }
+    }
+
+    /// The axis a histogram's buckets are on; `None` for other kinds.
+    pub fn bucket_axis(&self) -> Option<Axis> {
+        match self.kind {
+            SeriesKind::Histogram(_) => Some(Axis::X),
+            SeriesKind::HistogramHorizontal(_) => Some(Axis::Y),
+            _ => None,
+        }
     }
 
     pub fn len(&self) -> usize {

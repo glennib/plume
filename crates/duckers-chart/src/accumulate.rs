@@ -30,6 +30,8 @@ pub enum SeriesAggregate {
     PointSeries,
     /// `histogram_vertical(bucket, value)`.
     Histogram,
+    /// `histogram_horizontal(bucket, value)`.
+    HistogramHorizontal,
 }
 
 impl SeriesAggregate {
@@ -38,14 +40,21 @@ impl SeriesAggregate {
             SeriesAggregate::LineSeries => "line_series",
             SeriesAggregate::PointSeries => "point_series",
             SeriesAggregate::Histogram => "histogram_vertical",
+            SeriesAggregate::HistogramHorizontal => "histogram_horizontal",
         }
     }
 
+    /// Whether the aggregate sums values per bucket.
+    pub fn is_histogram(self) -> bool {
+        matches!(
+            self,
+            SeriesAggregate::Histogram | SeriesAggregate::HistogramHorizontal
+        )
+    }
+
+    /// The name of the first argument, `x` or `bucket`.
     fn x_name(self) -> &'static str {
-        match self {
-            SeriesAggregate::Histogram => "bucket",
-            _ => "x",
-        }
+        if self.is_histogram() { "bucket" } else { "x" }
     }
 }
 
@@ -72,27 +81,27 @@ pub struct SeriesBinding {
 impl SeriesBinding {
     /// Checks the x (or bucket) type of an aggregate. The error is the bind error to raise.
     pub fn new(aggregate: SeriesAggregate, x: SqlType) -> Result<SeriesBinding> {
-        let column = match (aggregate, x) {
-            (SeriesAggregate::Histogram, SqlType::Varchar) => AxisKind::Category,
-            (SeriesAggregate::Histogram, SqlType::Integer) => AxisKind::Integer,
-            (SeriesAggregate::Histogram, SqlType::Date) => AxisKind::Date,
-            (SeriesAggregate::Histogram, SqlType::Float) => {
+        let column = match (aggregate.is_histogram(), x) {
+            (true, SqlType::Varchar) => AxisKind::Category,
+            (true, SqlType::Integer) => AxisKind::Integer,
+            (true, SqlType::Date) => AxisKind::Date,
+            (true, SqlType::Float) => {
                 return Err(Error::invalid(
                     "histogram buckets cannot be DOUBLE or DECIMAL: plotters' Histogram needs a \
                      discrete bucket axis; bin the values first (for example \
                      floor(x / 10)::INTEGER * 10), or use .step() once it exists",
                 ));
             }
-            (SeriesAggregate::Histogram, SqlType::Timestamp) => {
+            (true, SqlType::Timestamp) => {
                 return Err(Error::invalid(
                     "histogram buckets cannot be TIMESTAMP: cast them to DATE for one band per \
                      day, or bin them to integers",
                 ));
             }
-            (_, SqlType::Integer | SqlType::Float) => AxisKind::Numeric,
-            (_, SqlType::Date) => AxisKind::Date,
-            (_, SqlType::Timestamp) => AxisKind::Timestamp,
-            (_, SqlType::Varchar) => AxisKind::Category,
+            (false, SqlType::Integer | SqlType::Float) => AxisKind::Numeric,
+            (false, SqlType::Date) => AxisKind::Date,
+            (false, SqlType::Timestamp) => AxisKind::Timestamp,
+            (false, SqlType::Varchar) => AxisKind::Category,
         };
         Ok(SeriesBinding { aggregate, column })
     }
@@ -101,7 +110,8 @@ impl SeriesBinding {
         self.aggregate
     }
 
-    /// The x axis kind the aggregate's series will have.
+    /// The kind of the first argument's column: the x axis kind, or the bucket axis kind of a
+    /// histogram (y for `histogram_horizontal`).
     pub fn x_kind(&self) -> AxisKind {
         self.column
     }
@@ -383,7 +393,7 @@ fn build(binding: &SeriesBinding, mut rows: Vec<Row>) -> Result<Series> {
             .then_with(|| cmp_f64(a.y, b.y))
     });
     let (xs, ys): (Vec<XValue>, Vec<f64>) = match binding.aggregate {
-        SeriesAggregate::Histogram => {
+        SeriesAggregate::Histogram | SeriesAggregate::HistogramHorizontal => {
             // Sum per bucket, buckets in order of first appearance, sums in sorted row order.
             let mut index: BTreeMap<XValue, usize> = BTreeMap::new();
             let mut buckets: Vec<(XValue, f64)> = Vec::new();
@@ -422,7 +432,11 @@ fn build(binding: &SeriesBinding, mut rows: Vec<Row>) -> Result<Series> {
             _ => None,
         })),
     };
-    Series::new(binding.aggregate, column, ys)
+    let values = Column::Numeric(ys);
+    match binding.aggregate {
+        SeriesAggregate::HistogramHorizontal => Series::new(binding.aggregate, values, column),
+        _ => Series::new(binding.aggregate, column, values),
+    }
 }
 
 fn collect<T>(xs: Vec<XValue>, f: impl Fn(XValue) -> Option<T>) -> Vec<T> {
@@ -434,9 +448,10 @@ fn collect<T>(xs: Vec<XValue>, f: impl Fn(XValue) -> Option<T>) -> Vec<T> {
 
 impl Series {
     /// A series of the given aggregate's kind with plotters' (and duckers') defaults, from
-    /// ready columns: points in drawing order, or histogram buckets (repeated buckets are summed
-    /// when drawn, as `Histogram::data` does).
-    pub fn new(aggregate: SeriesAggregate, x: Column, y: Vec<f64>) -> Result<Series> {
+    /// ready columns on the x and y axis: points in drawing order, or histogram buckets and
+    /// values (repeated buckets are summed when drawn, as `Histogram::data` does). The buckets
+    /// of `histogram_horizontal` are the `y` column.
+    pub fn new(aggregate: SeriesAggregate, x: Column, y: Column) -> Result<Series> {
         if x.len() != y.len() {
             return Err(Error::invalid(format!(
                 "{}: {} x values but {} y values",
@@ -445,19 +460,31 @@ impl Series {
                 y.len()
             )));
         }
-        let allowed = match aggregate {
-            SeriesAggregate::Histogram => matches!(
-                x.axis_kind(),
+        let bucket = |c: &Column| {
+            matches!(
+                c.axis_kind(),
                 AxisKind::Integer | AxisKind::Date | AxisKind::Category
-            ),
-            _ => x.axis_kind() != AxisKind::Integer,
+            )
         };
-        if !allowed {
+        let numeric = |c: &Column| c.axis_kind() == AxisKind::Numeric;
+        let (x_ok, y_ok) = match aggregate {
+            SeriesAggregate::Histogram => (bucket(&x), numeric(&y)),
+            SeriesAggregate::HistogramHorizontal => (numeric(&x), bucket(&y)),
+            _ => (x.axis_kind() != AxisKind::Integer, numeric(&y)),
+        };
+        let (column, what) = match (x_ok, y_ok) {
+            (true, true) => (None, ""),
+            (false, _) if aggregate == SeriesAggregate::HistogramHorizontal => (Some(&x), "value"),
+            (false, _) => (Some(&x), aggregate.x_name()),
+            (_, false) if aggregate == SeriesAggregate::HistogramHorizontal => (Some(&y), "bucket"),
+            (_, false) if aggregate.is_histogram() => (Some(&y), "value"),
+            (_, false) => (Some(&y), "y"),
+        };
+        if let Some(column) = column {
             return Err(Error::invalid(format!(
-                "{}: {} columns cannot be its {}",
+                "{}: {} columns cannot be its {what}",
                 aggregate.name(),
-                x.axis_kind(),
-                aggregate.x_name()
+                column.axis_kind(),
             )));
         }
         let style = Style {
@@ -474,16 +501,22 @@ impl Series {
                 }),
                 style,
             ),
-            SeriesAggregate::Histogram => (
-                SeriesKind::Histogram(HistogramOptions {
+            SeriesAggregate::Histogram | SeriesAggregate::HistogramHorizontal => {
+                let options = HistogramOptions {
                     margin: 5,
                     baseline: 0.0,
-                }),
-                Style {
+                };
+                let kind = if aggregate == SeriesAggregate::Histogram {
+                    SeriesKind::Histogram(options)
+                } else {
+                    SeriesKind::HistogramHorizontal(options)
+                };
+                let style = Style {
                     filled: true,
                     ..style
-                },
-            ),
+                };
+                (kind, style)
+            }
         };
         Ok(Series {
             kind,
@@ -523,7 +556,7 @@ mod tests {
         }
         let s = acc.finish(&b).unwrap();
         assert_eq!(xs(&s), [1.0, 1.0, 2.0, 3.0]);
-        assert_eq!(s.y, [2.0, 5.0, 0.0, 1.0]);
+        assert_eq!(s.y, Column::Numeric(vec![2.0, 5.0, 0.0, 1.0]));
     }
 
     #[test]
@@ -617,7 +650,7 @@ mod tests {
             l.x,
             Column::Category(vec!["a".into(), "b".into(), "c".into()])
         );
-        assert_eq!(l.y, [0.2, 0.1 + 0.3, 1e16]);
+        assert_eq!(l.y, Column::Numeric(vec![0.2, 0.1 + 0.3, 1e16]));
     }
 
     #[test]
@@ -639,7 +672,36 @@ mod tests {
             s.x,
             Column::Category(vec!["b".into(), "a".into(), "c".into()])
         );
-        assert_eq!(s.y, [9.0, 5.0, 1.0]);
+        assert_eq!(s.y, Column::Numeric(vec![9.0, 5.0, 1.0]));
+    }
+
+    #[test]
+    fn horizontal_histograms_put_buckets_on_y() {
+        let b = SeriesBinding::new(SeriesAggregate::HistogramHorizontal, SqlType::Varchar).unwrap();
+        assert_eq!(b.x_kind(), AxisKind::Category);
+        let mut acc = Accumulator::new();
+        for (x, n) in [("b", 1.0), ("a", 2.0), ("b", 3.0)] {
+            acc.push(&b, Some(XValue::Category(x.into())), Some(n), None, None)
+                .unwrap();
+        }
+        let s = acc.finish(&b).unwrap();
+        assert_eq!(s.x, Column::Numeric(vec![2.0, 4.0]));
+        assert_eq!(s.y, Column::Category(vec!["a".into(), "b".into()]));
+        assert!(matches!(s.kind, SeriesKind::HistogramHorizontal(_)));
+        assert!(s.style.filled);
+        let err =
+            SeriesBinding::new(SeriesAggregate::HistogramHorizontal, SqlType::Float).unwrap_err();
+        assert!(err.message().contains("bin the values first"), "{err}");
+        let err = Series::new(
+            SeriesAggregate::HistogramHorizontal,
+            Column::Numeric(vec![1.0]),
+            Column::Numeric(vec![1.0]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "histogram_horizontal: numeric columns cannot be its bucket"
+        );
     }
 
     #[test]

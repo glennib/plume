@@ -11,7 +11,7 @@
 //! kinds, and a new axis kind is a new variant rather than a new type combination.
 
 use crate::error::{Error, Result};
-use crate::spec::{AxisKind, AxisRange, Chart, Column, Series, SeriesKind};
+use crate::spec::{Axis, AxisKind, AxisRange, Chart, Column, Series};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
 use plotters::coord::ranged1d::{KeyPointHint, NoDefaultFormatting, Ranged, ValueFormatter};
 use plotters::coord::types::{RangedCoordf64, RangedCoordi64};
@@ -229,14 +229,22 @@ where
 }
 
 /// The histogram bars of a series: for each distinct bucket, in order of first appearance, the
-/// row of its first appearance and the sum of its values, as `Histogram::data` sums.
+/// row of its first appearance and the sum of its values, as `Histogram::data` sums. The
+/// buckets are the column on the series' bucket axis, the values the column on the other.
 pub(crate) fn bucket_sums(series: &Series) -> Vec<(usize, f64)> {
     #[derive(PartialEq, Eq, PartialOrd, Ord)]
     enum Bucket<'a> {
         Int(i64),
         Text(&'a str),
     }
-    let key = |i: usize| match &series.x {
+    let Some(axis) = series.bucket_axis() else {
+        return Vec::new();
+    };
+    let (buckets, values) = (series.column(axis), series.column(axis.other()));
+    let Column::Numeric(values) = values else {
+        return Vec::new();
+    };
+    let key = |i: usize| match buckets {
         Column::Integer(v) => Some(Bucket::Int(v[i])),
         Column::Date(v) => Some(Bucket::Int(v[i].into())),
         Column::Timestamp(v) => Some(Bucket::Int(v[i])),
@@ -245,7 +253,7 @@ pub(crate) fn bucket_sums(series: &Series) -> Vec<(usize, f64)> {
     };
     let mut index: BTreeMap<Bucket, usize> = BTreeMap::new();
     let mut out: Vec<(usize, f64)> = Vec::new();
-    for (i, y) in series.y.iter().enumerate() {
+    for (i, y) in values.iter().enumerate() {
         let Some(k) = key(i) else { continue };
         match index.get(&k) {
             Some(&j) => out[j].1 += y,
@@ -263,52 +271,67 @@ pub(crate) fn bucket_sums(series: &Series) -> Vec<(usize, f64)> {
 pub(crate) fn check_kinds(series: &[&Series]) -> Result<()> {
     if let Some(first) = series.first() {
         for s in &series[1..] {
-            if s.x_kind() != first.x_kind() {
-                return Err(Error::invalid(format!(
-                    "cannot draw {} and {} x values on the same chart",
-                    first.x_kind(),
-                    s.x_kind()
-                )));
+            for axis in [Axis::X, Axis::Y] {
+                if s.kind_on(axis) != first.kind_on(axis) {
+                    return Err(Error::invalid(format!(
+                        "cannot draw {} and {} {} values on the same chart",
+                        first.kind_on(axis),
+                        s.kind_on(axis),
+                        axis.name()
+                    )));
+                }
             }
         }
     }
     Ok(())
 }
 
-pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
-    let range = chart.x_axis.range;
+/// The numbers that set the default extent of a numeric `axis`: the values of every series on
+/// it, and for a histogram whose buckets are on the other axis, its baseline and bar ends.
+fn numbers_on(series: &[&Series], axis: Axis) -> Vec<f64> {
+    let mut values: Vec<f64> = Vec::new();
+    for s in series {
+        match s.kind.histogram() {
+            Some(options) if s.bucket_axis() == Some(axis.other()) => {
+                values.push(options.baseline);
+                values.extend(bucket_sums(s).into_iter().map(|(_, sum)| sum));
+            }
+            _ => {
+                if let Column::Numeric(v) = s.column(axis) {
+                    values.extend(v);
+                }
+            }
+        }
+    }
+    values.retain(|v| v.is_finite());
+    values
+}
+
+/// Resolves `axis` of the chart: its kind from the series (or the range bounds), its range
+/// from `x_range`/`y_range` or the data, and bands where histograms put buckets on it.
+pub(crate) fn coord(chart: &Chart, series: &[&Series], axis: Axis) -> Result<AxisCoord> {
+    let name = axis.name();
+    let range = chart.axis(axis).range;
     let kind = series
         .first()
-        .map(|s| s.x_kind())
-        .or(range.map(|r| match r {
-            AxisRange::Numeric(..) => AxisKind::Numeric,
-            AxisRange::Date(..) => AxisKind::Date,
-            AxisRange::Timestamp(..) => AxisKind::Timestamp,
-        }))
+        .map(|s| s.kind_on(axis))
+        .or(range.map(AxisRange::kind))
         .unwrap_or(AxisKind::Numeric);
-    let has_bars = series
-        .iter()
-        .any(|s| matches!(s.kind, SeriesKind::Histogram(_)));
-    let columns = || series.iter().map(|s| &s.x);
-    let mismatch = || Error::invalid(format!("x_range does not fit the chart's {kind} x axis"));
+    let has_bars = series.iter().any(|s| s.bucket_axis() == Some(axis));
+    let columns = || series.iter().map(|s| s.column(axis));
+    let mismatch = || {
+        Error::invalid(format!(
+            "{name}_range does not fit the chart's {kind} {name} axis"
+        ))
+    };
+    let beyond = || out_of_range(&format!("the {name} range"));
 
     Ok(match kind {
         AxisKind::Numeric => {
             let (lo, hi) = match range {
                 Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
                 Some(_) => return Err(mismatch()),
-                None => fit(
-                    extent(
-                        columns()
-                            .flat_map(|c| match c {
-                                Column::Numeric(v) => v.as_slice(),
-                                _ => &[],
-                            })
-                            .copied(),
-                    ),
-                    0.0,
-                    1.0,
-                ),
+                None => fit(extent(numbers_on(series, axis)), 0.0, 1.0),
             };
             AxisCoord::Linear((lo..hi).into())
         }
@@ -331,8 +354,8 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
             };
             let reversed = lo > hi;
             let (lo, hi) = (lo.min(hi), lo.max(hi));
-            let lo = timestamp(lo).ok_or_else(|| out_of_range("the x range"))?;
-            let hi = timestamp(hi).ok_or_else(|| out_of_range("the x range"))?;
+            let lo = timestamp(lo).ok_or_else(beyond)?;
+            let hi = timestamp(hi).ok_or_else(beyond)?;
             AxisCoord::Timestamp(TimeCoord::new(lo, hi, reversed))
         }
         AxisKind::Date | AxisKind::Integer => {
@@ -358,14 +381,11 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
                 let n = usize::try_from(hi - lo + 1)
                     .ok()
                     .filter(|n| *n <= MAX_BANDS)
-                    .ok_or_else(|| too_many_bands(hi - lo + 1))?;
+                    .ok_or_else(|| too_many_bands(hi - lo + 1, name))?;
                 let labels = if kind == AxisKind::Integer {
                     BandLabels::Integer(lo)
                 } else {
-                    let first = i32::try_from(lo)
-                        .ok()
-                        .and_then(date)
-                        .ok_or_else(|| out_of_range("the x range"))?;
+                    let first = i32::try_from(lo).ok().and_then(date).ok_or_else(beyond)?;
                     BandLabels::Date(first)
                 };
                 AxisCoord::Band(BandCoord {
@@ -374,12 +394,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
                     labels,
                 })
             } else {
-                let day = |d: i64| {
-                    i32::try_from(d)
-                        .ok()
-                        .and_then(date)
-                        .ok_or_else(|| out_of_range("the x range"))
-                };
+                let day = |d: i64| i32::try_from(d).ok().and_then(date).ok_or_else(beyond);
                 AxisCoord::Date(Oriented {
                     inner: RangedDate::from(day(lo)?..day(hi)?),
                     reversed,
@@ -403,7 +418,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
                 }
             }
             if names.len() > MAX_BANDS {
-                return Err(too_many_bands(names.len() as i64));
+                return Err(too_many_bands(names.len() as i64, name));
             }
             AxisCoord::Band(BandCoord {
                 n: names.len().max(1),
@@ -414,42 +429,13 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
     })
 }
 
-pub(crate) fn y_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
-    let (lo, hi) = match chart.y_axis.range {
-        Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
-        Some(_) => {
-            return Err(Error::invalid(
-                "y_range does not fit the chart's numeric y axis",
-            ));
-        }
-        None => {
-            let mut values: Vec<f64> = Vec::new();
-            for s in series {
-                match &s.kind {
-                    SeriesKind::Histogram(options) => {
-                        values.push(options.baseline);
-                        values.extend(bucket_sums(s).into_iter().map(|(_, sum)| sum));
-                    }
-                    _ => values.extend(&s.y),
-                }
-            }
-            fit(
-                extent(values.into_iter().filter(|v| v.is_finite())),
-                0.0,
-                1.0,
-            )
-        }
-    };
-    Ok(AxisCoord::Linear((lo..hi).into()))
-}
-
 /// More bands than this is a range mistake (a chart is at most 8192 px wide).
 const MAX_BANDS: usize = 100_000;
 
-fn too_many_bands(n: i64) -> Error {
+fn too_many_bands(n: i64, axis: &str) -> Error {
     Error::invalid(format!(
         "a segmented axis with {n} bands is too large (at most {MAX_BANDS}); \
-         check x_range or the bucket values"
+         check {axis}_range or the bucket values"
     ))
 }
 
@@ -633,18 +619,27 @@ mod tests {
     }
 
     fn line(x: Vec<f64>, y: Vec<f64>) -> Series {
-        Series::new(SeriesAggregate::LineSeries, Column::Numeric(x), y).unwrap()
+        Series::new(
+            SeriesAggregate::LineSeries,
+            Column::Numeric(x),
+            Column::Numeric(y),
+        )
+        .unwrap()
     }
 
     fn hist(x: Column, y: Vec<f64>) -> Series {
-        Series::new(SeriesAggregate::Histogram, x, y).unwrap()
+        Series::new(SeriesAggregate::Histogram, x, Column::Numeric(y)).unwrap()
+    }
+
+    fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
+        coord(chart, series, Axis::X)
     }
 
     fn ranges(chart: &Chart) -> (Range<f64>, Range<f64>) {
         let series: Vec<&Series> = chart.series().collect();
         let x = x_coord(chart, &series).unwrap();
         assert!(matches!(x, AxisCoord::Linear(_) | AxisCoord::Band(_)));
-        (x.range(), y_coord(chart, &series).unwrap().range())
+        (x.range(), coord(chart, &series, Axis::Y).unwrap().range())
     }
 
     fn band(coord: AxisCoord) -> BandCoord {
@@ -752,7 +747,7 @@ mod tests {
         let line = Series::new(
             SeriesAggregate::LineSeries,
             Column::Date(vec![19723, 19725]),
-            vec![1.0, 2.0],
+            Column::Numeric(vec![1.0, 2.0]),
         )
         .unwrap();
         let c = chart(vec![line]);
@@ -770,7 +765,7 @@ mod tests {
         let line = Series::new(
             SeriesAggregate::LineSeries,
             Column::Timestamp(vec![start, start + 3_600_000_000]),
-            vec![1.0, 2.0],
+            Column::Numeric(vec![1.0, 2.0]),
         )
         .unwrap();
         let c = chart(vec![line]);
@@ -783,6 +778,25 @@ mod tests {
         for key in x.key_points(5) {
             assert!(key >= start as f64 && key <= (start + 3_600_000_000) as f64);
         }
+    }
+
+    #[test]
+    fn horizontal_histograms_band_the_y_axis() {
+        let h = Series::new(
+            SeriesAggregate::HistogramHorizontal,
+            Column::Numeric(vec![2.0, 3.0, 4.0]),
+            Column::Category(vec!["a".into(), "b".into(), "a".into()]),
+        )
+        .unwrap();
+        let c = chart(vec![h]);
+        let series: Vec<&Series> = c.series().collect();
+        assert_eq!(bucket_sums(series[0]), [(0, 6.0), (1, 3.0)]);
+        let x = x_coord(&c, &series).unwrap();
+        assert!(matches!(x, AxisCoord::Linear(_)));
+        assert_eq!(x.range(), 0.0..6.0, "the baseline and the summed bars");
+        let y = band(coord(&c, &series, Axis::Y).unwrap());
+        assert_eq!(y.range(), 0.0..2.0);
+        assert_eq!(y.format_ext(&1.5), "b");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! The series aggregates (`line_series`, `point_series`, `histogram_vertical`) and the methods
-//! on `SERIES`.
+//! The series aggregates (`line_series`, `point_series`, `histogram_vertical`,
+//! `histogram_horizontal`) and the methods on `SERIES`.
 
 use duckers_chart::{Accumulator, Key, Series, SeriesAggregate, SeriesBinding, Value};
 
@@ -16,12 +16,18 @@ const KEY: usize = 2;
 const ORDER_BY: usize = 3;
 
 /// The SQL name of each aggregate and the names of its two value parameters.
-const AGGREGATES: [(SeriesAggregate, &str, &str, &str); 3] = [
+const AGGREGATES: [(SeriesAggregate, &str, &str, &str); 4] = [
     (SeriesAggregate::LineSeries, "line_series", "x", "y"),
     (SeriesAggregate::PointSeries, "point_series", "x", "y"),
     (
         SeriesAggregate::Histogram,
         "histogram_vertical",
+        "bucket",
+        "value",
+    ),
+    (
+        SeriesAggregate::HistogramHorizontal,
+        "histogram_horizontal",
         "bucket",
         "value",
     ),
@@ -76,7 +82,7 @@ impl Aggregate for SeriesState {
             .find(|(_, name, ..)| *name == b.function_name())
             .ok_or_else(|| Error::internal(format!("unknown aggregate {}", b.function_name())))?;
         let x_type = b.arg_type(X)?;
-        let histogram = aggregate == SeriesAggregate::Histogram;
+        let histogram = aggregate.is_histogram();
         let (x, sql_type) = XReader::for_type(x_type.id()).ok_or_else(|| {
             let expected = if histogram {
                 "VARCHAR, an integer or DATE"

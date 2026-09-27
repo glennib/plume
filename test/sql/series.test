@@ -1,5 +1,5 @@
 # name: test/sql/series.test
-# description: the series aggregates line_series, point_series and histogram_vertical
+# description: the series aggregates line_series, point_series, histogram_vertical and histogram_horizontal
 # group: [duckers]
 
 require duckers
@@ -8,51 +8,87 @@ require duckers
 query T
 SELECT __duckers_debug(line_series(x, y)) FROM (VALUES (3, 1), (1, 5), (2, 0), (1, 2)) t(x, y)
 ----
-Series { kind: Line(LineOptions { point_size: 0 }), x: Numeric([1.0, 1.0, 2.0, 3.0]), y: [2.0, 5.0, 0.0, 1.0], style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+Series { kind: Line(LineOptions { point_size: 0 }), x: Numeric([1.0, 1.0, 2.0, 3.0]), y: Numeric([2.0, 5.0, 0.0, 1.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 query T
 SELECT __duckers_debug(point_series(i, 1))
 FROM range(1) r(i)
 ----
-Series { kind: Point(PointOptions { size: 3, marker: Circle }), x: Numeric([0.0]), y: [1.0], style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+Series { kind: Point(PointOptions { size: 3, marker: Circle }), x: Numeric([0.0]), y: Numeric([1.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 # histogram_vertical sums the values per bucket; its bars are filled.
 query T
 SELECT __duckers_debug(histogram_vertical(s, n)) FROM (VALUES ('b', 1), ('a', 2), ('b', 3)) t(s, n)
 ----
-Series { kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0 }), x: Category(["a", "b"]), y: [2.0, 4.0], style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+Series { kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0 }), x: Category(["a", "b"]), y: Numeric([2.0, 4.0]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
 
 # histogram_vertical(x, 1) counts rows.
 query T
-SELECT __duckers_debug(histogram_vertical(i % 3, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(histogram_vertical(i % 3, 1)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM range(10) r(i)
 ----
-x: Integer([0, 1, 2]), y: [4.0, 3.0, 3.0]
+x: Integer([0, 1, 2]), y: Numeric([4.0, 3.0, 3.0])
 
 query T
-SELECT __duckers_debug(histogram_vertical(d, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(histogram_vertical(d, 1)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (DATE '2024-01-02'), (DATE '2024-01-01'), (DATE '2024-01-02')) t(d)
 ----
-x: Date([19723, 19724]), y: [1.0, 2.0]
+x: Date([19723, 19724]), y: Numeric([1.0, 2.0])
+
+# histogram_horizontal is the same with the buckets on the y axis and the sums on x.
+query T
+SELECT __duckers_debug(histogram_horizontal(s, n)) FROM (VALUES ('b', 1), ('a', 2), ('b', 3)) t(s, n)
+----
+Series { kind: HistogramHorizontal(HistogramOptions { margin: 5, baseline: 0.0 }), x: Numeric([2.0, 4.0]), y: Category(["a", "b"]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+
+query T
+SELECT __duckers_debug(histogram_horizontal(i % 3, 1)).regexp_extract('x: .*y: [A-Za-z]*\(\[[^\]]*\]\)')
+FROM range(10) r(i)
+----
+x: Numeric([4.0, 3.0, 3.0]), y: Integer([0, 1, 2])
+
+query T
+SELECT __duckers_debug(histogram_horizontal(d, 1)).regexp_extract('y: [A-Za-z]*\(\[[^\]]*\]\)')
+FROM (VALUES (DATE '2024-01-02'), (DATE '2024-01-01')) t(d)
+----
+y: Date([19723, 19724])
+
+# Its buckets follow order_by, and key splits it, as for histogram_vertical.
+query T
+SELECT __duckers_debug(histogram_horizontal(section, n, order_by := -n)).regexp_extract('y: [A-Za-z]*\(\[[^\]]*\]\)')
+FROM (VALUES ('sport', 412), ('culture', 158), ('news', 530)) t(section, n)
+----
+y: Category(["news", "sport", "culture"])
+
+query T
+SELECT histogram_horizontal(s, 1, key := k)::VARCHAR
+FROM (VALUES ('a', 1), ('a', 1), ('b', 2)) t(s, k)
+----
+['SERIES(horizontal histogram \'1\', 1 bucket)', 'SERIES(horizontal histogram \'2\', 1 bucket)']
+
+query T
+SELECT histogram_horizontal(s, n)::VARCHAR FROM (VALUES ('a', NULL), (NULL, 1), ('b', 'nan'::DOUBLE)) t(s, n)
+----
+SERIES(horizontal histogram, 0 buckets)
 
 # Every numeric type is a number on a continuous axis, DECIMAL and HUGEINT included.
 foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT
 
 query T
-SELECT __duckers_debug(line_series(x::${type}, (x * 2)::${type})).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(line_series(x::${type}, (x * 2)::${type})).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (4), (1)) t(x)
 ----
-x: Numeric([1.0, 4.0]), y: [2.0, 8.0]
+x: Numeric([1.0, 4.0]), y: Numeric([2.0, 8.0])
 
 endloop
 
 foreach type FLOAT DOUBLE DECIMAL(4,2) DECIMAL(9,2) DECIMAL(18,2) DECIMAL(38,2)
 
 query T
-SELECT __duckers_debug(point_series(x::${type}, x::${type})).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(point_series(x::${type}, x::${type})).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (-1.25), (2.5)) t(x)
 ----
-x: Numeric([-1.25, 2.5]), y: [-1.25, 2.5]
+x: Numeric([-1.25, 2.5]), y: Numeric([-1.25, 2.5])
 
 endloop
 
@@ -91,10 +127,10 @@ x: Category(["a", "b"])
 
 # Rows with a NULL, NaN or infinite x or y are skipped, as are infinite dates and timestamps.
 query T
-SELECT __duckers_debug(line_series(x, y)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(line_series(x, y)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (1, 'nan'::DOUBLE), (2, 'inf'::DOUBLE), ('nan'::DOUBLE, 1), ('-inf'::DOUBLE, 1), (NULL, 1), (4, NULL), (3, 3)) t(x, y)
 ----
-x: Numeric([3.0]), y: [3.0]
+x: Numeric([3.0]), y: Numeric([3.0])
 
 query TT
 SELECT line_series(d, 1)::VARCHAR, line_series(ts, 1)::VARCHAR
@@ -115,10 +151,10 @@ SERIES(point, 0 points)
 
 # order_by sets the drawing order; ties are broken by x, then y.
 query T
-SELECT __duckers_debug(line_series(x, y, order_by := t)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(line_series(x, y, order_by := t)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (1, 10, 3), (2, 20, 1), (3, 30, 2), (0, 5, 2)) v(x, y, t)
 ----
-x: Numeric([2.0, 0.0, 3.0, 1.0]), y: [20.0, 5.0, 30.0, 10.0]
+x: Numeric([2.0, 0.0, 3.0, 1.0]), y: Numeric([20.0, 5.0, 30.0, 10.0])
 
 # NULL order_by values sort last.
 query T
@@ -136,10 +172,10 @@ x: Numeric([1.0, 0.9987502603949663,
 
 # Histogram buckets follow order_by.
 query T
-SELECT __duckers_debug(histogram_vertical(section, n, order_by := -n)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(histogram_vertical(section, n, order_by := -n)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES ('sport', 412), ('culture', 158), ('news', 530)) t(section, n)
 ----
-x: Category(["news", "sport", "culture"]), y: [530.0, 412.0, 158.0]
+x: Category(["news", "sport", "culture"]), y: Numeric([530.0, 412.0, 158.0])
 
 # order_by takes any type.
 query T
@@ -232,10 +268,10 @@ SELECT line_series(i, i, key := i % 3)::VARCHAR FROM range(300000) r(i)
 ['SERIES(line \'0\', 100000 points)', 'SERIES(line \'1\', 100000 points)', 'SERIES(line \'2\', 100000 points)']
 
 query T
-SELECT __duckers_debug(histogram_vertical((i % 4)::INTEGER, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+SELECT __duckers_debug(histogram_vertical((i % 4)::INTEGER, 1)).regexp_extract('x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM range(1000000) r(i)
 ----
-x: Integer([0, 1, 2, 3]), y: [250000.0, 250000.0, 250000.0, 250000.0]
+x: Integer([0, 1, 2, 3]), y: Numeric([250000.0, 250000.0, 250000.0, 250000.0])
 
 query I
 SELECT count(DISTINCT s::BLOB) FROM (
@@ -310,6 +346,21 @@ statement error
 SELECT histogram_vertical('a', 'b')
 ----
 Binder Error: histogram_vertical: value must be a number, got VARCHAR
+
+statement error
+SELECT histogram_horizontal(1.5, 1)
+----
+Binder Error: histogram_horizontal: histogram buckets cannot be DOUBLE or DECIMAL
+
+statement error
+SELECT histogram_horizontal(true, 1)
+----
+Binder Error: histogram_horizontal: bucket must be VARCHAR, an integer or DATE, got BOOLEAN
+
+statement error
+SELECT histogram_horizontal('a', DATE '2024-01-01')
+----
+Binder Error: histogram_horizontal: value must be a number, got DATE
 
 statement error
 SELECT line_series(1, 1, bogus := 1)

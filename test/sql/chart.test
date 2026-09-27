@@ -116,7 +116,7 @@ query T
 SELECT __duckers_debug(point_series(i, i).style('#00ff0080', 3).size(4).filled()).regexp_extract('kind: .*')
 FROM range(2) r(i)
 ----
-kind: Point(PointOptions { size: 4, marker: Circle }), x: Numeric([0.0, 1.0]), y: [0.0, 1.0], style: Style { color: Some(Color { r: 0, g: 255, b: 0, a: 0.5019607843137255 }), stroke_width: 3, filled: true }, label: None }
+kind: Point(PointOptions { size: 4, marker: Circle }), x: Numeric([0.0, 1.0]), y: Numeric([0.0, 1.0]), style: Style { color: Some(Color { r: 0, g: 255, b: 0, a: 0.5019607843137255 }), stroke_width: 3, filled: true }, label: None }
 
 query T
 SELECT __duckers_debug(histogram_vertical(i, 1).stroke_width(2)).regexp_extract('stroke_width: [0-9]+')
@@ -267,9 +267,48 @@ SELECT chart().x_range(0, DATE '2024-01-01')
 Invalid Input Error: x_range bounds must have the same type, got numeric and date
 
 statement error
-SELECT chart().y_range(DATE '2024-01-01', DATE '2024-02-01')
+SELECT chart().draw_series(line_series(1, 1)).y_range(DATE '2024-01-01', DATE '2024-02-01')
 ----
 Invalid Input Error: y_range bounds are date but the y axis is numeric
+
+# Before any series, the y axis kind is open, as the x axis kind is; the series then must fit.
+statement error
+SELECT chart().y_range(DATE '2024-01-01', DATE '2024-02-01').draw_series(line_series(1, 1))
+----
+Invalid Input Error: draw_series: y_range bounds are date but the y axis is numeric
+
+# A horizontal histogram puts its buckets on the y axis: y_range takes whole numbers for integer
+# buckets and dates for date buckets, and does not apply to categories.
+query T
+SELECT chart().draw_series(histogram_horizontal(i, 1)).y_range(0, 5)::VARCHAR FROM range(3) r(i)
+----
+CHART(horizontal histogram, 1 series, 3 points)
+
+query T
+SELECT chart().y_range(DATE '2024-01-01', DATE '2024-01-10').draw_series(histogram_horizontal(d, 1))::VARCHAR
+FROM (VALUES (DATE '2024-01-02')) t(d)
+----
+CHART(horizontal histogram, 1 series, 1 point)
+
+statement error
+SELECT chart().draw_series(histogram_horizontal(i, 1)).y_range(0.5, 5) FROM range(3) r(i)
+----
+Invalid Input Error: y_range on an integer bucket axis takes whole numbers, got 0.5 and 5
+
+statement error
+SELECT chart().draw_series(histogram_horizontal('a', 1)).y_range(0, 5)
+----
+Invalid Input Error: y_range does not apply to the category y axis: its categories are the data's
+
+statement error
+SELECT chart().draw_series(histogram_horizontal('a', 1)).draw_series(line_series(1, 1))
+----
+Invalid Input Error: draw_series: cannot draw line_series with numeric y values on a chart whose y axis is category
+
+statement error
+SELECT chart().draw_series(histogram_horizontal('a', 1)).draw_series(histogram_vertical('a', 1))
+----
+Invalid Input Error: draw_series: cannot draw histogram_vertical with category x values on a chart whose x axis is numeric
 
 statement error
 SELECT chart().draw_series(line_series(d, 1)).x_range(0, 1) FROM (VALUES (DATE '2024-01-01')) t(d)

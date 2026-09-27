@@ -4,7 +4,7 @@ use super::axis::{self, AxisCoord, bucket_sums};
 use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::spec::{
-    Chart, DrawOp, Font, FontStyle, LabelPosition, Marker, MeshSetting, MeshStyle, Series,
+    Axis, Chart, DrawOp, Font, FontStyle, LabelPosition, Marker, MeshSetting, MeshStyle, Series,
     SeriesKind, SeriesLabelSetting, SeriesLabelStyle,
 };
 use plotters::chart::SeriesAnno;
@@ -101,8 +101,8 @@ fn label_position(p: LabelPosition) -> SeriesLabelPosition {
 pub(crate) fn draw<DB: DrawingBackend>(root: &DrawingArea<DB, Shift>, chart: &Chart) -> Result<()> {
     let series: Vec<&Series> = chart.series().collect();
     axis::check_kinds(&series)?;
-    let x = axis::x_coord(chart, &series)?;
-    let y = axis::y_coord(chart, &series)?;
+    let x = axis::coord(chart, &series, Axis::X)?;
+    let y = axis::coord(chart, &series, Axis::Y)?;
     root.fill(&chart.fill.to_plotters())
         .map_err(plotters_error)?;
     let ops = resolve(chart);
@@ -190,7 +190,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
     };
     let points = || -> Vec<(f64, f64)> {
         (0..series.len())
-            .filter_map(|i| Some((x.at(&series.x, i)?, y.number(series.y[i])?)))
+            .filter_map(|i| Some((x.at(&series.x, i)?, y.at(&series.y, i)?)))
             .collect()
     };
 
@@ -223,6 +223,19 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     let (left, right) = x.band(&series.x, row)?;
                     let mut bar = Rectangle::new([(left, y.number(sum)?), (right, base?)], style);
                     bar.set_margin(0, 0, options.margin, options.margin);
+                    Some(bar)
+                })
+                .collect();
+            ctx.draw_series(bars)
+        }
+        SeriesKind::HistogramHorizontal(options) => {
+            let base = x.number(options.baseline);
+            let bars: Vec<Rectangle<(f64, f64)>> = bucket_sums(series)
+                .into_iter()
+                .filter_map(|(row, sum)| {
+                    let (low, high) = y.band(&series.y, row)?;
+                    let mut bar = Rectangle::new([(x.number(sum)?, low), (base?, high)], style);
+                    bar.set_margin(options.margin, options.margin, 0, 0);
                     Some(bar)
                 })
                 .collect();
@@ -272,7 +285,7 @@ fn legend_glyph<'a, DB: DrawingBackend + 'a>(
                 }
             });
         }
-        SeriesKind::Histogram(_) => {
+        SeriesKind::Histogram(_) | SeriesKind::HistogramHorizontal(_) => {
             anno.legend(move |(x, y)| {
                 Rectangle::new(
                     [

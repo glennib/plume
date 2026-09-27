@@ -122,8 +122,14 @@ SELECT png_header(c.to_png()) FROM (
     UNION ALL SELECT chart().x_range(DATE '2024-02-01', DATE '2024-01-01').draw_series(line_series(day, temp)) FROM weather
     UNION ALL SELECT chart().x_range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-01 12:00').draw_series(line_series(TIMESTAMP '2024-01-01' + i * INTERVAL 1 hour, i)) FROM range(48) r(i)
     UNION ALL SELECT chart().x_range(0, 10).draw_series(histogram_vertical(i, i)) FROM range(5) r(i)
+    UNION ALL SELECT chart().draw_series(histogram_horizontal(section, 1)) FROM articles
+    UNION ALL SELECT chart().draw_series(histogram_horizontal(i % 6, 1)) FROM range(100) r(i)
+    UNION ALL SELECT chart().y_range(DATE '2024-01-20', DATE '2024-01-01').draw_series(histogram_horizontal(day, temp)) FROM weather WHERE day < DATE '2024-01-15'
 )
 ----
+640x480
+640x480
+640x480
 640x480
 640x480
 640x480

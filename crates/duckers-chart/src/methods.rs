@@ -7,8 +7,8 @@
 use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::spec::{
-    AxisKind, AxisRange, AxisSpec, Caption, Chart, DrawOp, Font, FontStyle, LabelPosition, Mesh,
-    MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle,
+    Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, DrawOp, Font, FontStyle, LabelPosition,
+    Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle,
     SeriesLabels, Sides,
 };
 
@@ -86,7 +86,10 @@ impl Series {
     /// `ShapeStyle::filled`: point markers, line markers and histogram bars.
     pub fn filled(mut self) -> Result<Series> {
         match self.kind {
-            SeriesKind::Line(_) | SeriesKind::Point(_) | SeriesKind::Histogram(_) => {
+            SeriesKind::Line(_)
+            | SeriesKind::Point(_)
+            | SeriesKind::Histogram(_)
+            | SeriesKind::HistogramHorizontal(_) => {
                 self.style.filled = true;
                 Ok(self)
             }
@@ -212,20 +215,22 @@ impl Chart {
     }
 
     /// `x_range(lo, hi)`: the x range argument of `build_cartesian_2d`.
-    pub fn x_range(mut self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
-        let range = axis_range("x_range", lo, hi)?;
-        if let Some(kind) = self.x_kind() {
-            check_range_fits("x_range", "x", range, kind)?;
-        }
-        self.x_axis.range = Some(range);
-        Ok(self)
+    pub fn x_range(self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        self.range(Axis::X, lo, hi)
     }
 
     /// `y_range(lo, hi)`: the y range argument of `build_cartesian_2d`.
-    pub fn y_range(mut self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
-        let range = axis_range("y_range", lo, hi)?;
-        check_range_fits("y_range", "y", range, AxisKind::Numeric)?;
-        self.y_axis.range = Some(range);
+    pub fn y_range(self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        self.range(Axis::Y, lo, hi)
+    }
+
+    fn range(mut self, axis: Axis, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        let what = format!("{}_range", axis.name());
+        let range = axis_range(&what, lo, hi)?;
+        if let Some(kind) = self.kind_on(axis) {
+            check_range_fits(&what, axis.name(), range, kind)?;
+        }
+        self.axis_mut(axis).range = Some(range);
         Ok(self)
     }
 
@@ -264,20 +269,23 @@ impl Chart {
     }
 
     fn check_series(&self, series: &Series) -> Result<()> {
-        let x = series.x_kind();
-        if let Some(kind) = self.x_kind()
-            && kind != x
-        {
-            return Err(Error::invalid(format!(
-                "draw_series: cannot draw {} with {x} x values on a chart whose x axis is {kind}",
-                series.kind.aggregate_name()
-            )));
+        for axis in [Axis::X, Axis::Y] {
+            let (name, new) = (axis.name(), series.kind_on(axis));
+            if let Some(kind) = self.kind_on(axis)
+                && kind != new
+            {
+                return Err(Error::invalid(format!(
+                    "draw_series: cannot draw {} with {new} {name} values on a chart whose {name} \
+                     axis is {kind}",
+                    series.kind.aggregate_name()
+                )));
+            }
         }
-        if let Some(range) = self.x_axis.range {
-            check_range_fits("draw_series: x_range", "x", range, x)?;
-        }
-        if let Some(range) = self.y_axis.range {
-            check_range_fits("draw_series: y_range", "y", range, series.y_kind())?;
+        for axis in [Axis::X, Axis::Y] {
+            if let Some(range) = self.axis(axis).range {
+                let what = format!("draw_series: {}_range", axis.name());
+                check_range_fits(&what, axis.name(), range, series.kind_on(axis))?;
+            }
         }
         Ok(())
     }
@@ -505,7 +513,7 @@ mod tests {
     fn line(x: Column) -> Series {
         Series {
             kind: SeriesKind::Line(LineOptions { point_size: 0 }),
-            y: vec![1.0; x.len()],
+            y: Column::Numeric(vec![1.0; x.len()]),
             x,
             style: Style {
                 color: None,
@@ -539,11 +547,23 @@ mod tests {
             "y_range bounds must have the same type, got numeric and date"
         );
         let err = Chart::new()
+            .draw_series(line(Column::Numeric(vec![1.0])))
+            .unwrap()
             .y_range(RangeValue::Date(1), RangeValue::Date(3))
             .unwrap_err();
         assert_eq!(
             err.message(),
             "y_range bounds are date but the y axis is numeric"
+        );
+        // Before any series the y axis kind is open, as the x axis kind is.
+        let err = Chart::new()
+            .y_range(RangeValue::Date(1), RangeValue::Date(3))
+            .unwrap()
+            .draw_series(line(Column::Numeric(vec![1.0])))
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: y_range bounds are date but the y axis is numeric"
         );
         assert!(Chart::new().x_range(n(f64::NAN), n(1.0)).is_err());
         // Reversed ranges are allowed.
@@ -614,6 +634,33 @@ mod tests {
             "draw_series: cannot draw line_series with date x values on a chart whose x axis \
              is numeric"
         );
+    }
+
+    #[test]
+    fn y_axis_kinds_must_agree() {
+        let horizontal = Series {
+            kind: SeriesKind::HistogramHorizontal(HistogramOptions {
+                margin: 5,
+                baseline: 0.0,
+            }),
+            x: Column::Numeric(vec![1.0]),
+            y: Column::Category(vec!["a".into()]),
+            ..line(Column::Numeric(vec![1.0]))
+        };
+        let chart = Chart::new().draw_series(horizontal).unwrap();
+        let err = chart
+            .clone()
+            .draw_series(line(Column::Numeric(vec![1.0])))
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: cannot draw line_series with numeric y values on a chart whose y axis \
+             is category"
+        );
+        let err = chart
+            .y_range(RangeValue::Number(0.0), RangeValue::Number(1.0))
+            .unwrap_err();
+        assert!(err.message().contains("category y axis"), "{err}");
     }
 
     #[test]
