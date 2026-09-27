@@ -1,11 +1,13 @@
 //! Render tests: the plan's worked examples that M2 covers, built with the calls the SQL layer
-//! makes, plus the axis kinds and edge cases.
+//! makes, plus the axis kinds and edge cases, and M4's styling (mesh, legend, log scales,
+//! horizontal histograms, markers, builder sizes) as `test/svg/` renders it from SQL.
 //!
 //! Set `DUCKERS_CHART_PNG_DIR` to also write every chart as a PNG into that directory.
 
+use duckers_chart::spec::MeshSetting;
 use duckers_chart::{
-    Accumulator, Chart, Key, RangeValue, Series, SeriesAggregate, SeriesBinding, SortKey, SqlType,
-    Value, XValue, mix, to_png, to_rgb, to_svg,
+    Accumulator, Chart, Font, Key, RangeValue, Series, SeriesAggregate, SeriesBinding, SortKey,
+    SqlType, Value, XValue, mix, to_png, to_rgb, to_svg,
 };
 
 /// One row of an aggregate call.
@@ -264,6 +266,248 @@ fn reversed() -> Chart {
         .unwrap()
 }
 
+/// `test/svg/mesh_styled.sql`: every kind of mesh setting, formatters on a date and a numeric
+/// axis.
+fn mesh_styled() -> Chart {
+    let rows = weather(0)
+        .into_iter()
+        .map(|(d, t)| row(XValue::Date(d), t))
+        .collect();
+    let temp = one(SeriesAggregate::LineSeries, SqlType::Date, rows)
+        .style("red", Some(2))
+        .unwrap();
+    Chart::new()
+        .caption_font(
+            "Oslo, styled mesh",
+            Font::new("serif", 24, Some("bold")).unwrap(),
+        )
+        .x_label_area_size(50)
+        .unwrap()
+        .y_label_area_size(80)
+        .unwrap()
+        .configure_mesh()
+        .x_desc("day")
+        .y_desc("temperature")
+        .x_label_formatter("%b %d")
+        .unwrap()
+        .y_label_formatter("{:+.1f} °C")
+        .unwrap()
+        .x_labels(6)
+        .unwrap()
+        .y_labels(8)
+        .unwrap()
+        .label_style(
+            Font::new("sans-serif", 11, None)
+                .unwrap()
+                .color("grey_700")
+                .unwrap(),
+        )
+        .axis_desc_style(Font::new("serif", 14, Some("italic")).unwrap())
+        .light_line_style("blue_50", None)
+        .unwrap()
+        .bold_line_style("blue_200", Some(1))
+        .unwrap()
+        .axis_style("blue_900", Some(2))
+        .unwrap()
+        .set(MeshSetting::DisableXMesh)
+        .set_tick_mark_size("bottom", 8)
+        .unwrap()
+        .set_tick_mark_size("left", 3)
+        .unwrap()
+        .x_label_offset(4)
+        .unwrap()
+        .y_label_offset(-3)
+        .unwrap()
+        .draw()
+        .draw_series(temp)
+        .unwrap()
+}
+
+/// `test/svg/legend_styled.sql`: a legend with every option and a coloured FONT, over the
+/// three cities' lines only (the SQL adds sample points and shows one month).
+fn legend_styled() -> Chart {
+    let lines: Vec<Series> = cities()
+        .series()
+        .map(|s| s.clone().stroke_width(2).unwrap())
+        .collect();
+    Chart::new()
+        .draw_series_list(lines)
+        .unwrap()
+        .configure_series_labels()
+        .position_at(20, 10)
+        .unwrap()
+        .margin(8)
+        .unwrap()
+        .legend_area_size(40)
+        .unwrap()
+        .border_style("grey_600", Some(2))
+        .unwrap()
+        .background_style(&mix("white", 0.85).unwrap())
+        .unwrap()
+        .label_font(
+            Font::new("serif", 16, Some("italic"))
+                .unwrap()
+                .color("bluegrey_800")
+                .unwrap(),
+        )
+        .draw()
+}
+
+/// `test/svg/log_scales.sql`: log scales on both axes.
+fn log_scales() -> Chart {
+    let xs: Vec<f64> = (0..31).map(|i| 10f64.powf(f64::from(i) / 10.0)).collect();
+    let rows = |p: i32| {
+        xs.iter()
+            .map(|x| row(XValue::Number(*x), x.powi(p)))
+            .collect()
+    };
+    let square = one(SeriesAggregate::LineSeries, SqlType::Float, rows(2)).label("x²");
+    let cube = one(SeriesAggregate::PointSeries, SqlType::Float, rows(3))
+        .marker("triangle")
+        .unwrap()
+        .size(4)
+        .unwrap()
+        .label("x³");
+    Chart::new()
+        .caption("x² and x³ on log axes", Some(20))
+        .unwrap()
+        .x_log_scale(None)
+        .unwrap()
+        .y_log_scale(None)
+        .unwrap()
+        .configure_mesh()
+        .x_desc("x")
+        .draw()
+        .draw_series(square)
+        .unwrap()
+        .draw_series(cube)
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_left")
+        .unwrap()
+        .border_style("black", None)
+        .unwrap()
+        .draw()
+}
+
+/// `test/svg/histogram_horizontal.sql`: horizontal bars on a category axis with a margin and
+/// a baseline some counts are below.
+fn histogram_horizontal() -> Chart {
+    let sections = [
+        ("sport", 412.0),
+        ("culture", 158.0),
+        ("news", 530.0),
+        ("economy", 201.0),
+        ("opinion", 97.0),
+    ];
+    let rows = sections
+        .into_iter()
+        .map(|(s, n)| Row {
+            order_by: Some(SortKey::Float(n)),
+            ..row(XValue::Category(s.into()), n)
+        })
+        .collect();
+    let bars = one(SeriesAggregate::HistogramHorizontal, SqlType::Varchar, rows)
+        .style("teal_400", None)
+        .unwrap()
+        .margin(2)
+        .unwrap()
+        .baseline(150.0)
+        .unwrap();
+    Chart::new()
+        .caption("Articles per section", Some(20))
+        .unwrap()
+        .y_label_area_size(70)
+        .unwrap()
+        .configure_mesh()
+        .x_desc("articles")
+        .x_label_formatter("{:.0f}")
+        .unwrap()
+        .draw()
+        .draw_series(bars)
+        .unwrap()
+}
+
+/// `test/svg/markers.sql`: the four point markers.
+fn markers() -> Chart {
+    let names = ["circle", "cross", "pixel", "triangle"];
+    let colors = ["red", "green_700", "black", "blue_600"];
+    let mut rows = Vec::new();
+    for (j, name) in names.into_iter().enumerate() {
+        for i in 0..20 {
+            rows.push(Row {
+                key: Some(Key {
+                    sort: SortKey::Text(name.into()),
+                    label: Some(name.into()),
+                }),
+                ..row(XValue::Integer(i), j as f64 + (i as f64 / 3.0).sin())
+            });
+        }
+    }
+    let series = aggregate(SeriesAggregate::PointSeries, SqlType::Integer, rows)
+        .into_iter()
+        .zip(names.into_iter().zip(colors))
+        .map(|(s, (name, color))| {
+            s.marker(name)
+                .unwrap()
+                .style(color, None)
+                .unwrap()
+                .size(5)
+                .unwrap()
+                .filled()
+                .unwrap()
+        });
+    Chart::new()
+        .caption("marker()", Some(20))
+        .unwrap()
+        .draw_series_list(series)
+        .unwrap()
+        .configure_series_labels()
+        .position("lower_right")
+        .unwrap()
+        .border_style("black", None)
+        .unwrap()
+        .background_style("white")
+        .unwrap()
+        .draw()
+}
+
+/// `test/svg/builder_sizes.sql`: every ChartBuilder size method.
+fn builder_sizes() -> Chart {
+    let rows = (0..11)
+        .map(|i| row(XValue::Integer(i), (i * i) as f64))
+        .collect();
+    Chart::new()
+        .caption("ChartBuilder sizes", Some(20))
+        .unwrap()
+        .margin_top(5)
+        .unwrap()
+        .margin_bottom(20)
+        .unwrap()
+        .margin_left(30)
+        .unwrap()
+        .margin_right(15)
+        .unwrap()
+        .set_all_label_area_size(35)
+        .unwrap()
+        .top_x_label_area_size(45)
+        .unwrap()
+        .right_y_label_area_size(65)
+        .unwrap()
+        .set_left_and_bottom_label_area_size(50)
+        .unwrap()
+        .configure_mesh()
+        .x_desc("x")
+        .y_desc("y")
+        .draw()
+        .draw_series(
+            one(SeriesAggregate::LineSeries, SqlType::Integer, rows)
+                .style("purple", Some(2))
+                .unwrap(),
+        )
+        .unwrap()
+}
+
 /// All charts, with the size they are rendered at.
 fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
     vec![
@@ -277,6 +521,12 @@ fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
         ("daily", daily(), (640, 480)),
         ("reversed", reversed(), (640, 480)),
         ("empty", Chart::new(), (640, 480)),
+        ("mesh_styled", mesh_styled(), (800, 500)),
+        ("legend_styled", legend_styled(), (640, 480)),
+        ("log_scales", log_scales(), (640, 480)),
+        ("histogram_horizontal", histogram_horizontal(), (640, 480)),
+        ("markers", markers(), (640, 480)),
+        ("builder_sizes", builder_sizes(), (640, 480)),
     ]
 }
 
@@ -438,4 +688,82 @@ mod snapshots {
     snapshot!(daily);
     snapshot!(reversed);
     snapshot!(empty);
+    snapshot!(mesh_styled);
+    snapshot!(legend_styled);
+    snapshot!(log_scales);
+    snapshot!(histogram_horizontal);
+    snapshot!(markers);
+    snapshot!(builder_sizes);
+}
+
+#[test]
+fn formatted_labels() {
+    let svg = to_svg(&mesh_styled(), 800, 500).unwrap();
+    for label in ["\nJan 15\n", "\n+5.0 °C\n", "\nFeb 12\n"] {
+        assert!(svg.contains(label), "missing {label:?}");
+    }
+    let svg = to_svg(&log_scales(), 640, 480).unwrap();
+    for label in ["\n1\n", "\n1000\n", "\n1e6\n", "\n1e9\n"] {
+        assert!(svg.contains(label), "missing {label:?}");
+    }
+    assert!(!svg.contains("1000000.0"), "LogCoord's {{:?}} labels");
+}
+
+#[test]
+fn horizontal_bars_run_from_the_baseline() {
+    // In the band order news is on top, so its bar's rect comes last; each bar starts at the
+    // baseline's x and opinion (97) ends left of it.
+    let svg = to_svg(&histogram_horizontal(), 640, 480).unwrap();
+    let rects: Vec<(i32, i32)> = svg
+        .lines()
+        .filter(|l| l.starts_with("<rect") && l.contains("#26A69A"))
+        .map(|l| {
+            let attr = |name: &str| -> i32 {
+                let start = l.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+                l[start..].split('"').next().unwrap().parse().unwrap()
+            };
+            (attr("x"), attr("width"))
+        })
+        .collect();
+    assert_eq!(rects.len(), 5, "{svg}");
+    let (opinion, others) = rects.split_first().unwrap();
+    let baseline_x = opinion.0 + opinion.1;
+    for (x, _) in others {
+        assert_eq!(*x, baseline_x);
+    }
+}
+
+#[test]
+fn log_axis_errors_name_the_fix() {
+    let bars = one(
+        SeriesAggregate::Histogram,
+        SqlType::Varchar,
+        vec![row(XValue::Category("a".into()), 10.0)],
+    );
+    let chart = Chart::new()
+        .y_log_scale(None)
+        .unwrap()
+        .draw_series(bars)
+        .unwrap();
+    let err = to_svg(&chart, 100, 100).unwrap_err();
+    assert!(err.message().contains("a positive baseline(v)"), "{err}");
+}
+
+#[test]
+fn every_font_family_renders() {
+    // A family no system has still renders, with the embedded font, in PNG and SVG.
+    let chart = Chart::new()
+        .caption_font("t", Font::new("No Such Family", 20, Some("bold")).unwrap())
+        .configure_mesh()
+        .label_style(Font::new("Another Missing One", 9, None).unwrap())
+        .draw()
+        .configure_series_labels()
+        .label_font(Font::new("Third", 9, None).unwrap())
+        .draw();
+    assert!(to_png(&chart, 200, 200).is_ok());
+    assert!(
+        to_svg(&chart, 200, 200)
+            .unwrap()
+            .contains("font-family=\"Another Missing One\"")
+    );
 }
