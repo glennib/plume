@@ -277,6 +277,30 @@ impl Chart {
         Ok(self)
     }
 
+    /// `margin_top(px)`: `ChartBuilder::margin_top`.
+    pub fn margin_top(mut self, size: i64) -> Result<Chart> {
+        self.margin.top = px("margin_top", size)?;
+        Ok(self)
+    }
+
+    /// `margin_bottom(px)`: `ChartBuilder::margin_bottom`.
+    pub fn margin_bottom(mut self, size: i64) -> Result<Chart> {
+        self.margin.bottom = px("margin_bottom", size)?;
+        Ok(self)
+    }
+
+    /// `margin_left(px)`: `ChartBuilder::margin_left`.
+    pub fn margin_left(mut self, size: i64) -> Result<Chart> {
+        self.margin.left = px("margin_left", size)?;
+        Ok(self)
+    }
+
+    /// `margin_right(px)`: `ChartBuilder::margin_right`.
+    pub fn margin_right(mut self, size: i64) -> Result<Chart> {
+        self.margin.right = px("margin_right", size)?;
+        Ok(self)
+    }
+
     /// `x_label_area_size(px)`: `ChartBuilder::x_label_area_size`, the bottom label area.
     pub fn x_label_area_size(mut self, size: i64) -> Result<Chart> {
         self.label_area.bottom = px("x_label_area_size", size)?;
@@ -286,6 +310,68 @@ impl Chart {
     /// `y_label_area_size(px)`: `ChartBuilder::y_label_area_size`, the left label area.
     pub fn y_label_area_size(mut self, size: i64) -> Result<Chart> {
         self.label_area.left = px("y_label_area_size", size)?;
+        Ok(self)
+    }
+
+    /// `top_x_label_area_size(px)`: `ChartBuilder::top_x_label_area_size`.
+    pub fn top_x_label_area_size(mut self, size: i64) -> Result<Chart> {
+        self.label_area.top = px("top_x_label_area_size", size)?;
+        Ok(self)
+    }
+
+    /// `right_y_label_area_size(px)`: `ChartBuilder::right_y_label_area_size`.
+    pub fn right_y_label_area_size(mut self, size: i64) -> Result<Chart> {
+        self.label_area.right = px("right_y_label_area_size", size)?;
+        Ok(self)
+    }
+
+    /// `set_all_label_area_size(px)`: `ChartBuilder::set_all_label_area_size`, all four.
+    pub fn set_all_label_area_size(mut self, size: i64) -> Result<Chart> {
+        let s = px("set_all_label_area_size", size)?;
+        self.label_area = Sides {
+            top: s,
+            bottom: s,
+            left: s,
+            right: s,
+        };
+        Ok(self)
+    }
+
+    /// `set_left_and_bottom_label_area_size(px)`:
+    /// `ChartBuilder::set_left_and_bottom_label_area_size`.
+    pub fn set_left_and_bottom_label_area_size(mut self, size: i64) -> Result<Chart> {
+        let s = px("set_left_and_bottom_label_area_size", size)?;
+        self.label_area.left = s;
+        self.label_area.bottom = s;
+        Ok(self)
+    }
+
+    /// `x_log_scale([base])`: `(lo..hi).log_scale().base(base)` for the x range.
+    pub fn x_log_scale(self, base: Option<f64>) -> Result<Chart> {
+        self.log_scale(Axis::X, base)
+    }
+
+    /// `y_log_scale([base])`: `(lo..hi).log_scale().base(base)` for the y range.
+    pub fn y_log_scale(self, base: Option<f64>) -> Result<Chart> {
+        self.log_scale(Axis::Y, base)
+    }
+
+    fn log_scale(mut self, axis: Axis, base: Option<f64>) -> Result<Chart> {
+        let what = format!("{}_log_scale", axis.name());
+        let base = base.unwrap_or(10.0);
+        if !(base.is_finite() && base > 1.0) {
+            return Err(Error::invalid(format!(
+                "{what}: LogRangeExt::base must be a finite number above 1, got {base}"
+            )));
+        }
+        let scale = Scale::Log { base };
+        let kind = self
+            .kind_on(axis)
+            .or(self.axis(axis).range.map(AxisRange::kind));
+        if let Some(kind) = kind {
+            check_scale_fits(&what, axis, scale, kind)?;
+        }
+        self.axis_mut(axis).scale = scale;
         Ok(self)
     }
 
@@ -305,6 +391,9 @@ impl Chart {
         if let Some(kind) = self.kind_on(axis) {
             check_range_fits(&what, axis.name(), range, kind)?;
         }
+        let kind = self.kind_on(axis).unwrap_or(range.kind());
+        let scale = self.axis(axis).scale;
+        check_scale_fits(&format!("{}_log_scale", axis.name()), axis, scale, kind)?;
         self.axis_mut(axis).range = Some(range);
         Ok(self)
     }
@@ -361,8 +450,22 @@ impl Chart {
                 let what = format!("draw_series: {}_range", axis.name());
                 check_range_fits(&what, axis.name(), range, series.kind_on(axis))?;
             }
+            let what = format!("draw_series: {}_log_scale", axis.name());
+            check_scale_fits(&what, axis, self.axis(axis).scale, series.kind_on(axis))?;
         }
         Ok(())
+    }
+}
+
+/// Checks that a scale suits the kind of its axis: a log scale needs a numeric axis.
+pub(crate) fn check_scale_fits(what: &str, axis: Axis, scale: Scale, kind: AxisKind) -> Result<()> {
+    match scale {
+        Scale::Log { .. } if kind != AxisKind::Numeric => Err(Error::invalid(format!(
+            "{what} does not apply to the {kind} {} axis: plotters' log_scale (LogCoord) needs a \
+             numeric axis",
+            axis.name()
+        ))),
+        _ => Ok(()),
     }
 }
 
@@ -871,6 +974,131 @@ mod tests {
         assert_eq!(
             err.message(),
             "margin must be between 0 and 8192 px, got -1"
+        );
+    }
+
+    #[test]
+    fn every_builder_size() {
+        let chart = Chart::new()
+            .margin_top(1)
+            .unwrap()
+            .margin_bottom(2)
+            .unwrap()
+            .margin_left(3)
+            .unwrap()
+            .margin_right(4)
+            .unwrap()
+            .top_x_label_area_size(5)
+            .unwrap()
+            .right_y_label_area_size(6)
+            .unwrap();
+        assert_eq!(
+            chart.margin,
+            Sides {
+                top: 1,
+                bottom: 2,
+                left: 3,
+                right: 4
+            }
+        );
+        assert_eq!(
+            chart.label_area,
+            Sides {
+                top: 5,
+                bottom: 30,
+                left: 40,
+                right: 6
+            }
+        );
+        let all = chart.clone().set_all_label_area_size(7).unwrap();
+        assert_eq!(
+            all.label_area,
+            Sides {
+                top: 7,
+                bottom: 7,
+                left: 7,
+                right: 7
+            }
+        );
+        let lb = chart.set_left_and_bottom_label_area_size(8).unwrap();
+        assert_eq!(
+            lb.label_area,
+            Sides {
+                top: 5,
+                bottom: 8,
+                left: 8,
+                right: 6
+            }
+        );
+        let err = Chart::new().right_y_label_area_size(-1).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "right_y_label_area_size must be between 0 and 8192 px, got -1"
+        );
+    }
+
+    #[test]
+    fn log_scales() {
+        let chart = Chart::new().x_log_scale(None).unwrap();
+        assert_eq!(chart.x_axis.scale, Scale::Log { base: 10.0 });
+        let chart = chart.y_log_scale(Some(2.0)).unwrap();
+        assert_eq!(chart.y_axis.scale, Scale::Log { base: 2.0 });
+        for base in [1.0, 0.5, f64::INFINITY, f64::NAN] {
+            let err = Chart::new().x_log_scale(Some(base)).unwrap_err();
+            assert!(
+                err.message()
+                    .starts_with("x_log_scale: LogRangeExt::base must be a finite number above 1"),
+                "{err}"
+            );
+        }
+
+        // Known axis kinds are checked at the call ...
+        let dates = Chart::new()
+            .draw_series(line(Column::Date(vec![1])))
+            .unwrap();
+        let err = dates.x_log_scale(None).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "x_log_scale does not apply to the date x axis: plotters' log_scale (LogCoord) \
+             needs a numeric axis"
+        );
+        let err = Chart::new()
+            .x_range(RangeValue::Date(1), RangeValue::Date(5))
+            .unwrap()
+            .x_log_scale(None)
+            .unwrap_err();
+        assert!(err.message().contains("the date x axis"), "{err}");
+        let err = Chart::new()
+            .x_log_scale(None)
+            .unwrap()
+            .x_range(RangeValue::Timestamp(1), RangeValue::Timestamp(5))
+            .unwrap_err();
+        assert!(err.message().contains("the timestamp x axis"), "{err}");
+
+        // ... and otherwise at draw_series.
+        let err = Chart::new()
+            .x_log_scale(None)
+            .unwrap()
+            .draw_series(histogram(Column::Category(vec!["a".into()])))
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: x_log_scale does not apply to the category x axis: plotters' \
+             log_scale (LogCoord) needs a numeric axis"
+        );
+        let err = Chart::new()
+            .draw_series(histogram(Column::Integer(vec![1])))
+            .unwrap()
+            .x_log_scale(None)
+            .unwrap_err();
+        assert!(err.message().contains("the integer bucket x axis"), "{err}");
+        // The value axis of a histogram is numeric.
+        assert!(
+            Chart::new()
+                .draw_series(histogram(Column::Integer(vec![1])))
+                .unwrap()
+                .y_log_scale(None)
+                .is_ok()
         );
     }
 

@@ -694,6 +694,20 @@ Each item records the choice, the alternative, and why.
     (before any series, the kind is open on both axes).
     Alternative: numeric y values plus an orientation flag on histograms.
     Rejected because M5's horizontal error bars and boxplots and M6's secondary axes need buckets or times on y too.
+18. **Log axes need positive bounds; they do not guess.**
+    `x_log_scale`/`y_log_scale` apply to numeric axes only
+    (checked at the call when the axis kind is known, at `draw_series` otherwise).
+    A range bound that is zero or negative, explicit or from the data
+    (including a histogram's baseline, 0 by default),
+    is an error at render time that names where the bound came from and suggests `x_range`/`y_range`
+    or `baseline`. plotters would replace a zero bound with `other_bound * 1e-5` and mirror negative ranges,
+    which draws something, but rarely what was meant.
+    With explicit positive bounds, points at or below zero are skipped
+    and bars from a baseline of 0 start at the axis' low end.
+    Without data a log axis shows `1..base`; a single value `v` is widened to `v / base .. v * base`.
+    Labels use plotters' float printer with scientific notation
+    (`1`, `100`, `1e6`)
+    instead of `LogCoord`'s `{:?}` (`1000000.0`), and `x_label_formatter`/`y_label_formatter` apply as on a linear axis.
 
 ## Open questions
 

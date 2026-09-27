@@ -19,12 +19,11 @@ pub fn register(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )
 }
 
+/// A `CHART` method with one px argument.
+type ChartPx = fn(Chart, i64) -> duckers_chart::Result<Chart>;
+
 /// A method on `CHART` that takes one `BIGINT` px argument and returns the chart.
-fn chart_px(
-    t: &Types,
-    name: &'static str,
-    f: fn(Chart, i64) -> duckers_chart::Result<Chart>,
-) -> ScalarFunction {
+fn chart_px(t: &Types, name: &'static str, f: ChartPx) -> ScalarFunction {
     scalar(name, &t.chart, move |a| {
         let chart: Chart = a.value(0)?;
         Ok(a.check(f(chart, a.i64(1)?))?.encode())
@@ -75,11 +74,50 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
         .param("text", &t.varchar)
         .param("size", &t.bigint),
     )?;
-    ext.register_scalar(chart_px(t, "margin", Chart::margin))?;
-    ext.register_scalar(chart_px(t, "x_label_area_size", Chart::x_label_area_size))?;
-    ext.register_scalar(chart_px(t, "y_label_area_size", Chart::y_label_area_size))?;
+    let sizes: [(&'static str, ChartPx); 11] = [
+        ("margin", Chart::margin),
+        ("margin_top", Chart::margin_top),
+        ("margin_bottom", Chart::margin_bottom),
+        ("margin_left", Chart::margin_left),
+        ("margin_right", Chart::margin_right),
+        ("x_label_area_size", Chart::x_label_area_size),
+        ("y_label_area_size", Chart::y_label_area_size),
+        ("top_x_label_area_size", Chart::top_x_label_area_size),
+        ("right_y_label_area_size", Chart::right_y_label_area_size),
+        ("set_all_label_area_size", Chart::set_all_label_area_size),
+        (
+            "set_left_and_bottom_label_area_size",
+            Chart::set_left_and_bottom_label_area_size,
+        ),
+    ];
+    for (name, f) in sizes {
+        ext.register_scalar(chart_px(t, name, f))?;
+    }
     ext.register_scalar(range(t, "x_range", true))?;
     ext.register_scalar(range(t, "y_range", false))?;
+    for (name, f) in [
+        (
+            "x_log_scale",
+            Chart::x_log_scale as fn(Chart, Option<f64>) -> duckers_chart::Result<Chart>,
+        ),
+        ("y_log_scale", Chart::y_log_scale),
+    ] {
+        ext.register_scalar(
+            scalar(name, &t.chart, move |a| {
+                let chart: Chart = a.value(0)?;
+                Ok(a.check(f(chart, None))?.encode())
+            })
+            .param("chart", &t.chart),
+        )?;
+        ext.register_scalar(
+            scalar(name, &t.chart, move |a| {
+                let chart: Chart = a.value(0)?;
+                Ok(a.check(f(chart, Some(a.f64(1)?)))?.encode())
+            })
+            .param("chart", &t.chart)
+            .param("base", &t.double),
+        )?;
+    }
     // `root.fill(&color)`. DuckDB has a window function `fill`, and a scalar cannot share its
     // name, so the plotters receiver qualifies the name.
     ext.register_scalar(

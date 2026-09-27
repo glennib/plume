@@ -11,10 +11,13 @@
 //! kinds, and a new axis kind is a new variant rather than a new type combination.
 
 use crate::error::{Error, Result};
-use crate::spec::{Axis, AxisKind, AxisRange, Chart, Column, Series};
+use crate::methods::check_scale_fits;
+use crate::spec::{Axis, AxisKind, AxisRange, Chart, Column, Scale, Series};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
+use plotters::coord::combinators::{IntoLogRange, LogCoord};
 use plotters::coord::ranged1d::{KeyPointHint, NoDefaultFormatting, Ranged, ValueFormatter};
 use plotters::coord::types::{RangedCoordf64, RangedCoordi64};
+use plotters::data::float::FloatPrettyPrinter;
 use plotters::prelude::{RangedDate, RangedDateTime};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -32,14 +35,18 @@ pub(crate) enum AxisCoord {
     Timestamp(TimeCoord),
     /// A segmented axis; values are band positions.
     Band(BandCoord),
+    /// `LogCoord<f64>`.
+    Log(LogAxis),
 }
 
 impl AxisCoord {
     /// The position of value `i` of `column`: the value itself, or the centre of its band.
-    /// `None` for a column of another kind and for a date or timestamp chrono cannot represent.
+    /// `None` for a column of another kind, for a date or timestamp chrono cannot represent,
+    /// and for a value a log axis cannot place (zero or negative).
     pub(crate) fn at(&self, column: &Column, i: usize) -> Option<f64> {
         match (self, column) {
             (AxisCoord::Linear(_), Column::Numeric(v)) => Some(v[i]),
+            (AxisCoord::Log(_), Column::Numeric(v)) => (v[i] > 0.0).then_some(v[i]),
             (AxisCoord::Date(_), Column::Date(v)) => date(v[i]).map(|_| f64::from(v[i])),
             (AxisCoord::Timestamp(_), Column::Timestamp(v)) => timestamp(v[i]).map(|_| v[i] as f64),
             (AxisCoord::Band(b), _) => Some(b.index(column, i)? as f64 + 0.5),
@@ -47,10 +54,14 @@ impl AxisCoord {
         }
     }
 
-    /// The position of a number (a y value, a bar height or a baseline), on numeric axes.
+    /// The position of a number (a bar end or a baseline), on numeric axes. On a log axis a
+    /// number that is not positive is placed at the low end of the axis, so bars from a
+    /// baseline of 0 start at the axis edge.
     pub(crate) fn number(&self, value: f64) -> Option<f64> {
         match self {
             AxisCoord::Linear(_) => Some(value),
+            AxisCoord::Log(_) if value > 0.0 => Some(value),
+            AxisCoord::Log(log) => Some(log.lo.min(log.hi)),
             _ => None,
         }
     }
@@ -96,6 +107,7 @@ impl Ranged for AxisCoord {
             AxisCoord::Date(c) => day_of(*value).map_or(limit.0, |d| c.map(&d, limit)),
             AxisCoord::Timestamp(c) => instant_of(*value).map_or(limit.0, |t| c.map(&t, limit)),
             AxisCoord::Band(c) => c.map(value, limit),
+            AxisCoord::Log(c) => c.coord.map(value, limit),
         }
     }
 
@@ -105,6 +117,7 @@ impl Ranged for AxisCoord {
             AxisCoord::Date(c) => c.key_points(hint).into_iter().map(days_of).collect(),
             AxisCoord::Timestamp(c) => c.key_points(hint).into_iter().map(micros_of).collect(),
             AxisCoord::Band(c) => c.key_points(hint),
+            AxisCoord::Log(c) => c.coord.key_points(hint),
         }
     }
 
@@ -120,6 +133,7 @@ impl Ranged for AxisCoord {
                 micros_of(r.start)..micros_of(r.end)
             }
             AxisCoord::Band(c) => c.range(),
+            AxisCoord::Log(c) => c.lo..c.hi,
         }
     }
 }
@@ -133,7 +147,43 @@ impl ValueFormatter<f64> for AxisCoord {
                 instant_of(*value).map_or_else(String::new, |t| c.format_ext(&t))
             }
             AxisCoord::Band(c) => c.format_ext(value),
+            // `LogCoord` formats with `{:?}` (`1000000.0`); plotters' float printer with
+            // scientific notation keeps a decade's label short (`1e6`, `100`, `0.001`).
+            AxisCoord::Log(_) => FloatPrettyPrinter {
+                allow_scientific: true,
+                min_decimal: 0,
+                max_decimal: 5,
+            }
+            .print(*value),
         }
+    }
+}
+
+/// A `LogCoord<f64>` with the bounds and base it was built from, so it can be cloned
+/// (`LogCoord` is not `Clone`).
+pub(crate) struct LogAxis {
+    coord: LogCoord<f64>,
+    lo: f64,
+    hi: f64,
+    base: f64,
+}
+
+impl LogAxis {
+    /// `(lo..hi).log_scale().base(base)`; `lo > hi` reverses the axis. Both bounds must be
+    /// positive.
+    fn new(lo: f64, hi: f64, base: f64) -> LogAxis {
+        LogAxis {
+            coord: (lo..hi).log_scale().base(base).into(),
+            lo,
+            hi,
+            base,
+        }
+    }
+}
+
+impl Clone for LogAxis {
+    fn clone(&self) -> Self {
+        LogAxis::new(self.lo, self.hi, self.base)
     }
 }
 
@@ -325,16 +375,50 @@ pub(crate) fn coord(chart: &Chart, series: &[&Series], axis: Axis) -> Result<Axi
         ))
     };
     let beyond = || out_of_range(&format!("the {name} range"));
+    let scale = chart.axis(axis).scale;
+    check_scale_fits(&format!("{name}_log_scale"), axis, scale, kind)?;
 
     Ok(match kind {
-        AxisKind::Numeric => {
-            let (lo, hi) = match range {
-                Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
-                Some(_) => return Err(mismatch()),
-                None => fit(extent(numbers_on(series, axis)), 0.0, 1.0),
-            };
-            AxisCoord::Linear((lo..hi).into())
-        }
+        AxisKind::Numeric => match scale {
+            Scale::Linear => {
+                let (lo, hi) = match range {
+                    Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
+                    Some(_) => return Err(mismatch()),
+                    None => fit(extent(numbers_on(series, axis)), 0.0, 1.0),
+                };
+                AxisCoord::Linear((lo..hi).into())
+            }
+            Scale::Log { base } => {
+                let (lo, hi) = match range {
+                    Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
+                    Some(_) => return Err(mismatch()),
+                    // A log axis widens a single value by a factor of the base either side,
+                    // and shows one decade without data.
+                    None => match extent(numbers_on(series, axis)) {
+                        None => (1.0, base),
+                        Some((lo, hi)) if lo == hi && lo > 0.0 => (lo / base, hi * base),
+                        Some(range) => range,
+                    },
+                };
+                if lo <= 0.0 || hi <= 0.0 {
+                    let (from, fix) = if range.is_some() {
+                        (format!("{name}_range"), format!("{name}_range(lo, hi)"))
+                    } else if series.iter().any(|s| s.bucket_axis() == Some(axis.other())) {
+                        (
+                            "the data (a histogram includes its baseline, 0 by default)".into(),
+                            format!("a positive baseline(v) on the histogram, or {name}_range"),
+                        )
+                    } else {
+                        ("the data".into(), format!("{name}_range(lo, hi)"))
+                    };
+                    return Err(Error::invalid(format!(
+                        "{name}_log_scale needs positive {name} bounds, since plotters' LogCoord \
+                         maps ln(v); {from} gives {lo} to {hi}: set {fix} with positive bounds"
+                    )));
+                }
+                AxisCoord::Log(LogAxis::new(lo, hi, base))
+            }
+        },
         AxisKind::Timestamp => {
             let (lo, hi) = match range {
                 Some(AxisRange::Timestamp(lo, hi)) => (lo, hi),
@@ -797,6 +881,93 @@ mod tests {
         let y = band(coord(&c, &series, Axis::Y).unwrap());
         assert_eq!(y.range(), 0.0..2.0);
         assert_eq!(y.format_ext(&1.5), "b");
+    }
+
+    #[test]
+    fn log_axes() {
+        let c = chart(vec![line(vec![1.0, 1000.0], vec![0.5, 2.0])])
+            .x_log_scale(None)
+            .unwrap();
+        let series: Vec<&Series> = c.series().collect();
+        let x = x_coord(&c, &series).unwrap();
+        assert!(matches!(x, AxisCoord::Log(_)));
+        assert_eq!(x.range(), 1.0..1000.0);
+        // Linear in ln(v): 10 is a third of the way.
+        assert_eq!(x.map(&10.0, (0, 300)), 100);
+        let labels: Vec<String> = x.key_points(4).iter().map(|v| x.format_ext(v)).collect();
+        assert_eq!(labels, ["1", "10", "100", "1000"]);
+        assert_eq!(x.format_ext(&1e6), "1e6");
+        assert_eq!(x.format_ext(&0.001), "0.001");
+        assert_eq!(x.at(&Column::Numeric(vec![0.0, -1.0, 5.0]), 0), None);
+        assert_eq!(x.at(&Column::Numeric(vec![0.0, -1.0, 5.0]), 2), Some(5.0));
+        // Bars from a baseline below the axis start at its low end.
+        assert_eq!(x.number(0.0), Some(1.0));
+        let clone = x.clone();
+        assert_eq!(clone.map(&100.0, (0, 300)), 200);
+
+        // One value is widened by the base either side; no data is one decade.
+        let one = chart(vec![line(vec![4.0], vec![1.0])])
+            .x_log_scale(Some(2.0))
+            .unwrap();
+        let series: Vec<&Series> = one.series().collect();
+        assert_eq!(x_coord(&one, &series).unwrap().range(), 2.0..8.0);
+        let empty = Chart::new().y_log_scale(None).unwrap();
+        assert_eq!(coord(&empty, &[], Axis::Y).unwrap().range(), 1.0..10.0);
+    }
+
+    #[test]
+    fn log_axes_need_positive_bounds() {
+        let err = |c: &Chart| {
+            let series: Vec<&Series> = c.series().collect();
+            coord(c, &series, Axis::Y)
+                .err()
+                .unwrap()
+                .message()
+                .to_string()
+        };
+        let data = chart(vec![line(vec![1.0, 2.0], vec![0.0, 5.0])])
+            .y_log_scale(None)
+            .unwrap();
+        assert_eq!(
+            err(&data),
+            "y_log_scale needs positive y bounds, since plotters' LogCoord maps ln(v); the data \
+             gives 0 to 5: set y_range(lo, hi) with positive bounds"
+        );
+        let bars = chart(vec![hist(Column::Integer(vec![1, 2]), vec![10.0, 100.0])])
+            .y_log_scale(None)
+            .unwrap();
+        assert_eq!(
+            err(&bars),
+            "y_log_scale needs positive y bounds, since plotters' LogCoord maps ln(v); the data \
+             (a histogram includes its baseline, 0 by default) gives 0 to 100: set a positive \
+             baseline(v) on the histogram, or y_range with positive bounds"
+        );
+        let explicit = data
+            .clone()
+            .y_range(RangeValue::Number(-1.0), RangeValue::Number(10.0))
+            .unwrap();
+        assert!(
+            err(&explicit).contains("y_range gives -1 to 10"),
+            "{}",
+            err(&explicit)
+        );
+        let fixed = data
+            .y_range(RangeValue::Number(0.1), RangeValue::Number(10.0))
+            .unwrap();
+        let series: Vec<&Series> = fixed.series().collect();
+        assert!(coord(&fixed, &series, Axis::Y).is_ok());
+        let baseline = chart(vec![
+            hist(Column::Integer(vec![1, 2]), vec![10.0, 100.0])
+                .baseline(1.0)
+                .unwrap(),
+        ])
+        .y_log_scale(None)
+        .unwrap();
+        let series: Vec<&Series> = baseline.series().collect();
+        assert_eq!(
+            coord(&baseline, &series, Axis::Y).unwrap().range(),
+            1.0..100.0
+        );
     }
 
     #[test]

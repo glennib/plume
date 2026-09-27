@@ -21,6 +21,74 @@ SELECT __duckers_debug(chart().caption('Oslo', 20)).regexp_extract('size: [0-9]+
 ----
 size: 20
 
+# Every ChartBuilder size: margins per side and the four label areas.
+query T
+SELECT __duckers_debug(chart().margin_top(1).margin_bottom(2).margin_left(3).margin_right(4)
+    .top_x_label_area_size(5).right_y_label_area_size(6)).regexp_extract('margin: .*right: [0-9]+ \}')
+----
+margin: Sides { top: 1, bottom: 2, left: 3, right: 4 }, label_area: Sides { top: 5, bottom: 30, left: 40, right: 6 }
+
+query TT
+SELECT __duckers_debug(chart().set_all_label_area_size(7)).regexp_extract('label_area: [^}]*\}'),
+       __duckers_debug(chart().top_x_label_area_size(5).set_left_and_bottom_label_area_size(8)).regexp_extract('label_area: [^}]*\}')
+----
+label_area: Sides { top: 7, bottom: 7, left: 7, right: 7 }	label_area: Sides { top: 5, bottom: 8, left: 8, right: 0 }
+
+# x_log_scale and y_log_scale: plotters' log_scale(), base 10 unless given.
+query T
+SELECT __duckers_debug(chart().x_log_scale().y_log_scale(2)).regexp_extract('x_axis: .*Log \{ base: [0-9.]+ \} \}')
+----
+x_axis: AxisSpec { range: None, scale: Log { base: 10.0 } }, y_axis: AxisSpec { range: None, scale: Log { base: 2.0 } }
+
+query T
+SELECT chart().x_log_scale().draw_series(line_series(i + 1, i)).x_range(1, 100)::VARCHAR FROM range(3) r(i)
+----
+CHART(line, 1 series, 3 points)
+
+# A log scale needs a numeric axis: checked at the call when the axis kind is known, and at
+# draw_series otherwise.
+statement error
+SELECT chart().draw_series(line_series(d, 1)).x_log_scale() FROM (VALUES (DATE '2024-01-01')) t(d)
+----
+Invalid Input Error: x_log_scale does not apply to the date x axis: plotters' log_scale (LogCoord) needs a numeric axis
+
+statement error
+SELECT chart().y_log_scale().draw_series(histogram_horizontal('a', 1))
+----
+Invalid Input Error: draw_series: y_log_scale does not apply to the category y axis: plotters' log_scale (LogCoord) needs a numeric axis
+
+statement error
+SELECT chart().draw_series(histogram_vertical(i, 1)).x_log_scale() FROM range(3) r(i)
+----
+Invalid Input Error: x_log_scale does not apply to the integer bucket x axis: plotters' log_scale (LogCoord) needs a numeric axis
+
+statement error
+SELECT chart().x_log_scale().x_range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-02')
+----
+Invalid Input Error: x_range: x_log_scale does not apply to the timestamp x axis: plotters' log_scale (LogCoord) needs a numeric axis
+
+statement error
+SELECT chart().x_log_scale(1)
+----
+Invalid Input Error: x_log_scale: LogRangeExt::base must be a finite number above 1, got 1
+
+statement error
+SELECT chart().x_log_scale('ten')
+----
+Conversion Error
+
+statement error
+SELECT chart().set_all_label_area_size(-5)
+----
+Invalid Input Error: set_all_label_area_size must be between 0 and 8192 px, got -5
+
+query TTTTTT
+SELECT chart().margin_top(NULL) IS NULL, chart().set_left_and_bottom_label_area_size(NULL) IS NULL,
+       (NULL::CHART).x_log_scale() IS NULL, chart().y_log_scale(NULL) IS NULL,
+       chart().top_x_label_area_size(NULL) IS NULL, chart().right_y_label_area_size(NULL) IS NULL
+----
+true	true	true	true	true	true
+
 # x_range and y_range take numbers of any type, DATEs and TIMESTAMPs.
 query T
 SELECT __duckers_debug(chart().x_range(0, 10.5).y_range(-10::TINYINT, 30::DECIMAL(4,1))).regexp_extract('x_axis.*y_axis[^}]*Linear')

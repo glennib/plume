@@ -313,10 +313,15 @@ impl AxisRange {
     }
 }
 
-/// The range combinator of an axis. Log scales are appended as a new variant.
+/// The range combinator of an axis.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum Scale {
     Linear,
+    /// `(lo..hi).log_scale().base(base)`, plotters' `LogCoord`. The base only changes the key
+    /// points; the mapping is linear in `ln(v)`.
+    Log {
+        base: f64,
+    },
 }
 
 /// One drawing call on the `ChartContext`.

@@ -147,6 +147,30 @@ SELECT chart().draw_series(histogram_vertical(i, 1)).x_range(0.5, 5).to_png() FR
 ----
 Invalid Input Error: x_range on an integer bucket axis takes whole numbers, got 0.5 and 5
 
+# A log axis needs positive bounds, from the data or from x_range/y_range; rendering says which
+# and how to fix it.
+statement error
+SELECT chart().y_log_scale().draw_series(line_series(i, i)).to_svg() FROM range(3) r(i)
+----
+Invalid Input Error: to_svg: y_log_scale needs positive y bounds, since plotters' LogCoord maps ln(v); the data gives 0 to 2: set y_range(lo, hi) with positive bounds
+
+statement error
+SELECT chart().y_log_scale().draw_series(histogram_vertical(s, n)).to_png() FROM (VALUES ('a', 10), ('b', 1000)) t(s, n)
+----
+Invalid Input Error: to_png: y_log_scale needs positive y bounds, since plotters' LogCoord maps ln(v); the data (a histogram includes its baseline, 0 by default) gives 0 to 1000: set a positive baseline(v) on the histogram, or y_range with positive bounds
+
+statement error
+SELECT chart().x_log_scale().x_range(-1, 10).to_svg()
+----
+Invalid Input Error: to_svg: x_log_scale needs positive x bounds, since plotters' LogCoord maps ln(v); x_range gives -1 to 10: set x_range(lo, hi) with positive bounds
+
+query TT
+SELECT png_header(chart().y_log_scale().draw_series(histogram_vertical(s, n).baseline(1)).to_png()),
+       png_header(chart().y_log_scale().y_range(1, 2000).draw_series(histogram_vertical(s, n)).to_png())
+FROM (VALUES ('a', 10), ('b', 1000)) t(s, n)
+----
+640x480	640x480
+
 # The plan's worked examples, with to_png() and COPY ... (FORMAT blob) in place of
 # (FORMAT png) and show(). Files go to build/test-sql/, which the Makefile creates.
 statement ok
