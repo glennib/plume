@@ -7,8 +7,8 @@
 //! - [`envelope`]: their BLOB encoding ([`Value::encode`], [`Value::decode`]).
 //! - [`methods`](crate::methods): the SQL methods (`caption`, `draw_series`, `style`, ...) as
 //!   functions on the value types.
-//! - [`accumulate`]: the series aggregates' state (`line_series`, `point_series`,
-//!   `histogram_vertical`, `histogram_horizontal`).
+//! - [`accumulate`]: the series aggregates' state (`line_series`, `histogram_vertical`,
+//!   `candle_stick`, ...; [`SeriesAggregate`] lists them).
 //! - [`color`]: colour strings and `mix`.
 //! - [`render`]: `to_svg`, `to_png`, `to_rgb`.
 //! - Summaries for the `VARCHAR` casts are the `summary()` methods of the value types.

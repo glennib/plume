@@ -1,9 +1,10 @@
 //! One-line summaries, the `VARCHAR` casts of the SQL values.
 
 use crate::spec::{
-    Chart, Font, FontStyle, LabelPosition, LineStyle, Mesh, MeshSetting, Series, SeriesKind,
-    SeriesLabelSetting, SeriesLabels,
+    Chart, Column, Font, FontStyle, LabelPosition, LineStyle, Mesh, MeshSetting, Series,
+    SeriesKind, SeriesLabelSetting, SeriesLabels, bin,
 };
+use std::collections::BTreeSet;
 
 /// A SQL-style string literal: single quotes, embedded quotes doubled.
 fn quote(text: &str) -> String {
@@ -27,9 +28,25 @@ impl Series {
             out.push(' ');
             out.push_str(&quote(label));
         }
-        let count = match self.kind {
-            SeriesKind::Histogram(_) | SeriesKind::HistogramHorizontal(_) => {
-                plural(self.len(), "bucket", "buckets")
+        let count = match &self.kind {
+            SeriesKind::Histogram(o) | SeriesKind::HistogramHorizontal(o) => {
+                // Stepped buckets count their bins.
+                let bins = o.step.and_then(|step| {
+                    let axis = self.bucket_axis()?;
+                    let Column::Numeric(v) = self.column(axis) else {
+                        return None;
+                    };
+                    let bins: BTreeSet<i64> = v.iter().filter_map(|v| bin(*v, step)).collect();
+                    Some(bins.len())
+                });
+                plural(bins.unwrap_or(self.len()), "bucket", "buckets")
+            }
+            SeriesKind::ErrorBarVertical(_) | SeriesKind::ErrorBarHorizontal(_) => {
+                plural(self.len(), "bar", "bars")
+            }
+            SeriesKind::CandleStick(_) => plural(self.len(), "candle", "candles"),
+            SeriesKind::BoxplotVertical(_) | SeriesKind::BoxplotHorizontal(_) => {
+                plural(self.len(), "box", "boxes")
             }
             _ => plural(self.len(), "point", "points"),
         };
@@ -200,6 +217,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(h.summary(), "SERIES(horizontal histogram, 1 bucket)");
+    }
+
+    #[test]
+    fn m5_series() {
+        let n = |k: usize| Column::Numeric(vec![1.0; k]);
+        let summary = |a, x, y| Series::new(a, x, y).unwrap().summary();
+        assert_eq!(
+            summary(SeriesAggregate::AreaSeries, n(2), n(2)),
+            "SERIES(area, 2 points)"
+        );
+        assert_eq!(
+            summary(SeriesAggregate::DashedLineSeries, n(1), n(1)),
+            "SERIES(dashed line, 1 point)"
+        );
+        assert_eq!(
+            summary(SeriesAggregate::ErrorBarVertical, n(3), n(3)),
+            "SERIES(error bar, 3 bars)"
+        );
+        assert_eq!(
+            summary(SeriesAggregate::ErrorBarHorizontal, n(1), n(1)),
+            "SERIES(horizontal error bar, 1 bar)"
+        );
+        assert_eq!(
+            summary(SeriesAggregate::CandleStick, n(2), n(2)),
+            "SERIES(candlestick, 2 candles)"
+        );
+        let keys = Column::Category(vec!["a".into(), "b".into()]);
+        assert_eq!(
+            summary(SeriesAggregate::BoxplotVertical, keys.clone(), n(2)),
+            "SERIES(boxplot, 2 boxes)"
+        );
+        assert_eq!(
+            summary(SeriesAggregate::BoxplotHorizontal, n(2), keys),
+            "SERIES(horizontal boxplot, 2 boxes)"
+        );
+        // Stepped buckets count their bins.
+        let h = Series::new(
+            SeriesAggregate::Histogram,
+            Column::Numeric(vec![1.0, 2.0, 7.0]),
+            n(3),
+        )
+        .unwrap();
+        assert_eq!(h.summary(), "SERIES(histogram, 3 buckets)");
+        assert_eq!(
+            h.step(5.0).unwrap().summary(),
+            "SERIES(histogram, 2 buckets)"
+        );
     }
 
     #[test]

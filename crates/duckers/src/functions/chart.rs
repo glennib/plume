@@ -160,6 +160,22 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
             .param("base", &t.double),
         )?;
     }
+    type ChartScale = fn(Chart) -> duckers_chart::Result<Chart>;
+    let scales: [(&'static str, ChartScale); 4] = [
+        ("x_monthly", Chart::x_monthly),
+        ("y_monthly", Chart::y_monthly),
+        ("x_yearly", Chart::x_yearly),
+        ("y_yearly", Chart::y_yearly),
+    ];
+    for (name, f) in scales {
+        ext.register_scalar(
+            scalar(name, &t.chart, move |a| {
+                let chart: Chart = a.value(0)?;
+                Ok(a.check(f(chart))?.encode())
+            })
+            .param("chart", &t.chart),
+        )?;
+    }
     // `root.fill(&color)`. DuckDB has a window function `fill`, and a scalar cannot share its
     // name, so the plotters receiver qualifies the name.
     ext.register_scalar(

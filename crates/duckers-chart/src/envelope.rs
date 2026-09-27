@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 /// The format version this build writes and the only one it reads.
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 
 const HEADER_LEN: usize = 6;
 
@@ -167,7 +167,7 @@ mod tests {
         let err = Chart::decode(&bytes).unwrap_err();
         assert_eq!(
             err.message(),
-            "CHART format version 7 not supported by this duckers (it reads version 2)"
+            "CHART format version 7 not supported by this duckers (it reads version 3)"
         );
         assert_eq!(err.kind(), crate::ErrorKind::Decode);
     }

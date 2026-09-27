@@ -216,6 +216,7 @@ dependencies = [
  "chrono",
  "insta",
  "plotters",
+ "plotters-backend",
  "png",
  "postcard",
  "serde",

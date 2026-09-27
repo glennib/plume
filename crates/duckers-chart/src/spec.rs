@@ -128,8 +128,8 @@ pub struct Series {
 
 /// The series type and the options only that type has.
 ///
-/// New kinds (area, dashed line, error bars, candlesticks, boxplots) are appended as new
-/// variants carrying their own options and extra value columns.
+/// New kinds are appended as new variants carrying their own options and any value columns
+/// beyond the series' `x` and `y`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SeriesKind {
     /// `LineSeries`.
@@ -140,6 +140,21 @@ pub enum SeriesKind {
     Histogram(HistogramOptions),
     /// `Histogram::horizontal`: buckets on y, bars rightwards from the baseline.
     HistogramHorizontal(HistogramOptions),
+    /// `AreaSeries`: `x` and `y` are the points of the polygon's upper edge.
+    Area(AreaOptions),
+    /// `DashedLineSeries`.
+    DashedLine(DashedLineOptions),
+    /// `ErrorBar::new_vertical` per point: `x` is the key, `y` the average.
+    ErrorBarVertical(ErrorBarOptions),
+    /// `ErrorBar::new_horizontal` per point: `y` is the key, `x` the average.
+    ErrorBarHorizontal(ErrorBarOptions),
+    /// `CandleStick::new` per point: `x` is the key, `y` the close. Boxed, being the largest
+    /// options.
+    CandleStick(Box<CandleStickOptions>),
+    /// `Boxplot::new_vertical` per key: `x` is the key, `y` the median.
+    BoxplotVertical(BoxplotOptions),
+    /// `Boxplot::new_horizontal` per key: `y` is the key, `x` the median.
+    BoxplotHorizontal(BoxplotOptions),
 }
 
 impl SeriesKind {
@@ -150,6 +165,13 @@ impl SeriesKind {
             SeriesKind::Point(_) => "point",
             SeriesKind::Histogram(_) => "histogram",
             SeriesKind::HistogramHorizontal(_) => "horizontal histogram",
+            SeriesKind::Area(_) => "area",
+            SeriesKind::DashedLine(_) => "dashed line",
+            SeriesKind::ErrorBarVertical(_) => "error bar",
+            SeriesKind::ErrorBarHorizontal(_) => "horizontal error bar",
+            SeriesKind::CandleStick(_) => "candlestick",
+            SeriesKind::BoxplotVertical(_) => "boxplot",
+            SeriesKind::BoxplotHorizontal(_) => "horizontal boxplot",
         }
     }
 
@@ -160,6 +182,13 @@ impl SeriesKind {
             SeriesKind::Point(_) => "point_series",
             SeriesKind::Histogram(_) => "histogram_vertical",
             SeriesKind::HistogramHorizontal(_) => "histogram_horizontal",
+            SeriesKind::Area(_) => "area_series",
+            SeriesKind::DashedLine(_) => "dashed_line_series",
+            SeriesKind::ErrorBarVertical(_) => "error_bar_vertical",
+            SeriesKind::ErrorBarHorizontal(_) => "error_bar_horizontal",
+            SeriesKind::CandleStick(_) => "candle_stick",
+            SeriesKind::BoxplotVertical(_) => "boxplot_vertical",
+            SeriesKind::BoxplotHorizontal(_) => "boxplot_horizontal",
         }
     }
 
@@ -211,6 +240,72 @@ pub struct HistogramOptions {
     pub margin: u32,
     /// `Histogram::baseline`.
     pub baseline: f64,
+    /// `(lo..hi).step(s).use_round().into_segmented()`: numeric buckets binned into bands of
+    /// width `s`, bin `k` holding the values from `k * s` up to `(k + 1) * s`. `None` for
+    /// category, integer and date buckets, which are one band per value.
+    pub step: Option<f64>,
+}
+
+/// The bin of `value` for bands of width `step`: `floor(value / step)`, except that a quotient
+/// within a relative 1e-9 of an integer is that integer, so that `0.3` is in bin 3 of step
+/// `0.1` although `0.3 / 0.1` is `2.9999999999999996`. `None` beyond the `i64` range.
+pub(crate) fn bin(value: f64, step: f64) -> Option<i64> {
+    let q = value / step;
+    let r = q.round();
+    let k = if (q - r).abs() <= 1e-9 * r.abs().max(1.0) {
+        r
+    } else {
+        q.floor()
+    };
+    (k.is_finite() && k.abs() < 9e15).then_some(k as i64)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AreaOptions {
+    /// The `baseline` argument of `AreaSeries::new`, in the units of the y axis.
+    pub baseline: f64,
+    /// `AreaSeries::border_style`, transparent by default.
+    pub border_style: LineStyle,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct DashedLineOptions {
+    /// The `size` argument of `DashedLineSeries::new`: px of each dash.
+    pub size: u32,
+    /// The `spacing` argument: px between dashes.
+    pub spacing: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ErrorBarOptions {
+    /// The `width` argument of `ErrorBar::new_*`: px of the end marks, and the dot's diameter.
+    pub width: u32,
+    /// The `min` of each point, in the units of the value axis.
+    pub min: Vec<f64>,
+    /// The `max` of each point.
+    pub max: Vec<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CandleStickOptions {
+    /// The `width` argument of `CandleStick::new`: px of the body.
+    pub width: u32,
+    /// The colour of `gain_style` (close above open); the series' stroke width and fill apply.
+    pub gain: Color,
+    /// The colour of `loss_style` (close at or below open).
+    pub loss: Color,
+    pub open: Vec<f64>,
+    pub high: Vec<f64>,
+    pub low: Vec<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct BoxplotOptions {
+    /// `Boxplot::width`: px of the box.
+    pub width: u32,
+    /// `Quartiles::values()` of each key: lower fence, lower quartile, median, upper quartile,
+    /// upper fence (the `f32` values plotters computes, widened exactly to `f64`).
+    pub quartiles: Vec<[f64; 5]>,
 }
 
 /// A `ShapeStyle`, with the colour left open until the chart picks it from `Palette99`.
@@ -322,6 +417,25 @@ pub enum Scale {
     Log {
         base: f64,
     },
+    /// `(lo..hi).monthly()` (`IntoMonthly`): key points at month starts, labelled as plotters'
+    /// `Monthly` labels them. Date and timestamp axes only.
+    Monthly,
+    /// `(lo..hi).yearly()` (`IntoYearly`): key points at year starts.
+    Yearly,
+}
+
+impl Scale {
+    /// The SQL method that sets the scale on `axis` (`x_log_scale`, `y_monthly`); `x_range`
+    /// for the linear default.
+    pub fn method(self, axis: Axis) -> String {
+        let name = match self {
+            Scale::Linear => "range",
+            Scale::Log { .. } => "log_scale",
+            Scale::Monthly => "monthly",
+            Scale::Yearly => "yearly",
+        };
+        format!("{}_{name}", axis.name())
+    }
 }
 
 /// One drawing call on the `ChartContext`.
@@ -566,12 +680,50 @@ impl Series {
         }
     }
 
-    /// The axis a histogram's buckets are on; `None` for other kinds.
+    /// The axis a histogram's buckets or a boxplot's keys are on, which is a band axis;
+    /// `None` for other kinds.
     pub fn bucket_axis(&self) -> Option<Axis> {
         match self.kind {
-            SeriesKind::Histogram(_) => Some(Axis::X),
-            SeriesKind::HistogramHorizontal(_) => Some(Axis::Y),
+            SeriesKind::Histogram(_) | SeriesKind::BoxplotVertical(_) => Some(Axis::X),
+            SeriesKind::HistogramHorizontal(_) | SeriesKind::BoxplotHorizontal(_) => Some(Axis::Y),
             _ => None,
+        }
+    }
+
+    /// The axis of the key for kinds that draw one element per key (error bars, candlesticks,
+    /// boxplots); the other axis carries their values. `None` for other kinds.
+    pub fn key_axis(&self) -> Option<Axis> {
+        match self.kind {
+            SeriesKind::ErrorBarVertical(_)
+            | SeriesKind::CandleStick(_)
+            | SeriesKind::BoxplotVertical(_) => Some(Axis::X),
+            SeriesKind::ErrorBarHorizontal(_) | SeriesKind::BoxplotHorizontal(_) => Some(Axis::Y),
+            _ => None,
+        }
+    }
+
+    /// The numbers the series has on `axis` beyond its column there, which the axis' default
+    /// extent includes: an area's baseline, the extremes of error bars and candlesticks, the
+    /// quartiles and fences of boxplots. Histograms are left to the renderer, which sums their
+    /// buckets.
+    pub fn extra_numbers(&self, axis: Axis) -> Vec<f64> {
+        let on_values = self.key_axis().map(Axis::other) == Some(axis);
+        match &self.kind {
+            SeriesKind::Area(o) if axis == Axis::Y => vec![o.baseline],
+            SeriesKind::ErrorBarVertical(o) | SeriesKind::ErrorBarHorizontal(o) if on_values => {
+                o.min.iter().chain(&o.max).copied().collect()
+            }
+            SeriesKind::CandleStick(o) if on_values => o
+                .open
+                .iter()
+                .chain(&o.high)
+                .chain(&o.low)
+                .copied()
+                .collect(),
+            SeriesKind::BoxplotVertical(o) | SeriesKind::BoxplotHorizontal(o) if on_values => {
+                o.quartiles.iter().flatten().copied().collect()
+            }
+            _ => Vec::new(),
         }
     }
 

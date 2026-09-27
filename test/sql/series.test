@@ -20,7 +20,7 @@ Series { kind: Point(PointOptions { size: 3, marker: Circle }), x: Numeric([0.0]
 query T
 SELECT __duckers_debug(histogram_vertical(s, n)) FROM (VALUES ('b', 1), ('a', 2), ('b', 3)) t(s, n)
 ----
-Series { kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0 }), x: Category(["a", "b"]), y: Numeric([2.0, 4.0]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+Series { kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0, step: None }), x: Category(["a", "b"]), y: Numeric([2.0, 4.0]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
 
 # histogram_vertical(x, 1) counts rows.
 query T
@@ -39,7 +39,7 @@ x: Date([19723, 19724]), y: Numeric([1.0, 2.0])
 query T
 SELECT __duckers_debug(histogram_horizontal(s, n)) FROM (VALUES ('b', 1), ('a', 2), ('b', 3)) t(s, n)
 ----
-Series { kind: HistogramHorizontal(HistogramOptions { margin: 5, baseline: 0.0 }), x: Numeric([2.0, 4.0]), y: Category(["a", "b"]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+Series { kind: HistogramHorizontal(HistogramOptions { margin: 5, baseline: 0.0, step: None }), x: Numeric([2.0, 4.0]), y: Category(["a", "b"]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
 
 query T
 SELECT __duckers_debug(histogram_horizontal(i % 3, 1)).regexp_extract('x: .*y: [A-Za-z]*\(\[[^\]]*\]\)')
@@ -327,10 +327,11 @@ SELECT line_series(1, DATE '2024-01-01')
 ----
 Binder Error: line_series: y must be a number, got DATE
 
-statement error
-SELECT histogram_vertical(1.5, 1)
+# DOUBLE and DECIMAL buckets bind; drawing them needs .step(s) (test/sql/more_series.test).
+query T
+SELECT histogram_vertical(1.5, 1)::VARCHAR
 ----
-Binder Error: histogram_vertical: histogram buckets cannot be DOUBLE or DECIMAL: plotters' Histogram needs a discrete bucket axis; bin the values first (for example floor(x / 10)::INTEGER * 10), or use .step() once it exists
+SERIES(histogram, 1 bucket)
 
 statement error
 SELECT histogram_vertical(TIMESTAMP '2024-01-01', 1)
@@ -340,22 +341,22 @@ Binder Error: histogram_vertical: histogram buckets cannot be TIMESTAMP
 statement error
 SELECT histogram_vertical([1], 1)
 ----
-Binder Error: histogram_vertical: bucket must be VARCHAR, an integer or DATE, got INTEGER[]
+Binder Error: histogram_vertical: bucket must be VARCHAR, a number or DATE, got INTEGER[]
 
 statement error
 SELECT histogram_vertical('a', 'b')
 ----
 Binder Error: histogram_vertical: value must be a number, got VARCHAR
 
-statement error
-SELECT histogram_horizontal(1.5, 1)
+query T
+SELECT histogram_horizontal(1.5::DECIMAL(3, 1), 1)::VARCHAR
 ----
-Binder Error: histogram_horizontal: histogram buckets cannot be DOUBLE or DECIMAL
+SERIES(horizontal histogram, 1 bucket)
 
 statement error
 SELECT histogram_horizontal(true, 1)
 ----
-Binder Error: histogram_horizontal: bucket must be VARCHAR, an integer or DATE, got BOOLEAN
+Binder Error: histogram_horizontal: bucket must be VARCHAR, a number or DATE, got BOOLEAN
 
 statement error
 SELECT histogram_horizontal('a', DATE '2024-01-01')

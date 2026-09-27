@@ -11,12 +11,18 @@ use crate::spec::{
 use plotters::chart::SeriesAnno;
 use plotters::coord::Shift;
 use plotters::coord::ranged1d::ValueFormatter;
+use plotters::data::Quartiles;
+use plotters::element::{DashedPathElement, Drawable, PointCollection};
 use plotters::prelude::*;
+use plotters_backend::{BackendCoord, DrawingErrorKind};
 
 /// The px width of a legend glyph, inside plotters' default 30 px glyph column.
 const GLYPH_WIDTH: i32 = 20;
 /// Half the height of a histogram's legend rectangle.
 const GLYPH_HALF_HEIGHT: i32 = 5;
+/// The largest px width of the marks of an error bar, candle or box in the legend, so a wide
+/// element still fits its row.
+const GLYPH_MARK: u32 = 12;
 
 static DEFAULT_MESH: MeshStyle = MeshStyle {
     settings: Vec::new(),
@@ -363,6 +369,105 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                 .collect();
             ctx.draw_series(bars)
         }
+        SeriesKind::Area(options) => {
+            // The y axis of an area series is numeric, where `number` always places a value.
+            let base = y.number(options.baseline).unwrap_or(options.baseline);
+            let border = line_style(&options.border_style);
+            ctx.draw_series(AreaSeries::new(points(), base, style).border_style(border))
+        }
+        SeriesKind::DashedLine(options) => ctx.draw_series(DashedLineSeries::new(
+            points(),
+            options.size,
+            options.spacing,
+            style,
+        )),
+        SeriesKind::ErrorBarVertical(options) => {
+            let bars: Vec<_> = (0..series.len())
+                .filter_map(|i| {
+                    let (min, avg, max) = error_values(y, &series.y, options, i)?;
+                    let key = x.at(&series.x, i)?;
+                    Some(ErrorBar::new_vertical(
+                        key,
+                        min,
+                        avg,
+                        max,
+                        style,
+                        options.width,
+                    ))
+                })
+                .collect();
+            ctx.draw_series(bars)
+        }
+        SeriesKind::ErrorBarHorizontal(options) => {
+            let bars: Vec<_> = (0..series.len())
+                .filter_map(|i| {
+                    let (min, avg, max) = error_values(x, &series.x, options, i)?;
+                    let key = y.at(&series.y, i)?;
+                    Some(ErrorBar::new_horizontal(
+                        key,
+                        min,
+                        avg,
+                        max,
+                        style,
+                        options.width,
+                    ))
+                })
+                .collect();
+            ctx.draw_series(bars)
+        }
+        SeriesKind::CandleStick(options) => {
+            let (gain, loss) = candle_styles(options, style);
+            let candles: Vec<_> = (0..series.len())
+                .filter_map(|i| {
+                    let key = x.at(&series.x, i)?;
+                    let open = y.value(*options.open.get(i)?)?;
+                    let high = y.value(*options.high.get(i)?)?;
+                    let low = y.value(*options.low.get(i)?)?;
+                    let close = y.at(&series.y, i)?;
+                    Some(CandleStick::new(
+                        key,
+                        open,
+                        high,
+                        low,
+                        close,
+                        gain,
+                        loss,
+                        options.width,
+                    ))
+                })
+                .collect();
+            ctx.draw_series(candles)
+        }
+        SeriesKind::BoxplotVertical(options) => {
+            let boxes: Vec<_> = (0..series.len())
+                .filter_map(|i| {
+                    let key = x.at(&series.x, i)?;
+                    let q = options.quartiles.get(i)?;
+                    let values = q.map(|v| y.value(v));
+                    let points = values.map(|v| v.map(|v| (key, v)));
+                    let inner = Boxplot::new_vertical(key, &Quartiles::new(q))
+                        .style(style)
+                        .width(options.width);
+                    Placed::new(inner, points)
+                })
+                .collect();
+            ctx.draw_series(boxes)
+        }
+        SeriesKind::BoxplotHorizontal(options) => {
+            let boxes: Vec<_> = (0..series.len())
+                .filter_map(|i| {
+                    let key = y.at(&series.y, i)?;
+                    let q = options.quartiles.get(i)?;
+                    let values = q.map(|v| x.value(v));
+                    let points = values.map(|v| v.map(|v| (v, key)));
+                    let inner = Boxplot::new_horizontal(key, &Quartiles::new(q))
+                        .style(style)
+                        .width(options.width);
+                    Placed::new(inner, points)
+                })
+                .collect();
+            ctx.draw_series(boxes)
+        }
     }
     .map_err(plotters_error)?;
 
@@ -371,6 +476,72 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
         legend_glyph(anno, series, style);
     }
     Ok(())
+}
+
+/// The positions of an error bar's min, avg and max on the value axis `axis`, whose column in
+/// the series holds the averages; `None` if the axis cannot place one of them.
+fn error_values(
+    axis: &AxisCoord,
+    averages: &crate::spec::Column,
+    options: &crate::spec::ErrorBarOptions,
+    i: usize,
+) -> Option<(f64, f64, f64)> {
+    Some((
+        axis.value(*options.min.get(i)?)?,
+        axis.at(averages, i)?,
+        axis.value(*options.max.get(i)?)?,
+    ))
+}
+
+/// The `gain_style` and `loss_style` of a candlestick series: their colours, with the series'
+/// stroke width and fill.
+fn candle_styles(
+    options: &crate::spec::CandleStickOptions,
+    style: ShapeStyle,
+) -> (ShapeStyle, ShapeStyle) {
+    let with = |color: Color| ShapeStyle {
+        color: color.to_plotters(),
+        ..style
+    };
+    (with(options.gain), with(options.loss))
+}
+
+/// A plotters element drawn at points duckers computes: a `Boxplot` has `f32` values, which
+/// the chart's `f64` coordinates cannot map, so the positions of its five values are given
+/// here and handed to the `Boxplot`'s own drawing code.
+struct Placed<E, C> {
+    inner: E,
+    points: [C; 5],
+}
+
+impl<E, C> Placed<E, C> {
+    /// `None` if a point is missing (a value the axis cannot place).
+    fn new(inner: E, points: [Option<C>; 5]) -> Option<Placed<E, C>> {
+        let [a, b, c, d, e] = points;
+        Some(Placed {
+            inner,
+            points: [a?, b?, c?, d?, e?],
+        })
+    }
+}
+
+impl<'a, E, C: 'a> PointCollection<'a, C> for &'a Placed<E, C> {
+    type Point = &'a C;
+    type IntoIter = &'a [C];
+    fn point_iter(self) -> &'a [C] {
+        &self.points
+    }
+}
+
+impl<E: Drawable<DB>, C, DB: DrawingBackend> Drawable<DB> for Placed<E, C> {
+    fn draw<I: Iterator<Item = BackendCoord>>(
+        &self,
+        points: I,
+        backend: &mut DB,
+        parent_dim: (u32, u32),
+    ) -> std::result::Result<(), DrawingErrorKind<DB::ErrorType>> {
+        self.inner.draw(points, backend, parent_dim)
+    }
 }
 
 /// The legend glyph plotters' examples draw for each series kind, in place of the
@@ -416,6 +587,73 @@ fn legend_glyph<'a, DB: DrawingBackend + 'a>(
                     ],
                     style,
                 )
+            });
+        }
+        SeriesKind::Area(options) => {
+            let border = line_style(&options.border_style);
+            let corners = [(0, -GLYPH_HALF_HEIGHT), (GLYPH_WIDTH, GLYPH_HALF_HEIGHT)];
+            anno.legend(move |(x, y)| {
+                EmptyElement::at((x, y))
+                    + Rectangle::new(corners, style.filled())
+                    + Rectangle::new(corners, border)
+            });
+        }
+        SeriesKind::DashedLine(options) => {
+            let (size, spacing) = (options.size, options.spacing);
+            anno.legend(move |(x, y)| {
+                DashedPathElement::new(vec![(x, y), (x + GLYPH_WIDTH, y)], size, spacing, style)
+            });
+        }
+        SeriesKind::ErrorBarVertical(options) => {
+            let width = options.width.min(GLYPH_MARK);
+            anno.legend(move |(x, y)| {
+                let h = GLYPH_HALF_HEIGHT + 1;
+                ErrorBar::new_vertical(x + GLYPH_WIDTH / 2, y + h, y, y - h, style, width)
+            });
+        }
+        SeriesKind::ErrorBarHorizontal(options) => {
+            let width = options.width.min(GLYPH_MARK);
+            anno.legend(move |(x, y)| {
+                ErrorBar::new_horizontal(
+                    y,
+                    x + 2,
+                    x + GLYPH_WIDTH / 2,
+                    x + GLYPH_WIDTH - 2,
+                    style,
+                    width,
+                )
+            });
+        }
+        SeriesKind::CandleStick(options) => {
+            // A gain candle: close above open, which is up on screen.
+            let (gain, _) = candle_styles(options, style);
+            let width = options.width.min(GLYPH_MARK);
+            anno.legend(move |(x, y)| {
+                let (body, wick) = (GLYPH_HALF_HEIGHT - 1, GLYPH_HALF_HEIGHT + 2);
+                let x = x + GLYPH_WIDTH / 2;
+                CandleStick::new(x, y + body, y - wick, y + wick, y - body, gain, gain, width)
+            });
+        }
+        SeriesKind::BoxplotVertical(options) => {
+            let width = options.width.min(GLYPH_MARK);
+            anno.legend(move |(x, y)| {
+                let x = x + GLYPH_WIDTH / 2;
+                let h = GLYPH_HALF_HEIGHT + 2;
+                let points = [y + h, y + h / 2, y, y - h / 2, y - h].map(|v| Some((x, v)));
+                let inner = Boxplot::new_vertical(x, &Quartiles::new(&[0.0]))
+                    .style(style)
+                    .width(width);
+                Placed::new(inner, points).expect("every point is given")
+            });
+        }
+        SeriesKind::BoxplotHorizontal(options) => {
+            let width = options.width.min(GLYPH_MARK);
+            anno.legend(move |(x, y)| {
+                let points = [0, 5, 10, 15, 20].map(|dx| Some((x + dx, y)));
+                let inner = Boxplot::new_horizontal(y, &Quartiles::new(&[0.0]))
+                    .style(style)
+                    .width(width);
+                Placed::new(inner, points).expect("every point is given")
             });
         }
     }

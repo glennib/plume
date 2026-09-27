@@ -8,9 +8,9 @@ use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::label_format::LabelFormat;
 use crate::spec::{
-    Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, DrawOp, Font, FontStyle, LabelPosition,
-    LineStyle, Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting,
-    SeriesLabelStyle, SeriesLabels, Sides, TickPosition,
+    Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, Column, DrawOp, Font, FontStyle,
+    LabelPosition, LineStyle, Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind,
+    SeriesLabelSetting, SeriesLabelStyle, SeriesLabels, Sides, TickPosition,
 };
 
 /// The largest pixel size any size argument accepts, the same as the largest image side.
@@ -107,6 +107,13 @@ fn not_applicable(method: &str, plotters: &str, series: &Series) -> Error {
 impl Series {
     /// `style(color [, stroke_width])`: the `Into<ShapeStyle>` argument of the series.
     pub fn style(mut self, color: &str, stroke_width: Option<i64>) -> Result<Series> {
+        if let SeriesKind::CandleStick(_) = self.kind {
+            return Err(Error::invalid(
+                "style does not apply to candle_stick values: CandleStick::new takes a gain and \
+                 a loss style; use gain_style(color) and loss_style(color), and stroke_width(px) \
+                 for the width",
+            ));
+        }
         self.style.color = Some(Color::parse(color)?);
         if let Some(w) = stroke_width {
             self.style.stroke_width = px("stroke_width", w)?;
@@ -120,15 +127,32 @@ impl Series {
         Ok(self)
     }
 
-    /// `ShapeStyle::filled`: point markers, line markers and histogram bars.
+    /// `ShapeStyle::filled`: point markers, line markers, histogram bars, candle bodies and
+    /// error-bar dots. An area's polygon is always filled, so it accepts the call as it is.
     pub fn filled(mut self) -> Result<Series> {
         match self.kind {
             SeriesKind::Line(_)
             | SeriesKind::Point(_)
             | SeriesKind::Histogram(_)
-            | SeriesKind::HistogramHorizontal(_) => {
+            | SeriesKind::HistogramHorizontal(_)
+            | SeriesKind::Area(_)
+            | SeriesKind::ErrorBarVertical(_)
+            | SeriesKind::ErrorBarHorizontal(_)
+            | SeriesKind::CandleStick(_) => {
                 self.style.filled = true;
                 Ok(self)
+            }
+            SeriesKind::DashedLine(_) => Err(not_applicable(
+                "filled",
+                "ShapeStyle::filled, and a DashedLineSeries has nothing to fill",
+                &self,
+            )),
+            SeriesKind::BoxplotVertical(_) | SeriesKind::BoxplotHorizontal(_) => {
+                Err(not_applicable(
+                    "filled",
+                    "ShapeStyle::filled, and plotters draws a Boxplot's box unfilled",
+                    &self,
+                ))
             }
         }
     }
@@ -154,16 +178,37 @@ impl Series {
         }
     }
 
-    /// The `size` argument of `PointSeries::new`.
+    /// The `size` argument of `PointSeries::new` (the marker size) or of
+    /// `DashedLineSeries::new` (the dash length).
     pub fn size(mut self, size: i64) -> Result<Series> {
         match &mut self.kind {
             SeriesKind::Point(options) => {
                 options.size = px("size", size)?;
                 Ok(self)
             }
+            SeriesKind::DashedLine(options) => {
+                options.size = px("size", size)?;
+                Ok(self)
+            }
             _ => Err(not_applicable(
                 "size",
-                "the size argument of PointSeries::new and applies to point_series",
+                "the size argument of PointSeries::new or DashedLineSeries::new and applies to \
+                 point_series and dashed_line_series",
+                &self,
+            )),
+        }
+    }
+
+    /// The `spacing` argument of `DashedLineSeries::new`: px between dashes.
+    pub fn spacing(mut self, spacing: i64) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::DashedLine(options) => {
+                options.spacing = px("spacing", spacing)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "spacing",
+                "the spacing argument of DashedLineSeries::new and applies to dashed_line_series",
                 &self,
             )),
         }
@@ -200,7 +245,8 @@ impl Series {
         }
     }
 
-    /// `Histogram::baseline`: where the bars start, in the units of the value axis.
+    /// `Histogram::baseline`, or the `baseline` argument of `AreaSeries::new`: where the bars
+    /// or the area start, in the units of the value axis.
     pub fn baseline(mut self, baseline: f64) -> Result<Series> {
         if !baseline.is_finite() {
             return Err(Error::invalid(format!(
@@ -212,12 +258,125 @@ impl Series {
                 options.baseline = baseline;
                 Ok(self)
             }
+            SeriesKind::Area(options) => {
+                options.baseline = baseline;
+                Ok(self)
+            }
             _ => Err(not_applicable(
                 "baseline",
-                "Histogram::baseline and applies to histogram_vertical and histogram_horizontal",
+                "Histogram::baseline or the baseline argument of AreaSeries::new and applies to \
+                 histogram_vertical, histogram_horizontal and area_series",
                 &self,
             )),
         }
+    }
+
+    /// `AreaSeries::border_style(color [, stroke_width])`: the line along the data points.
+    pub fn border_style(mut self, color: &str, stroke_width: Option<i64>) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::Area(options) => {
+                options.border_style = line_style(color, stroke_width)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "border_style",
+                "AreaSeries::border_style and applies to area_series",
+                &self,
+            )),
+        }
+    }
+
+    /// The `width` argument of `ErrorBar::new_*` and `CandleStick::new`, or `Boxplot::width`.
+    pub fn width(mut self, width: i64) -> Result<Series> {
+        let w = px("width", width);
+        match &mut self.kind {
+            SeriesKind::ErrorBarVertical(o) | SeriesKind::ErrorBarHorizontal(o) => o.width = w?,
+            SeriesKind::CandleStick(o) => o.width = w?,
+            SeriesKind::BoxplotVertical(o) | SeriesKind::BoxplotHorizontal(o) => o.width = w?,
+            _ => {
+                return Err(not_applicable(
+                    "width",
+                    "the width argument of ErrorBar and CandleStick, or Boxplot::width, and \
+                     applies to error_bar_vertical, error_bar_horizontal, candle_stick, \
+                     boxplot_vertical and boxplot_horizontal",
+                    &self,
+                ));
+            }
+        }
+        Ok(self)
+    }
+
+    /// The `gain_style` argument of `CandleStick::new`: candles that close above their open.
+    pub fn gain_style(mut self, color: &str) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::CandleStick(o) => {
+                o.gain = Color::parse(color)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "gain_style",
+                "the gain_style argument of CandleStick::new and applies to candle_stick",
+                &self,
+            )),
+        }
+    }
+
+    /// The `loss_style` argument of `CandleStick::new`: candles that close at or below their
+    /// open.
+    pub fn loss_style(mut self, color: &str) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::CandleStick(o) => {
+                o.loss = Color::parse(color)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "loss_style",
+                "the loss_style argument of CandleStick::new and applies to candle_stick",
+                &self,
+            )),
+        }
+    }
+
+    /// `step(s)`: plotters' `(lo..hi).step(s).use_round().into_segmented()` for a histogram's
+    /// numeric buckets, which bins them into bands of width `s` starting at multiples of `s`.
+    /// Integer buckets become numbers binned the same way.
+    pub fn step(mut self, step: f64) -> Result<Series> {
+        if !(step.is_finite() && step > 0.0) {
+            return Err(Error::invalid(format!(
+                "step must be a positive finite number, got {step}"
+            )));
+        }
+        let Some(axis) = self
+            .bucket_axis()
+            .filter(|_| self.kind.histogram().is_some())
+        else {
+            return Err(not_applicable(
+                "step",
+                "the step of the histogram's bucket range ((lo..hi).step(s)) and applies to \
+                 histogram_vertical and histogram_horizontal",
+                &self,
+            ));
+        };
+        let buckets = match axis {
+            Axis::X => &mut self.x,
+            Axis::Y => &mut self.y,
+        };
+        match buckets {
+            Column::Numeric(_) => {}
+            Column::Integer(v) => *buckets = Column::Numeric(v.iter().map(|i| *i as f64).collect()),
+            other => {
+                return Err(Error::invalid(format!(
+                    "step applies to numeric histogram buckets, and these are {}: {} buckets are \
+                     one band per value",
+                    other.axis_kind(),
+                    other.axis_kind()
+                )));
+            }
+        }
+        if let SeriesKind::Histogram(o) | SeriesKind::HistogramHorizontal(o) = &mut self.kind {
+            o.step = Some(step);
+        }
+        Ok(self)
     }
 }
 
@@ -393,7 +552,7 @@ impl Chart {
         self.log_scale(Axis::Y, base)
     }
 
-    fn log_scale(mut self, axis: Axis, base: Option<f64>) -> Result<Chart> {
+    fn log_scale(self, axis: Axis, base: Option<f64>) -> Result<Chart> {
         let what = format!("{}_log_scale", axis.name());
         let base = base.unwrap_or(10.0);
         if !(base.is_finite() && base > 1.0) {
@@ -401,12 +560,41 @@ impl Chart {
                 "{what}: LogRangeExt::base must be a finite number above 1, got {base}"
             )));
         }
-        let scale = Scale::Log { base };
+        self.set_scale(axis, Scale::Log { base })
+    }
+
+    /// `x_monthly()`: `(lo..hi).monthly()` for the x range (`IntoMonthly`).
+    pub fn x_monthly(self) -> Result<Chart> {
+        self.set_scale(Axis::X, Scale::Monthly)
+    }
+
+    /// `y_monthly()`: `(lo..hi).monthly()` for the y range.
+    pub fn y_monthly(self) -> Result<Chart> {
+        self.set_scale(Axis::Y, Scale::Monthly)
+    }
+
+    /// `x_yearly()`: `(lo..hi).yearly()` for the x range (`IntoYearly`).
+    pub fn x_yearly(self) -> Result<Chart> {
+        self.set_scale(Axis::X, Scale::Yearly)
+    }
+
+    /// `y_yearly()`: `(lo..hi).yearly()` for the y range.
+    pub fn y_yearly(self) -> Result<Chart> {
+        self.set_scale(Axis::Y, Scale::Yearly)
+    }
+
+    /// Sets the range combinator of `axis`, checked against the axis kind when it is known.
+    /// The last call on an axis wins.
+    fn set_scale(mut self, axis: Axis, scale: Scale) -> Result<Chart> {
+        let what = scale.method(axis);
         let kind = self
             .kind_on(axis)
             .or(self.axis(axis).range.map(AxisRange::kind));
         if let Some(kind) = kind {
             check_scale_fits(&what, axis, scale, kind)?;
+        }
+        for series in self.series() {
+            check_scale_fits_series(&what, axis, scale, series)?;
         }
         self.axis_mut(axis).scale = scale;
         Ok(self)
@@ -430,7 +618,7 @@ impl Chart {
         }
         let kind = self.kind_on(axis).unwrap_or(range.kind());
         let scale = self.axis(axis).scale;
-        check_scale_fits(&format!("{}_log_scale", axis.name()), axis, scale, kind)?;
+        check_scale_fits(&scale.method(axis), axis, scale, kind)?;
         self.axis_mut(axis).range = Some(range);
         Ok(self)
     }
@@ -470,6 +658,32 @@ impl Chart {
     }
 
     fn check_series(&self, series: &Series) -> Result<()> {
+        if let (Some(options), Some(axis)) = (series.kind.histogram(), series.bucket_axis()) {
+            let name = series.kind.aggregate_name();
+            match (series.kind_on(axis), options.step) {
+                (AxisKind::Numeric, None) => {
+                    return Err(Error::invalid(format!(
+                        "draw_series: {name} has numeric buckets, which need .step(s) to bin \
+                         them into bands, as plotters' (lo..hi).step(s).into_segmented() does: \
+                         {name}(x, value).step(10)"
+                    )));
+                }
+                (_, Some(step)) => {
+                    let other = self
+                        .series()
+                        .filter(|s| s.bucket_axis() == Some(axis))
+                        .find_map(|s| s.kind.histogram()?.step.filter(|s| *s != step));
+                    if let Some(other) = other {
+                        return Err(Error::invalid(format!(
+                            "draw_series: cannot draw {name} with step {step} on a chart whose \
+                             {} axis has bands of step {other}",
+                            axis.name()
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
         for axis in [Axis::X, Axis::Y] {
             let (name, new) = (axis.name(), series.kind_on(axis));
             if let Some(kind) = self.kind_on(axis)
@@ -487,14 +701,17 @@ impl Chart {
                 let what = format!("draw_series: {}_range", axis.name());
                 check_range_fits(&what, axis.name(), range, series.kind_on(axis))?;
             }
-            let what = format!("draw_series: {}_log_scale", axis.name());
-            check_scale_fits(&what, axis, self.axis(axis).scale, series.kind_on(axis))?;
+            let scale = self.axis(axis).scale;
+            let what = format!("draw_series: {}", scale.method(axis));
+            check_scale_fits(&what, axis, scale, series.kind_on(axis))?;
+            check_scale_fits_series(&what, axis, scale, series)?;
         }
         Ok(())
     }
 }
 
-/// Checks that a scale suits the kind of its axis: a log scale needs a numeric axis.
+/// Checks that a scale suits the kind of its axis: a log scale needs a numeric axis, monthly
+/// and yearly key points a date or timestamp axis.
 pub(crate) fn check_scale_fits(what: &str, axis: Axis, scale: Scale, kind: AxisKind) -> Result<()> {
     match scale {
         Scale::Log { .. } if kind != AxisKind::Numeric => Err(Error::invalid(format!(
@@ -502,8 +719,40 @@ pub(crate) fn check_scale_fits(what: &str, axis: Axis, scale: Scale, kind: AxisK
              numeric axis",
             axis.name()
         ))),
+        Scale::Monthly | Scale::Yearly if !matches!(kind, AxisKind::Date | AxisKind::Timestamp) => {
+            let (method, plotters) = match scale {
+                Scale::Monthly => ("monthly", "IntoMonthly"),
+                _ => ("yearly", "IntoYearly"),
+            };
+            Err(Error::invalid(format!(
+                "{what} does not apply to the {kind} {} axis: plotters' {method} ({plotters}) \
+                 needs a date or timestamp axis",
+                axis.name()
+            )))
+        }
         _ => Ok(()),
     }
+}
+
+/// Checks that a scale suits a series on `axis`: the stepped bands of numeric histogram
+/// buckets are a segmented axis, which has no log scale.
+pub(crate) fn check_scale_fits_series(
+    what: &str,
+    axis: Axis,
+    scale: Scale,
+    series: &Series,
+) -> Result<()> {
+    let stepped = series.bucket_axis() == Some(axis)
+        && series.kind.histogram().is_some_and(|o| o.step.is_some());
+    if stepped && matches!(scale, Scale::Log { .. }) {
+        return Err(Error::invalid(format!(
+            "{what} does not apply to the stepped bucket {} axis of {}: plotters' log_scale \
+             (LogCoord) has no segmented form",
+            axis.name(),
+            series.kind.aggregate_name()
+        )));
+    }
+    Ok(())
 }
 
 fn axis_range(what: &str, lo: RangeValue, hi: RangeValue) -> Result<AxisRange> {
@@ -902,6 +1151,7 @@ mod tests {
             kind: SeriesKind::Histogram(HistogramOptions {
                 margin: 5,
                 baseline: 0.0,
+                step: None,
             }),
             ..line(x)
         }
@@ -1015,6 +1265,7 @@ mod tests {
             kind: SeriesKind::HistogramHorizontal(HistogramOptions {
                 margin: 5,
                 baseline: 0.0,
+                step: None,
             }),
             x: Column::Numeric(vec![1.0]),
             y: Column::Category(vec!["a".into()]),
@@ -1076,7 +1327,8 @@ mod tests {
             h.kind,
             SeriesKind::Histogram(HistogramOptions {
                 margin: 0,
-                baseline: -2.5
+                baseline: -2.5,
+                step: None,
             })
         );
         assert!(histogram(Column::Integer(vec![1])).margin(-1).is_err());
@@ -1411,6 +1663,237 @@ mod tests {
         );
         assert!(labels.clone().margin(-2).is_err());
         assert!(labels.legend_area_size(8193).is_err());
+    }
+
+    fn of(aggregate: crate::accumulate::SeriesAggregate, x: Column, y: Column) -> Series {
+        Series::new(aggregate, x, y).unwrap()
+    }
+
+    #[test]
+    fn m5_methods_check_the_series_kind() {
+        use crate::accumulate::SeriesAggregate as A;
+        let n = || Column::Numeric(vec![1.0]);
+        let msg = |r: Result<Series>| r.unwrap_err().message().to_string();
+        assert_eq!(
+            msg(line(n()).width(3)),
+            "width does not apply to line_series values: it is the width argument of ErrorBar \
+             and CandleStick, or Boxplot::width, and applies to error_bar_vertical, \
+             error_bar_horizontal, candle_stick, boxplot_vertical and boxplot_horizontal"
+        );
+        let point = of(A::PointSeries, n(), n());
+        assert_eq!(
+            msg(point.clone().gain_style("red")),
+            "gain_style does not apply to point_series values: it is the gain_style argument \
+             of CandleStick::new and applies to candle_stick"
+        );
+        assert!(msg(point.clone().loss_style("red")).starts_with("loss_style does not apply"));
+        assert!(msg(point.clone().spacing(3)).starts_with("spacing does not apply"));
+        assert!(msg(point.border_style("red", None)).starts_with("border_style does not apply"));
+
+        let candle = of(A::CandleStick, n(), n());
+        assert_eq!(
+            msg(candle.clone().style("red", None)),
+            "style does not apply to candle_stick values: CandleStick::new takes a gain and a \
+             loss style; use gain_style(color) and loss_style(color), and stroke_width(px) for \
+             the width"
+        );
+        let candle = candle
+            .gain_style("blue")
+            .unwrap()
+            .loss_style("black")
+            .unwrap()
+            .width(7)
+            .unwrap()
+            .filled()
+            .unwrap();
+        let SeriesKind::CandleStick(o) = &candle.kind else {
+            panic!()
+        };
+        assert_eq!(
+            (o.gain, o.loss, o.width),
+            (Color::rgb(0, 0, 255), Color::BLACK, 7)
+        );
+        assert!(candle.style.filled);
+        assert!(msg(candle.gain_style("nope")).starts_with("unknown colour"));
+
+        let dashed = of(A::DashedLineSeries, n(), n())
+            .size(8)
+            .unwrap()
+            .spacing(2)
+            .unwrap();
+        assert!(matches!(dashed.kind, SeriesKind::DashedLine(o) if o.size == 8 && o.spacing == 2));
+        assert!(
+            msg(of(A::DashedLineSeries, n(), n()).filled()).starts_with("filled does not apply")
+        );
+        assert!(
+            msg(of(A::BoxplotVertical, Column::Integer(vec![1]), n()).filled())
+                .starts_with("filled does not apply to boxplot_vertical values")
+        );
+        assert!(of(A::ErrorBarVertical, n(), n()).filled().is_ok());
+
+        let area = of(A::AreaSeries, n(), n())
+            .baseline(-3.0)
+            .unwrap()
+            .border_style("red", Some(2))
+            .unwrap()
+            .filled()
+            .unwrap();
+        assert_eq!(
+            area.kind,
+            SeriesKind::Area(crate::spec::AreaOptions {
+                baseline: -3.0,
+                border_style: LineStyle {
+                    color: Color::rgb(255, 0, 0),
+                    stroke_width: 2
+                }
+            })
+        );
+        assert!(
+            msg(of(A::BoxplotVertical, Column::Integer(vec![1]), n()).width(-1))
+                .starts_with("width must be between 0 and 8192 px")
+        );
+    }
+
+    #[test]
+    fn step_bins_numeric_buckets() {
+        use crate::accumulate::SeriesAggregate as A;
+        let h = of(
+            A::Histogram,
+            Column::Numeric(vec![1.5, 7.0]),
+            Column::Numeric(vec![1.0, 1.0]),
+        );
+        let err = Chart::new().draw_series(h.clone()).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: histogram_vertical has numeric buckets, which need .step(s) to bin \
+             them into bands, as plotters' (lo..hi).step(s).into_segmented() does: \
+             histogram_vertical(x, value).step(10)"
+        );
+        let stepped = h.step(5.0).unwrap();
+        assert_eq!(stepped.kind.histogram().unwrap().step, Some(5.0));
+        let chart = Chart::new().draw_series(stepped.clone()).unwrap();
+        // Another step on the same axis is an error; the same step is not.
+        let other = stepped.clone().step(2.0).unwrap();
+        let err = chart.clone().draw_series(other).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: cannot draw histogram_vertical with step 2 on a chart whose x axis \
+             has bands of step 5"
+        );
+        assert!(chart.clone().draw_series(stepped).is_ok());
+        // No log scale on the bands, either way round.
+        let err = chart.x_log_scale(None).unwrap_err();
+        assert!(
+            err.message()
+                .contains("the stepped bucket x axis of histogram_vertical"),
+            "{err}"
+        );
+        let h = of(
+            A::Histogram,
+            Column::Numeric(vec![1.5]),
+            Column::Numeric(vec![1.0]),
+        );
+        let err = Chart::new()
+            .x_log_scale(None)
+            .unwrap()
+            .draw_series(h.step(1.0).unwrap())
+            .unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("draw_series: x_log_scale does not apply"),
+            "{err}"
+        );
+
+        // Integer buckets become numbers; category and date buckets cannot be stepped.
+        let ints = of(
+            A::HistogramHorizontal,
+            Column::Numeric(vec![1.0]),
+            Column::Integer(vec![12]),
+        );
+        assert_eq!(ints.step(10.0).unwrap().y, Column::Numeric(vec![12.0]));
+        let cats = histogram(Column::Category(vec!["a".into()]));
+        assert_eq!(
+            cats.clone().step(1.0).unwrap_err().message(),
+            "step applies to numeric histogram buckets, and these are category: category \
+             buckets are one band per value"
+        );
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = cats.clone().step(bad).unwrap_err();
+            assert!(
+                err.message()
+                    .starts_with("step must be a positive finite number"),
+                "{err}"
+            );
+        }
+        assert!(
+            line(Column::Numeric(vec![]))
+                .step(1.0)
+                .unwrap_err()
+                .message()
+                .starts_with("step does not apply to line_series values")
+        );
+    }
+
+    #[test]
+    fn monthly_and_yearly_need_time_axes() {
+        let chart = Chart::new().x_monthly().unwrap().y_yearly().unwrap();
+        assert_eq!(
+            (chart.x_axis.scale, chart.y_axis.scale),
+            (Scale::Monthly, Scale::Yearly)
+        );
+        let numeric = Chart::new()
+            .draw_series(line(Column::Numeric(vec![1.0])))
+            .unwrap();
+        assert_eq!(
+            numeric.clone().x_monthly().unwrap_err().message(),
+            "x_monthly does not apply to the numeric x axis: plotters' monthly (IntoMonthly) \
+             needs a date or timestamp axis"
+        );
+        assert!(
+            numeric
+                .y_yearly()
+                .unwrap_err()
+                .message()
+                .contains("yearly (IntoYearly)")
+        );
+        let err = Chart::new()
+            .x_yearly()
+            .unwrap()
+            .draw_series(histogram(Column::Category(vec!["a".into()])))
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "draw_series: x_yearly does not apply to the category x axis: plotters' yearly \
+             (IntoYearly) needs a date or timestamp axis"
+        );
+        let err = Chart::new()
+            .x_monthly()
+            .unwrap()
+            .x_range(RangeValue::Number(0.0), RangeValue::Number(1.0))
+            .unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("x_monthly does not apply to the numeric"),
+            "{err}"
+        );
+        for x in [Column::Date(vec![1]), Column::Timestamp(vec![1])] {
+            assert!(
+                Chart::new()
+                    .draw_series(line(x))
+                    .unwrap()
+                    .x_monthly()
+                    .is_ok()
+            );
+        }
+        // Date buckets take them; the last scale call wins.
+        let bands = Chart::new()
+            .draw_series(histogram(Column::Date(vec![1])))
+            .unwrap()
+            .x_yearly()
+            .unwrap()
+            .x_monthly()
+            .unwrap();
+        assert_eq!(bands.x_axis.scale, Scale::Monthly);
     }
 
     #[test]

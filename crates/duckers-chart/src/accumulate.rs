@@ -9,17 +9,23 @@
 //! 4. finalize: [`Accumulator::finish`] gives one `SERIES`, [`Accumulator::finish_keyed`] the
 //!    `SERIES[]` of an aggregate called with `key := ...`.
 //!
-//! Rows whose x or y is NULL, NaN or infinite are skipped. The result does not depend on the
-//! order rows arrive in or on how DuckDB partitions them: every series is sorted by
-//! `order_by` (default: x), then x, then y.
+//! Rows whose x or any value is NULL, NaN or infinite are skipped. The result does not depend
+//! on the order rows arrive in or on how DuckDB partitions them: every series is sorted by
+//! `order_by` (default: x), then x, then the values.
 
+use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::spec::{
-    AxisKind, Column, HistogramOptions, LineOptions, Marker, PointOptions, Series, SeriesKind,
-    Style,
+    AreaOptions, AxisKind, BoxplotOptions, CandleStickOptions, Column, DashedLineOptions,
+    ErrorBarOptions, HistogramOptions, LineOptions, LineStyle, Marker, PointOptions, Series,
+    SeriesKind, Style,
 };
+use plotters::data::Quartiles;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+
+/// The most value arguments an aggregate takes (`candle_stick`'s open, high, low, close).
+const MAX_VALUES: usize = 4;
 
 /// The series aggregates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,15 +38,51 @@ pub enum SeriesAggregate {
     Histogram,
     /// `histogram_horizontal(bucket, value)`.
     HistogramHorizontal,
+    /// `area_series(x, y)`.
+    AreaSeries,
+    /// `dashed_line_series(x, y)`.
+    DashedLineSeries,
+    /// `error_bar_vertical(x, min, avg, max)`.
+    ErrorBarVertical,
+    /// `error_bar_horizontal(y, min, avg, max)`.
+    ErrorBarHorizontal,
+    /// `candle_stick(x, open, high, low, close)`.
+    CandleStick,
+    /// `boxplot_vertical(key, value)`.
+    BoxplotVertical,
+    /// `boxplot_horizontal(key, value)`.
+    BoxplotHorizontal,
 }
 
 impl SeriesAggregate {
+    /// Every aggregate, in registration order.
+    pub const ALL: [SeriesAggregate; 11] = [
+        SeriesAggregate::LineSeries,
+        SeriesAggregate::PointSeries,
+        SeriesAggregate::Histogram,
+        SeriesAggregate::HistogramHorizontal,
+        SeriesAggregate::AreaSeries,
+        SeriesAggregate::DashedLineSeries,
+        SeriesAggregate::ErrorBarVertical,
+        SeriesAggregate::ErrorBarHorizontal,
+        SeriesAggregate::CandleStick,
+        SeriesAggregate::BoxplotVertical,
+        SeriesAggregate::BoxplotHorizontal,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             SeriesAggregate::LineSeries => "line_series",
             SeriesAggregate::PointSeries => "point_series",
             SeriesAggregate::Histogram => "histogram_vertical",
             SeriesAggregate::HistogramHorizontal => "histogram_horizontal",
+            SeriesAggregate::AreaSeries => "area_series",
+            SeriesAggregate::DashedLineSeries => "dashed_line_series",
+            SeriesAggregate::ErrorBarVertical => "error_bar_vertical",
+            SeriesAggregate::ErrorBarHorizontal => "error_bar_horizontal",
+            SeriesAggregate::CandleStick => "candle_stick",
+            SeriesAggregate::BoxplotVertical => "boxplot_vertical",
+            SeriesAggregate::BoxplotHorizontal => "boxplot_horizontal",
         }
     }
 
@@ -52,9 +94,45 @@ impl SeriesAggregate {
         )
     }
 
-    /// The name of the first argument, `x` or `bucket`.
-    fn x_name(self) -> &'static str {
-        if self.is_histogram() { "bucket" } else { "x" }
+    /// Whether the aggregate draws one box per distinct key.
+    pub fn is_boxplot(self) -> bool {
+        matches!(
+            self,
+            SeriesAggregate::BoxplotVertical | SeriesAggregate::BoxplotHorizontal
+        )
+    }
+
+    /// Whether the first argument goes on the y axis and the values on x.
+    pub fn is_horizontal(self) -> bool {
+        matches!(
+            self,
+            SeriesAggregate::HistogramHorizontal
+                | SeriesAggregate::ErrorBarHorizontal
+                | SeriesAggregate::BoxplotHorizontal
+        )
+    }
+
+    /// The name of the first argument: `x`, `y` or `bucket`. A boxplot's key (plotters'
+    /// `Boxplot::new_vertical(key, ...)`) is `bucket` too, since `key` names the `key :=`
+    /// parameter of every aggregate.
+    pub fn x_name(self) -> &'static str {
+        match self {
+            _ if self.is_histogram() || self.is_boxplot() => "bucket",
+            SeriesAggregate::ErrorBarHorizontal => "y",
+            _ => "x",
+        }
+    }
+
+    /// The names of the value arguments that follow the first.
+    pub fn value_names(self) -> &'static [&'static str] {
+        match self {
+            _ if self.is_histogram() || self.is_boxplot() => &["value"],
+            SeriesAggregate::ErrorBarVertical | SeriesAggregate::ErrorBarHorizontal => {
+                &["min", "avg", "max"]
+            }
+            SeriesAggregate::CandleStick => &["open", "high", "low", "close"],
+            _ => &["y"],
+        }
     }
 }
 
@@ -81,22 +159,30 @@ pub struct SeriesBinding {
 impl SeriesBinding {
     /// Checks the x (or bucket) type of an aggregate. The error is the bind error to raise.
     pub fn new(aggregate: SeriesAggregate, x: SqlType) -> Result<SeriesBinding> {
-        let column = match (aggregate.is_histogram(), x) {
+        let bucketed = aggregate.is_histogram() || aggregate.is_boxplot();
+        let column = match (bucketed, x) {
             (true, SqlType::Varchar) => AxisKind::Category,
             (true, SqlType::Integer) => AxisKind::Integer,
             (true, SqlType::Date) => AxisKind::Date,
+            // Binned into bands by `.step(s)`, which drawing requires.
+            (true, SqlType::Float) if aggregate.is_histogram() => AxisKind::Numeric,
             (true, SqlType::Float) => {
                 return Err(Error::invalid(
-                    "histogram buckets cannot be DOUBLE or DECIMAL: plotters' Histogram needs a \
-                     discrete bucket axis; bin the values first (for example \
-                     floor(x / 10)::INTEGER * 10), or use .step() once it exists",
+                    "boxplot buckets cannot be DOUBLE or DECIMAL: plotters' Boxplot draws one box \
+                     per distinct key on a segmented axis; cast them to an integer or VARCHAR, \
+                     or bin them first (for example floor(x / 10)::INTEGER * 10)",
                 ));
             }
             (true, SqlType::Timestamp) => {
-                return Err(Error::invalid(
-                    "histogram buckets cannot be TIMESTAMP: cast them to DATE for one band per \
-                     day, or bin them to integers",
-                ));
+                let what = if aggregate.is_histogram() {
+                    "histogram buckets"
+                } else {
+                    "boxplot buckets"
+                };
+                return Err(Error::invalid(format!(
+                    "{what} cannot be TIMESTAMP: cast them to DATE for one band per day, or bin \
+                     them to integers"
+                )));
             }
             (false, SqlType::Integer | SqlType::Float) => AxisKind::Numeric,
             (false, SqlType::Date) => AxisKind::Date,
@@ -265,7 +351,8 @@ pub struct Key {
 struct Row {
     order: Option<SortKey>,
     x: XValue,
-    y: f64,
+    /// The value arguments in order; those past the aggregate's count are 0.
+    values: [f64; MAX_VALUES],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -298,11 +385,40 @@ impl Accumulator {
         key: Option<Key>,
         order_by: Option<SortKey>,
     ) -> Result<()> {
-        let (Some(x), Some(y)) = (x, y) else {
+        self.push_values(binding, x, &[y], key, order_by)
+    }
+
+    /// Adds one row of an aggregate with any number of value arguments (`min, avg, max` of an
+    /// error bar, `open, high, low, close` of a candlestick), in argument order. `push` is
+    /// this with one value.
+    ///
+    /// A row with a missing, NaN or infinite value is skipped as a whole. Passing a number of
+    /// values other than the aggregate's is an error.
+    pub fn push_values(
+        &mut self,
+        binding: &SeriesBinding,
+        x: Option<XValue>,
+        values: &[Option<f64>],
+        key: Option<Key>,
+        order_by: Option<SortKey>,
+    ) -> Result<()> {
+        let expected = binding.aggregate.value_names().len();
+        if values.len() != expected {
+            return Err(Error::invalid(format!(
+                "{}: {} values in a row, but it takes {expected}",
+                binding.aggregate.name(),
+                values.len()
+            )));
+        }
+        let Some(x) = x else {
             return Ok(());
         };
-        if !y.is_finite() {
-            return Ok(());
+        let mut row_values = [0.0; MAX_VALUES];
+        for (slot, value) in row_values.iter_mut().zip(values) {
+            match value {
+                Some(v) if v.is_finite() => *slot = *v,
+                _ => return Ok(()),
+            }
         }
         let x = match (binding.column, x) {
             (AxisKind::Numeric, XValue::Number(v)) if !v.is_finite() => return Ok(()),
@@ -332,7 +448,7 @@ impl Accumulator {
         group.rows.push(Row {
             order: order_by,
             x,
-            y,
+            values: row_values,
         });
         Ok(())
     }
@@ -390,27 +506,103 @@ fn build(binding: &SeriesBinding, mut rows: Vec<Row>) -> Result<Series> {
         a.order
             .cmp(&b.order)
             .then_with(|| a.x.cmp(&b.x))
-            .then_with(|| cmp_f64(a.y, b.y))
+            .then_with(|| {
+                a.values
+                    .iter()
+                    .zip(&b.values)
+                    .map(|(a, b)| cmp_f64(*a, *b))
+                    .find(|o| o.is_ne())
+                    .unwrap_or(Ordering::Equal)
+            })
     });
-    let (xs, ys): (Vec<XValue>, Vec<f64>) = match binding.aggregate {
-        SeriesAggregate::Histogram | SeriesAggregate::HistogramHorizontal => {
-            // Sum per bucket, buckets in order of first appearance, sums in sorted row order.
-            let mut index: BTreeMap<XValue, usize> = BTreeMap::new();
-            let mut buckets: Vec<(XValue, f64)> = Vec::new();
-            for row in rows {
-                match index.get(&row.x) {
-                    Some(&i) => buckets[i].1 += row.y,
-                    None => {
-                        index.insert(row.x.clone(), buckets.len());
-                        buckets.push((row.x, row.y));
-                    }
+    let aggregate = binding.aggregate;
+    if aggregate.is_boxplot() {
+        // One box per key, keys in order of first appearance.
+        let mut index: BTreeMap<XValue, usize> = BTreeMap::new();
+        let mut keys: Vec<(XValue, Vec<f64>)> = Vec::new();
+        for row in rows {
+            match index.get(&row.x) {
+                Some(&i) => keys[i].1.push(row.values[0]),
+                None => {
+                    index.insert(row.x.clone(), keys.len());
+                    keys.push((row.x, vec![row.values[0]]));
                 }
             }
-            buckets.into_iter().unzip()
         }
-        _ => rows.into_iter().map(|r| (r.x, r.y)).unzip(),
+        let (xs, quartiles): (Vec<XValue>, Vec<[f64; 5]>) = keys
+            .into_iter()
+            .map(|(key, values)| (key, quartile_values(&values)))
+            .unzip();
+        let column = key_column(binding.column, xs);
+        let medians = Column::Numeric(quartiles.iter().map(|q| q[2]).collect());
+        let (x, y) = if aggregate.is_horizontal() {
+            (medians, column)
+        } else {
+            (column, medians)
+        };
+        let mut series = Series::new(aggregate, x, y)?;
+        if let SeriesKind::BoxplotVertical(o) | SeriesKind::BoxplotHorizontal(o) = &mut series.kind
+        {
+            o.quartiles = quartiles;
+        }
+        return Ok(series);
+    }
+    let (xs, values): (Vec<XValue>, Vec<[f64; MAX_VALUES]>) = if aggregate.is_histogram() {
+        // Sum per bucket, buckets in order of first appearance, sums in sorted row order.
+        let mut index: BTreeMap<XValue, usize> = BTreeMap::new();
+        let mut buckets: Vec<(XValue, [f64; MAX_VALUES])> = Vec::new();
+        for row in rows {
+            match index.get(&row.x) {
+                Some(&i) => buckets[i].1[0] += row.values[0],
+                None => {
+                    index.insert(row.x.clone(), buckets.len());
+                    buckets.push((row.x, row.values));
+                }
+            }
+        }
+        buckets.into_iter().unzip()
+    } else {
+        rows.into_iter().map(|r| (r.x, r.values)).unzip()
     };
-    let column = match binding.column {
+    let column = key_column(binding.column, xs);
+    let value = |i: usize| -> Vec<f64> { values.iter().map(|v| v[i]).collect() };
+    // The value drawn on the value axis: `avg` of an error bar, `close` of a candlestick.
+    let main = match aggregate {
+        SeriesAggregate::ErrorBarVertical | SeriesAggregate::ErrorBarHorizontal => 1,
+        SeriesAggregate::CandleStick => 3,
+        _ => 0,
+    };
+    let values_column = Column::Numeric(value(main));
+    let (x, y) = if aggregate.is_horizontal() {
+        (values_column, column)
+    } else {
+        (column, values_column)
+    };
+    let mut series = Series::new(aggregate, x, y)?;
+    match &mut series.kind {
+        SeriesKind::ErrorBarVertical(o) | SeriesKind::ErrorBarHorizontal(o) => {
+            o.min = value(0);
+            o.max = value(2);
+        }
+        SeriesKind::CandleStick(o) => {
+            o.open = value(0);
+            o.high = value(1);
+            o.low = value(2);
+        }
+        _ => {}
+    }
+    Ok(series)
+}
+
+/// `Quartiles::new(values).values()`, widened to `f64`. plotters computes the quartiles in
+/// `f64` and hands them out as `f32`; the box is drawn from these numbers.
+pub fn quartile_values(values: &[f64]) -> [f64; 5] {
+    Quartiles::new(values).values().map(f64::from)
+}
+
+/// The first argument's values as the column of the binding's kind.
+fn key_column(kind: AxisKind, xs: Vec<XValue>) -> Column {
+    match kind {
         AxisKind::Numeric => Column::Numeric(collect(xs, |x| match x {
             XValue::Number(v) => Some(v),
             _ => None,
@@ -431,11 +623,6 @@ fn build(binding: &SeriesBinding, mut rows: Vec<Row>) -> Result<Series> {
             XValue::Category(v) => Some(v),
             _ => None,
         })),
-    };
-    let values = Column::Numeric(ys);
-    match binding.aggregate {
-        SeriesAggregate::HistogramHorizontal => Series::new(binding.aggregate, values, column),
-        _ => Series::new(binding.aggregate, column, values),
     }
 }
 
@@ -449,8 +636,13 @@ fn collect<T>(xs: Vec<XValue>, f: impl Fn(XValue) -> Option<T>) -> Vec<T> {
 impl Series {
     /// A series of the given aggregate's kind with plotters' (and duckers') defaults, from
     /// ready columns on the x and y axis: points in drawing order, or histogram buckets and
-    /// values (repeated buckets are summed when drawn, as `Histogram::data` does). The buckets
-    /// of `histogram_horizontal` are the `y` column.
+    /// values (repeated buckets are summed when drawn, as `Histogram::data` does). The first
+    /// argument of the horizontal kinds (`histogram_horizontal`, `error_bar_horizontal`,
+    /// `boxplot_horizontal`) is the `y` column.
+    ///
+    /// The value column of an error bar is its `avg`, of a candlestick its `close`, and of a
+    /// boxplot its median; their other values start empty and every one is `0` when drawn
+    /// until the aggregate fills them in.
     pub fn new(aggregate: SeriesAggregate, x: Column, y: Column) -> Result<Series> {
         if x.len() != y.len() {
             return Err(Error::invalid(format!(
@@ -464,21 +656,24 @@ impl Series {
             matches!(
                 c.axis_kind(),
                 AxisKind::Integer | AxisKind::Date | AxisKind::Category
-            )
+            ) || (aggregate.is_histogram() && c.axis_kind() == AxisKind::Numeric)
         };
         let numeric = |c: &Column| c.axis_kind() == AxisKind::Numeric;
-        let (x_ok, y_ok) = match aggregate {
-            SeriesAggregate::Histogram => (bucket(&x), numeric(&y)),
-            SeriesAggregate::HistogramHorizontal => (numeric(&x), bucket(&y)),
-            _ => (x.axis_kind() != AxisKind::Integer, numeric(&y)),
+        let point = |c: &Column| c.axis_kind() != AxisKind::Integer;
+        let (key, values) = if aggregate.is_horizontal() {
+            (&y, &x)
+        } else {
+            (&x, &y)
         };
-        let (column, what) = match (x_ok, y_ok) {
+        let key_ok = if aggregate.is_histogram() || aggregate.is_boxplot() {
+            bucket(key)
+        } else {
+            point(key)
+        };
+        let (column, what) = match (key_ok, numeric(values)) {
             (true, true) => (None, ""),
-            (false, _) if aggregate == SeriesAggregate::HistogramHorizontal => (Some(&x), "value"),
-            (false, _) => (Some(&x), aggregate.x_name()),
-            (_, false) if aggregate == SeriesAggregate::HistogramHorizontal => (Some(&y), "bucket"),
-            (_, false) if aggregate.is_histogram() => (Some(&y), "value"),
-            (_, false) => (Some(&y), "y"),
+            (false, _) => (Some(key), aggregate.x_name()),
+            (_, false) => (Some(values), aggregate.value_names()[0]),
         };
         if let Some(column) = column {
             return Err(Error::invalid(format!(
@@ -487,10 +682,29 @@ impl Series {
                 column.axis_kind(),
             )));
         }
+        let n = x.len();
         let style = Style {
             color: None,
             stroke_width: 1,
             filled: false,
+        };
+        let filled = Style {
+            filled: true,
+            ..style.clone()
+        };
+        let histogram = HistogramOptions {
+            margin: 5,
+            baseline: 0.0,
+            step: None,
+        };
+        let error_bar = ErrorBarOptions {
+            width: 10,
+            min: vec![0.0; n],
+            max: vec![0.0; n],
+        };
+        let boxplot = BoxplotOptions {
+            width: 10,
+            quartiles: vec![[0.0; 5]; n],
         };
         let (kind, style) = match aggregate {
             SeriesAggregate::LineSeries => (SeriesKind::Line(LineOptions { point_size: 0 }), style),
@@ -501,22 +715,45 @@ impl Series {
                 }),
                 style,
             ),
-            SeriesAggregate::Histogram | SeriesAggregate::HistogramHorizontal => {
-                let options = HistogramOptions {
-                    margin: 5,
-                    baseline: 0.0,
-                };
-                let kind = if aggregate == SeriesAggregate::Histogram {
-                    SeriesKind::Histogram(options)
-                } else {
-                    SeriesKind::HistogramHorizontal(options)
-                };
-                let style = Style {
-                    filled: true,
-                    ..style
-                };
-                (kind, style)
+            SeriesAggregate::Histogram => (SeriesKind::Histogram(histogram), filled),
+            SeriesAggregate::HistogramHorizontal => {
+                (SeriesKind::HistogramHorizontal(histogram), filled)
             }
+            // plotters fills an area's polygon whatever the style says.
+            SeriesAggregate::AreaSeries => (
+                SeriesKind::Area(AreaOptions {
+                    baseline: 0.0,
+                    border_style: LineStyle {
+                        color: Color::TRANSPARENT,
+                        stroke_width: 1,
+                    },
+                }),
+                filled,
+            ),
+            SeriesAggregate::DashedLineSeries => (
+                SeriesKind::DashedLine(DashedLineOptions {
+                    size: 5,
+                    spacing: 5,
+                }),
+                style,
+            ),
+            SeriesAggregate::ErrorBarVertical => (SeriesKind::ErrorBarVertical(error_bar), style),
+            SeriesAggregate::ErrorBarHorizontal => {
+                (SeriesKind::ErrorBarHorizontal(error_bar), style)
+            }
+            SeriesAggregate::CandleStick => (
+                SeriesKind::CandleStick(Box::new(CandleStickOptions {
+                    width: 10,
+                    gain: Color::rgb(0, 255, 0),
+                    loss: Color::rgb(255, 0, 0),
+                    open: vec![0.0; n],
+                    high: vec![0.0; n],
+                    low: vec![0.0; n],
+                })),
+                style,
+            ),
+            SeriesAggregate::BoxplotVertical => (SeriesKind::BoxplotVertical(boxplot), style),
+            SeriesAggregate::BoxplotHorizontal => (SeriesKind::BoxplotHorizontal(boxplot), style),
         };
         Ok(Series {
             kind,
@@ -531,6 +768,7 @@ impl Series {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::{AreaOptions, LineStyle};
 
     fn line() -> SeriesBinding {
         SeriesBinding::new(SeriesAggregate::LineSeries, SqlType::Float).unwrap()
@@ -689,29 +927,233 @@ mod tests {
         assert_eq!(s.y, Column::Category(vec!["a".into(), "b".into()]));
         assert!(matches!(s.kind, SeriesKind::HistogramHorizontal(_)));
         assert!(s.style.filled);
-        let err =
-            SeriesBinding::new(SeriesAggregate::HistogramHorizontal, SqlType::Float).unwrap_err();
-        assert!(err.message().contains("bin the values first"), "{err}");
+        let float = SeriesBinding::new(SeriesAggregate::HistogramHorizontal, SqlType::Float);
+        assert_eq!(float.unwrap().x_kind(), AxisKind::Numeric);
         let err = Series::new(
             SeriesAggregate::HistogramHorizontal,
-            Column::Numeric(vec![1.0]),
+            Column::Date(vec![1]),
             Column::Numeric(vec![1.0]),
         )
         .unwrap_err();
         assert_eq!(
             err.message(),
-            "histogram_horizontal: numeric columns cannot be its bucket"
+            "histogram_horizontal: date columns cannot be its value"
+        );
+        let err = Series::new(
+            SeriesAggregate::HistogramHorizontal,
+            Column::Numeric(vec![1.0]),
+            Column::Timestamp(vec![1]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "histogram_horizontal: timestamp columns cannot be its bucket"
         );
     }
 
     #[test]
-    fn histogram_rejects_double_buckets() {
-        let err = SeriesBinding::new(SeriesAggregate::Histogram, SqlType::Float).unwrap_err();
-        assert!(err.message().contains("bin the values first"), "{err}");
-        assert!(err.message().contains(".step()"), "{err}");
-        assert!(SeriesBinding::new(SeriesAggregate::Histogram, SqlType::Timestamp).is_err());
+    fn histogram_bucket_types() {
+        // Numeric buckets bind; drawing them needs .step(s).
+        let float = SeriesBinding::new(SeriesAggregate::Histogram, SqlType::Float).unwrap();
+        assert_eq!(float.x_kind(), AxisKind::Numeric);
+        let mut acc = Accumulator::new();
+        for x in [0.5, 1.5, 0.5] {
+            acc.push(&float, num(x), Some(1.0), None, None).unwrap();
+        }
+        let s = acc.finish(&float).unwrap();
+        assert_eq!(s.x, Column::Numeric(vec![0.5, 1.5]));
+        assert_eq!(s.y, Column::Numeric(vec![2.0, 1.0]));
+        let err = SeriesBinding::new(SeriesAggregate::Histogram, SqlType::Timestamp).unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("histogram buckets cannot be TIMESTAMP")
+        );
         let int = SeriesBinding::new(SeriesAggregate::Histogram, SqlType::Integer).unwrap();
         assert_eq!(int.x_kind(), AxisKind::Integer);
+    }
+
+    fn push_all(b: &SeriesBinding, rows: &[(XValue, &[f64])]) -> Series {
+        let mut acc = Accumulator::new();
+        for (x, values) in rows {
+            let values: Vec<Option<f64>> = values.iter().map(|v| Some(*v)).collect();
+            acc.push_values(b, Some(x.clone()), &values, None, None)
+                .unwrap();
+        }
+        acc.finish(b).unwrap()
+    }
+
+    #[test]
+    fn area_and_dashed_line_are_points() {
+        for (aggregate, name) in [
+            (SeriesAggregate::AreaSeries, "area"),
+            (SeriesAggregate::DashedLineSeries, "dashed line"),
+        ] {
+            let b = SeriesBinding::new(aggregate, SqlType::Float).unwrap();
+            let s = push_all(
+                &b,
+                &[(XValue::Number(2.0), &[1.0]), (XValue::Number(1.0), &[3.0])],
+            );
+            assert_eq!(s.kind.name(), name);
+            assert_eq!(xs(&s), [1.0, 2.0]);
+            assert_eq!(s.y, Column::Numeric(vec![3.0, 1.0]));
+        }
+        let b = SeriesBinding::new(SeriesAggregate::AreaSeries, SqlType::Float).unwrap();
+        let s = push_all(&b, &[]);
+        assert!(s.style.filled, "an area's polygon is filled");
+        assert!(matches!(
+            s.kind,
+            SeriesKind::Area(AreaOptions { baseline: 0.0, border_style: LineStyle { color, .. } })
+                if color == Color::TRANSPARENT
+        ));
+    }
+
+    #[test]
+    fn error_bars_keep_min_avg_max() {
+        let b = SeriesBinding::new(SeriesAggregate::ErrorBarVertical, SqlType::Integer).unwrap();
+        let s = push_all(
+            &b,
+            &[
+                (XValue::Integer(2), &[1.0, 2.0, 3.0]),
+                (XValue::Integer(1), &[4.0, 5.0, 6.0]),
+            ],
+        );
+        assert_eq!(xs(&s), [1.0, 2.0]);
+        assert_eq!(s.y, Column::Numeric(vec![5.0, 2.0]));
+        let SeriesKind::ErrorBarVertical(o) = &s.kind else {
+            panic!("{s:?}")
+        };
+        assert_eq!(
+            (o.width, o.min.clone(), o.max.clone()),
+            (10, vec![4.0, 1.0], vec![6.0, 3.0])
+        );
+
+        // Horizontal ones have the key on y.
+        let b = SeriesBinding::new(SeriesAggregate::ErrorBarHorizontal, SqlType::Varchar).unwrap();
+        let s = push_all(&b, &[(XValue::Category("a".into()), &[1.0, 2.0, 3.0])]);
+        assert_eq!(s.y, Column::Category(vec!["a".into()]));
+        assert_eq!(s.x, Column::Numeric(vec![2.0]));
+        assert_eq!(s.key_axis(), Some(crate::spec::Axis::Y));
+        assert_eq!(s.extra_numbers(crate::spec::Axis::X), [1.0, 3.0]);
+        assert!(s.extra_numbers(crate::spec::Axis::Y).is_empty());
+
+        // A row with any value missing or not finite is skipped; the arity is checked.
+        let mut acc = Accumulator::new();
+        acc.push_values(
+            &b,
+            Some(XValue::Category("a".into())),
+            &[Some(1.0), None, Some(2.0)],
+            None,
+            None,
+        )
+        .unwrap();
+        acc.push_values(
+            &b,
+            Some(XValue::Category("a".into())),
+            &[Some(1.0), Some(f64::NAN), Some(2.0)],
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(acc.is_empty());
+        let err = acc
+            .push(
+                &b,
+                Some(XValue::Category("a".into())),
+                Some(1.0),
+                None,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(
+            err.message(),
+            "error_bar_horizontal: 1 values in a row, but it takes 3"
+        );
+    }
+
+    #[test]
+    fn candle_sticks_keep_open_high_low_close() {
+        let b = SeriesBinding::new(SeriesAggregate::CandleStick, SqlType::Date).unwrap();
+        let s = push_all(&b, &[(XValue::Date(3), &[1.0, 4.0, 0.5, 2.0])]);
+        assert_eq!(s.x, Column::Date(vec![3]));
+        assert_eq!(s.y, Column::Numeric(vec![2.0]));
+        let SeriesKind::CandleStick(o) = &s.kind else {
+            panic!("{s:?}")
+        };
+        assert_eq!((o.open[0], o.high[0], o.low[0]), (1.0, 4.0, 0.5));
+        assert_eq!(
+            (o.gain, o.loss),
+            (Color::rgb(0, 255, 0), Color::rgb(255, 0, 0))
+        );
+        assert_eq!(s.extra_numbers(crate::spec::Axis::Y), [1.0, 4.0, 0.5]);
+    }
+
+    #[test]
+    fn boxplots_compute_quartiles_per_key() {
+        let b = SeriesBinding::new(SeriesAggregate::BoxplotVertical, SqlType::Varchar).unwrap();
+        let mut rows: Vec<(XValue, &[f64])> = Vec::new();
+        for v in [&[10.0][..], &[20.0], &[30.0], &[40.0]] {
+            rows.push((XValue::Category("b".into()), v));
+        }
+        rows.push((XValue::Category("a".into()), &[5.0]));
+        let s = push_all(&b, &rows);
+        assert_eq!(s.x, Column::Category(vec!["a".into(), "b".into()]));
+        assert_eq!(s.y, Column::Numeric(vec![5.0, 25.0]));
+        let SeriesKind::BoxplotVertical(o) = &s.kind else {
+            panic!("{s:?}")
+        };
+        assert_eq!(o.quartiles[0], [5.0; 5]);
+        // plotters' Quartiles: 17.5, 25, 32.5 and fences 1.5 IQR out.
+        assert_eq!(o.quartiles[1], [-5.0, 17.5, 25.0, 32.5, 55.0]);
+
+        let err = SeriesBinding::new(SeriesAggregate::BoxplotVertical, SqlType::Float).unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("boxplot buckets cannot be DOUBLE"),
+            "{err}"
+        );
+        let err =
+            SeriesBinding::new(SeriesAggregate::BoxplotHorizontal, SqlType::Timestamp).unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("boxplot buckets cannot be TIMESTAMP"),
+            "{err}"
+        );
+        let h = SeriesBinding::new(SeriesAggregate::BoxplotHorizontal, SqlType::Integer).unwrap();
+        let s = push_all(&h, &[(XValue::Integer(7), &[1.0])]);
+        assert_eq!(
+            (s.x.clone(), s.y.clone()),
+            (Column::Numeric(vec![1.0]), Column::Integer(vec![7]))
+        );
+        assert_eq!(s.bucket_axis(), Some(crate::spec::Axis::Y));
+    }
+
+    /// The five numbers stored per box, fed back through `Quartiles::new`, give the same
+    /// quartiles exactly (the 25th, 50th and 75th percentile of five sorted values are the
+    /// second, third and fourth), but the fences only within one `f32` rounding step, since
+    /// plotters recomputes them from the rounded quartiles. The renderer therefore draws the
+    /// stored numbers rather than rebuilt ones.
+    #[test]
+    fn quartile_values_round_trip() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f64 / 7.0 - 500.0
+        };
+        for n in 1..60 {
+            let values: Vec<f64> = (0..n).map(|_| next()).collect();
+            let q = quartile_values(&values);
+            let again = quartile_values(&q);
+            assert_eq!(q[1..4], again[1..4], "quartiles of {values:?}");
+            for i in [0, 4] {
+                let ulp = f64::from(f32::EPSILON) * q[i].abs().max(1.0);
+                assert!((q[i] - again[i]).abs() <= ulp, "fence {i} of {values:?}");
+            }
+        }
+        // Whole numbers round-trip exactly.
+        let q = quartile_values(&[3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0]);
+        assert_eq!(quartile_values(&q), q);
     }
 
     #[test]

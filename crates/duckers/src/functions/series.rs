@@ -1,5 +1,7 @@
 //! The series aggregates (`line_series`, `point_series`, `histogram_vertical`,
-//! `histogram_horizontal`) and the methods on `SERIES`.
+//! `histogram_horizontal`, `area_series`, `dashed_line_series`, `error_bar_vertical`,
+//! `error_bar_horizontal`, `candle_stick`, `boxplot_vertical`, `boxplot_horizontal`) and the
+//! methods on `SERIES`.
 
 use duckers_chart::{Accumulator, Key, Series, SeriesAggregate, SeriesBinding, Value};
 
@@ -9,39 +11,22 @@ use crate::capi::{
 };
 use crate::types::Types;
 
-/// Argument positions of every series aggregate.
+/// The position of the first argument of every series aggregate; its value arguments follow,
+/// then `key` and `order_by`.
 const X: usize = 0;
-const Y: usize = 1;
-const KEY: usize = 2;
-const ORDER_BY: usize = 3;
-
-/// The SQL name of each aggregate and the names of its two value parameters.
-const AGGREGATES: [(SeriesAggregate, &str, &str, &str); 4] = [
-    (SeriesAggregate::LineSeries, "line_series", "x", "y"),
-    (SeriesAggregate::PointSeries, "point_series", "x", "y"),
-    (
-        SeriesAggregate::Histogram,
-        "histogram_vertical",
-        "bucket",
-        "value",
-    ),
-    (
-        SeriesAggregate::HistogramHorizontal,
-        "histogram_horizontal",
-        "bucket",
-        "value",
-    ),
-];
 
 pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
     let ctx = ext.context();
-    for (_, name, x, y) in AGGREGATES {
+    for aggregate in SeriesAggregate::ALL {
+        let mut function = AggregateFunction::<SeriesState>::new(aggregate.name(), &types.any)
+            .param(aggregate.x_name(), &types.any);
+        for value in aggregate.value_names() {
+            function = function.param(value, &types.any);
+        }
         // `key` and `order_by` default to a typed NULL: an ANY parameter cannot default to an
         // untyped one. Bind tells "not given" by the constant NULL.
         ext.register_aggregate(
-            AggregateFunction::<SeriesState>::new(name, &types.any)
-                .param(x, &types.any)
-                .param(y, &types.any)
+            function
                 .named("key", &types.any, ctx.null(&types.varchar)?)
                 .named("order_by", &types.any, ctx.null(&types.varchar)?),
         )?;
@@ -54,10 +39,22 @@ pub struct SeriesBind {
     name: &'static str,
     binding: SeriesBinding,
     x: XReader,
+    /// The number of value arguments after `x`.
+    values: usize,
     /// Called with `key :=`: the result is `SERIES[]`.
     keyed: bool,
     /// Called with `order_by :=`.
     ordered: bool,
+}
+
+impl SeriesBind {
+    fn key_index(&self) -> usize {
+        X + self.values + 1
+    }
+
+    fn order_by_index(&self) -> usize {
+        X + self.values + 2
+    }
 }
 
 /// The state of a series aggregate for one group.
@@ -77,14 +74,16 @@ impl Aggregate for SeriesState {
     type BindData = SeriesBind;
 
     fn bind(b: &mut Bind<'_>) -> Result<SeriesBind> {
-        let (aggregate, name, x_name, y_name) = AGGREGATES
+        let aggregate = SeriesAggregate::ALL
             .into_iter()
-            .find(|(_, name, ..)| *name == b.function_name())
+            .find(|a| a.name() == b.function_name())
             .ok_or_else(|| Error::internal(format!("unknown aggregate {}", b.function_name())))?;
+        let (name, x_name) = (aggregate.name(), aggregate.x_name());
         let x_type = b.arg_type(X)?;
-        let histogram = aggregate.is_histogram();
         let (x, sql_type) = XReader::for_type(x_type.id()).ok_or_else(|| {
-            let expected = if histogram {
+            let expected = if aggregate.is_histogram() {
+                "VARCHAR, a number or DATE"
+            } else if aggregate.is_boxplot() {
                 "VARCHAR, an integer or DATE"
             } else {
                 "a number, DATE, TIMESTAMP or VARCHAR"
@@ -98,15 +97,19 @@ impl Aggregate for SeriesState {
             let e = chart_error(name, e);
             Error::binder(e.message())
         })?;
-        let y_type = b.arg_type(Y)?;
-        if !y_type.id().is_numeric() {
-            return Err(Error::binder(format!(
-                "{name}: {y_name} must be a number, got {}",
-                y_type.to_text()
-            )));
+        let value_names = aggregate.value_names();
+        for (i, value) in value_names.iter().enumerate() {
+            let ty = b.arg_type(X + 1 + i)?;
+            if !ty.id().is_numeric() {
+                return Err(Error::binder(format!(
+                    "{name}: {value} must be a number, got {}",
+                    ty.to_text()
+                )));
+            }
         }
-        let keyed = given(b, KEY);
-        let ordered = given(b, ORDER_BY);
+        let values = value_names.len();
+        let keyed = given(b, X + values + 1);
+        let ordered = given(b, X + values + 2);
         let returns = b
             .context()
             .type_from_text(if keyed { "SERIES[]" } else { "SERIES" })?;
@@ -115,6 +118,7 @@ impl Aggregate for SeriesState {
             name,
             binding,
             x,
+            values,
             keyed,
             ordered,
         })
@@ -127,16 +131,23 @@ impl Aggregate for SeriesState {
     }
 
     fn update(&mut self, bind: &SeriesBind, input: &AggregateInput<'_>, row: usize) -> Result<()> {
-        let (x, y) = (input.arg(X), input.arg(Y));
-        if !x.is_valid(row) || !y.is_valid(row) {
+        let x = input.arg(X);
+        if !x.is_valid(row) {
             return Ok(());
+        }
+        let mut values = [None; 4];
+        for (i, slot) in values.iter_mut().take(bind.values).enumerate() {
+            let v = input.arg(X + 1 + i);
+            if !v.is_valid(row) {
+                return Ok(());
+            }
+            *slot = Some(v.f64(row)?);
         }
         let Some(x) = bind.x.read(x, row)? else {
             return Ok(());
         };
-        let y = y.f64(row)?;
         let key = if bind.keyed {
-            let k = input.arg(KEY);
+            let k = input.arg(bind.key_index());
             let sort = sort_key(k, row)?;
             // The label is the key's text, needed once per key.
             let label = if self.acc.contains_key(&sort) {
@@ -149,12 +160,18 @@ impl Aggregate for SeriesState {
             None
         };
         let order_by = if bind.ordered {
-            Some(sort_key(input.arg(ORDER_BY), row)?)
+            Some(sort_key(input.arg(bind.order_by_index()), row)?)
         } else {
             None
         };
         self.acc
-            .push(&bind.binding, Some(x), Some(y), key, order_by)
+            .push_values(
+                &bind.binding,
+                Some(x),
+                &values[..bind.values],
+                key,
+                order_by,
+            )
             .map_err(|e| chart_error(bind.name, e))
     }
 
@@ -185,7 +202,7 @@ impl Aggregate for SeriesState {
     }
 }
 
-/// `style`, `stroke_width`, `filled`, `label`, `point_size` and `size` on `SERIES`.
+/// The methods on `SERIES`: `style`, `stroke_width`, `filled`, `label` and the kind-specific ones.
 fn register_methods(ext: &Extension<'_>, t: &Types) -> Result<()> {
     ext.register_scalar(
         scalar("style", &t.series, |a| {
@@ -268,5 +285,60 @@ fn register_methods(ext: &Extension<'_>, t: &Types) -> Result<()> {
         })
         .param("series", &t.series)
         .param("value", &t.double),
+    )?;
+    // `border_style` is also a method on SERIES_LABELS; the first argument picks the overload.
+    ext.register_scalar(
+        scalar("border_style", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.border_style(a.str(1)?, None))?.encode())
+        })
+        .param("series", &t.series)
+        .param("color", &t.varchar),
+    )?;
+    ext.register_scalar(
+        scalar("border_style", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.border_style(a.str(1)?, Some(a.i64(2)?)))?
+                .encode())
+        })
+        .param("series", &t.series)
+        .param("color", &t.varchar)
+        .param("stroke_width", &t.bigint),
+    )?;
+    type PxMethod = fn(Series, i64) -> duckers_chart::Result<Series>;
+    let px_methods: [(&'static str, PxMethod); 2] =
+        [("spacing", Series::spacing), ("width", Series::width)];
+    for (name, f) in px_methods {
+        ext.register_scalar(
+            scalar(name, &t.series, move |a| {
+                let s: Series = a.value(0)?;
+                Ok(a.check(f(s, a.i64(1)?))?.encode())
+            })
+            .param("series", &t.series)
+            .param("px", &t.bigint),
+        )?;
+    }
+    type ColorMethod = fn(Series, &str) -> duckers_chart::Result<Series>;
+    let color_methods: [(&'static str, ColorMethod); 2] = [
+        ("gain_style", Series::gain_style),
+        ("loss_style", Series::loss_style),
+    ];
+    for (name, f) in color_methods {
+        ext.register_scalar(
+            scalar(name, &t.series, move |a| {
+                let s: Series = a.value(0)?;
+                Ok(a.check(f(s, a.str(1)?))?.encode())
+            })
+            .param("series", &t.series)
+            .param("color", &t.varchar),
+        )?;
+    }
+    ext.register_scalar(
+        scalar("step", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.step(a.f64(1)?))?.encode())
+        })
+        .param("series", &t.series)
+        .param("s", &t.double),
     )
 }

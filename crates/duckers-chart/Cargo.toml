@@ -15,7 +15,12 @@ plotters = { version = "0.3.7", default-features = false, features = [
     "full_palette",
     "line_series",
     "point_series",
+    "area_series",
+    "errorbar",
+    "candlestick",
+    "boxplot",
 ] }
+plotters-backend = "0.3.7"
 png = "0.18.1"
 postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
 serde = { version = "1.0.229", features = ["derive"] }
