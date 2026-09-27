@@ -507,6 +507,166 @@ and the viewer draws the text with its own fonts. plotters' `FontDesc` sizes are
   the label text.
 - plotters' `Pixel` marker is one pixel, whatever `size` says.
 
+## M5: more series
+
+The rest of plotters' 2D series and elements, numeric histogram buckets with `.step(s)`,
+and monthly and yearly key points on time axes.
+The [plan](plan/duckers.md#the-user-api) has the tables; M5 covers the following.
+
+- Series aggregates, each with `key :=` and `order_by :=` like the M2 ones:
+  - `area_series(x, y)`: plotters' `AreaSeries`, a filled polygon from the points down to the baseline.
+  - `dashed_line_series(x, y)`: `DashedLineSeries`.
+  - `error_bar_vertical(x, min, avg, max)` and `error_bar_horizontal(y, min, avg, max)`: one `ErrorBar` per row,
+    a line from `min` to `max` with end marks and a dot at `avg`.
+    The key (`x`, or `y` for the horizontal one) takes the types of a line's `x`: numbers, dates,
+    timestamps or categories.
+  - `candle_stick(x, open, high, low, close)`: one `CandleStick` per row.
+  - `boxplot_vertical(bucket, value)` and `boxplot_horizontal(bucket, value)`: one `Boxplot` per distinct bucket,
+    with plotters' `Quartiles` of that bucket's values
+    (whiskers at the fences, 1.5 IQR beyond the quartiles; values past them are not drawn).
+    Buckets are `VARCHAR`, an integer or `DATE`, as for histograms, on a band axis: x for the vertical one,
+    y for the horizontal one.
+    The first parameter is called `bucket` (plotters says `key`) because `key :=` is taken.
+  - Rows with a `NULL`, `NaN` or infinite value in any argument are skipped.
+    The value axis' default extent includes an area's baseline, the error bars' minima and maxima,
+    the candles' lows and highs, and the boxplots' fences.
+- Series methods, on `SERIES`:
+  - `baseline(v)` on `area_series` (default 0), as on histograms,
+    and `border_style(color [, stroke_width])` (`AreaSeries::border_style`, transparent by default).
+  - `size(px)` and `spacing(px)` on `dashed_line_series`: the dash and the gap, 5 and 5 by default.
+  - `width(px)` on error bars (the end marks; the dot's diameter), candles (the body) and boxplots (the box),
+    10 by default.
+  - `gain_style(color)` and `loss_style(color)` on `candle_stick`:
+    the colours of candles that close above their open and of the others, `'green'` and `'red'` by default.
+    `stroke_width` and `filled()` (filled bodies) apply to both; `style()` is an error naming the two.
+  - `filled()` fills error-bar dots and candle bodies.
+    An area is always filled, so `filled()` does nothing there; on a dashed line or a boxplot it is an error.
+  - `step(s)` on histograms, see below.
+- Chart builder, on `CHART`: `x_monthly()`, `x_yearly()`, `y_monthly()`, `y_yearly()`, see below.
+- Legend glyphs follow the kind: a filled rectangle for areas, a short dashed line, and a small error bar, candle
+  (in the gain colour) or box.
+
+```sql
+-- From test/svg/area.sql.
+SELECT chart()
+         .caption('area_series', 20)
+         .draw_series(area_series(i, 20 + 10 * sin(i / 5))
+                        .style(mix('blue_400', 0.3)).border_style('blue_800', 2).baseline(5).label('level'))
+         .draw_series(area_series(i, 15 + 5 * cos(i / 3)).style(mix('orange', 0.5)).baseline(5).label('inflow'))
+         .configure_series_labels().position('upper_right').border_style('black').background_style('white').draw()
+         .to_svg()
+FROM range(41) r(i);
+
+-- From test/svg/error_bars.sql.
+SELECT chart()
+         .draw_series(line_series(i, i * i / 10).style('grey'))
+         .draw_series(error_bar_vertical(i, i * i / 10 - 1 - i % 3, i * i / 10, i * i / 10 + 2)
+                        .style('red').width(8).filled().label('measured'))
+         .to_svg()
+FROM range(11) r(i);
+
+-- Shortened from test/svg/candles.sql: daily prices on a date axis.
+SELECT chart()
+         .configure_mesh().x_label_formatter('%b %d').draw()
+         .draw_series(candle_stick(day, open, high, low, close)
+                        .gain_style('green_600').loss_style('red_600').width(9).filled())
+         .to_svg(800, 480)
+FROM (SELECT day, open, close, greatest(open, close) + 1 + i % 3 AS high, least(open, close) - 1 - i % 2 AS low
+      FROM (SELECT DATE '2024-01-01' + i::INTEGER AS day, i, round(100 + 10 * sin(i / 4)) AS open,
+                   round(round(100 + 10 * sin(i / 4)) + 3 * cos(i * 1.7)) AS close
+            FROM range(30) r(i)));
+
+-- From test/svg/boxplots_horizontal.sql: one box per region, in a chosen order.
+SELECT chart()
+         .y_label_area_size(50)
+         .draw_series(boxplot_horizontal(g, v, order_by := list_position(['west', 'east', 'south', 'north'], g)).width(20))
+         .to_svg()
+FROM (SELECT g, 10 + 3 * gi + ((i * 37 + gi * 11) % 40) / 4 AS v
+      FROM (VALUES ('north', 0), ('south', 1), ('east', 2), ('west', 3)) t(g, gi), range(40) r(i)
+      UNION ALL SELECT 'east', 45);
+
+-- From test/sql/more_series.test: key := splits any of them.
+SELECT dashed_line_series(i, i, key := i % 3)::VARCHAR FROM range(10) r(i);
+-- ['SERIES(dashed line \'0\', 4 points)', 'SERIES(dashed line \'1\', 3 points)', ...]
+```
+
+### Stepped histograms
+
+`histogram_vertical(bucket, value)` and `histogram_horizontal` accept `DOUBLE`, `FLOAT` and `DECIMAL` buckets,
+and `.step(s)` bins them into bands of width `s`,
+standing for plotters' `(lo..hi).step(s).use_round().into_segmented()`:
+
+```sql
+-- From test/svg/histogram_step.sql.
+SELECT chart()
+         .caption('histogram_vertical(x, 1).step(5)', 20)
+         .configure_mesh().x_desc('x').y_desc('count').x_label_formatter('{:.0f}').draw()
+         .draw_series(histogram_vertical(x, 1).step(5).style('teal_400').margin(1))
+         .to_svg()
+FROM (SELECT round(50 + 25 * sin(i * 0.37) * cos(i * 0.011) + 8 * sin(i * 1.3), 2) AS x FROM range(400) r(i));
+```
+
+- Bin `k` holds the values from `k * s` up to `(k + 1) * s`, so bins start at multiples of `s` whatever the data.
+  A quotient `x / s` within a relative 1e-9 of an integer counts as that integer,
+  so `0.3` is in the bin of `0.3` for a step of `0.1`, although `0.3 / 0.1` is `2.9999999999999996` in floating point.
+- The bands run from the lowest bin in the data to the highest; `x_range(lo, hi)` (or `y_range` for horizontal bars)
+  shows the bins that cover `lo..hi`.
+- Each band is labelled with its bin's start, at the band's centre, through the numeric label path:
+  plotters' number formatting (`20.0`), or `x_label_formatter`'s template (`'{:.0f}'` gives `20`).
+- A line or point series with numeric x drawn on a stepped axis goes to the centre of the bin of each x.
+- Integer buckets can be stepped too (`histogram_vertical(age, 1).step(10)`); without a step they keep one band per
+  integer.
+- Errors: numeric buckets drawn without `.step(s)` ("draw_series: histogram_vertical has numeric buckets, which need
+  .step(s) ..."), `.step(s)` on category or date buckets or on another series kind,
+  a step that is not a positive finite number, two histograms with different steps on one axis,
+  and a log scale on the stepped axis.
+
+### Monthly and yearly key points
+
+`x_monthly()` and `x_yearly()` (and `y_monthly()`, `y_yearly()`) stand for plotters' `(lo..hi).monthly()`
+and `.yearly()` (`IntoMonthly`, `IntoYearly`), the way `x_log_scale()` stands for `.log_scale()`:
+the axis keeps its range and mapping, and its key points (labels and bold mesh lines) are month or year starts.
+
+```sql
+-- From test/svg/monthly.sql.
+SELECT chart()
+         .caption('x_monthly()', 20)
+         .x_monthly()
+         .draw_series(line_series(DATE '2024-01-01' + i::INTEGER, 5 - 12 * cos(i / 58)).style('red'))
+         .to_svg(800, 400)
+FROM range(366) r(i);
+
+-- From test/svg/yearly.sql.
+SELECT chart().x_yearly()
+         .draw_series(line_series(TIMESTAMP '2015-01-01' + INTERVAL (m) MONTH, 100 + m + 15 * sin(m / 2)).style('purple', 2))
+         .to_svg(800, 400)
+FROM range(120) r(m);
+```
+
+- Only date and timestamp axes take them.
+  On any other axis they are an error naming the kind,
+  raised by the call when the axis kind is known and by `draw_series` otherwise, as for log scales.
+  The last scale call on an axis wins.
+- The labels are plotters' `Monthly`/`Yearly` labels: year and month, the month not padded (`2024-1`, `2024-10`).
+  A strftime `x_label_formatter` replaces them
+  (`'%b'`, `'%Y'`).
+  plotters picks fewer key points when there are too many months
+  (every quarter, half year or year), and for short ranges its light lines fall back to the daily key points.
+- On a date-bucket axis (a histogram or boxplot with `DATE` buckets) the bands stay one per day,
+  and the labels go on the bands of the days that start a month or year.
+  To bin by month, bin in SQL: `histogram_vertical(date_trunc('month', day)::DATE, n)`.
+
+### Caveats
+
+- plotters draws a boxplot's box unfilled and its lower whisker 1 px wide whatever the stroke width.
+  `Boxplot::whisker_width` and `offset` are not exposed.
+- The data extent has no padding (plotters' behaviour), so the first and last candle, error bar or box sit on the
+  plotting area's edge and are cut in half; `x_range` gives them room.
+- A boxplot stores the five numbers plotters' `Quartiles` computes per bucket, as `f32` values;
+  the raw values are not kept.
+- The value format changed (format version 3): `CHART` and `SERIES` values stored by an earlier duckers do not
+  decode.
+
 ## M7: files and hosts
 
 ### Writing files: `FORMAT png` and `FORMAT svg`

@@ -112,9 +112,9 @@ which is what lets `draw()` hand the chart back.
 | `histogram_horizontal(bucket, value)` | `Histogram::horizontal(&chart).data(iter)` | The same with horizontal bars. |
 | `area_series(x, y)` | `AreaSeries::new(iter, baseline, style)` | Polygon from the points down to the baseline (0). |
 | `dashed_line_series(x, y)` | `DashedLineSeries::new(points, size, spacing, style)` | |
-| `error_bar_vertical(x, min, avg, max)` / `error_bar_horizontal(y, min, avg, max)` | `ErrorBar::new_vertical` / `new_horizontal` per row | One element per row. |
+| `error_bar_vertical(x, min, avg, max)` / `error_bar_horizontal(y, min, avg, max)` | `ErrorBar::new_vertical` / `new_horizontal` per row | One element per row; the key on x (vertical) or y (horizontal). |
 | `candle_stick(x, open, high, low, close)` | `CandleStick::new(...)` per row | |
-| `boxplot_vertical(key, value)` / `boxplot_horizontal(key, value)` | `Boxplot::new_vertical(key, &Quartiles::new(values))` | One box per distinct key; quartiles computed by duckers. |
+| `boxplot_vertical(bucket, value)` / `boxplot_horizontal(bucket, value)` | `Boxplot::new_vertical(key, &Quartiles::new(values))` | One box per distinct bucket (plotters' `key`, decision 21), with plotters' `Quartiles` computed per bucket. |
 
 Every series aggregate also accepts two named parameters:
 
@@ -137,10 +137,12 @@ Argument types:
 
 - `x`: any numeric type (continuous axis, mapped to `DOUBLE`), `DATE`, `TIMESTAMP`, `TIMESTAMPTZ` and the
   `TIMESTAMP_*` variants (time axis), or `VARCHAR` (category axis).
+- The `y` of `error_bar_horizontal` is its key, of the same types as `x`.
 - `y`, `value`, `min`, `avg`, `max`, `open`, `high`, `low`, `close`: any numeric type.
 - `bucket`: `VARCHAR` (one band per category), any integer type (a segmented integer axis from min to max), or `DATE`
   (one band per day).
-  `DOUBLE` buckets are rejected with a hint to bin first or to use `.step()` once it exists.
+  A histogram's buckets may also be `DOUBLE`, `FLOAT` or `DECIMAL`, which `.step(s)` bins into bands
+  (drawing them without a step is an error that names `.step(s)`); a boxplot's may not.
 - `key`, `order_by`: any type.
 
 The v2 C API allows one aggregate per name,
@@ -160,7 +162,7 @@ These are scalar functions on `SERIES` and return `SERIES`.
 |---|---|---|---|
 | `style(color [, stroke_width])` | the `Into<ShapeStyle>` argument, `Histogram::style`, `SurfaceSeries::style` | all | `Palette99::pick(i)` for series `i` of the chart, stroke width 1 |
 | `stroke_width(px)` | `ShapeStyle::stroke_width` | all | 1 |
-| `filled()` | `ShapeStyle::filled` | point markers, line markers, histogram, candle bodies, error-bar dots | histogram filled, others not |
+| `filled()` | `ShapeStyle::filled` | point markers, line markers, histogram, candle bodies, error-bar dots; accepted on `area_series`, whose polygon is always filled | histogram and area filled, others not |
 | `label(text)` | `SeriesAnno::label` | all | none (series not in legend) |
 | `point_size(px)` | `LineSeries::point_size` | `line_series` | 0 |
 | `size(px)` | the `size` argument of `PointSeries::new` | `point_series` | 3 |
@@ -170,12 +172,13 @@ These are scalar functions on `SERIES` and return `SERIES`.
 | `border_style(color [, stroke_width])` | `AreaSeries::border_style` | `area_series` | transparent |
 | `size(px)`, `spacing(px)` | the `size` and `spacing` arguments of `DashedLineSeries::new` | `dashed_line_series` | 5, 5 |
 | `width(px)` | the `width` argument of `ErrorBar`, `CandleStick`, `Boxplot::width` | error bars, candles, boxplots | 10 |
-| `gain_style(color)`, `loss_style(color)` | `CandleStick::new` arguments | `candle_stick` | green, red |
+| `gain_style(color)`, `loss_style(color)` | `CandleStick::new` arguments; the series' stroke width and `filled()` apply to both, and `style()` is an error | `candle_stick` | `'green'`, `'red'` |
+| `step(s)` | `(lo..hi).step(s).use_round().into_segmented()` for the bucket range (decision 22) | histograms with numeric or integer buckets | none |
 
 The legend glyph for a labelled series is derived from its kind: a short line
 (with a marker if `point_size` is set),
-a marker, or a filled rectangle. plotters requires a closure here (`SeriesAnno::legend`); there is no SQL equivalent,
-and none is planned.
+a marker, a filled rectangle (histograms and areas), a short dashed line, or a small error bar,
+candle or box. plotters requires a closure here (`SeriesAnno::legend`); there is no SQL equivalent, and none is planned.
 
 ### Chart builder
 
@@ -189,7 +192,8 @@ These scalar functions take and return `CHART`.
 | `x_label_area_size(px)`, `y_label_area_size(px)`, `top_x_label_area_size(px)`, `right_y_label_area_size(px)` | same | bottom 30, left 40, top 0, right 0 (plotters: all 0) |
 | `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)` | same | |
 | `x_range(lo, hi)`, `y_range(lo, hi)` | the range arguments of `build_cartesian_2d` | the data extent, see [Coordinates](#coordinates-and-ranges) |
-| `x_log_scale([base])`, `y_log_scale([base])` | `(lo..hi).log_scale().base(b)`; numeric axes only, positive bounds (decision 17) | linear; base 10 |
+| `x_log_scale([base])`, `y_log_scale([base])` | `(lo..hi).log_scale().base(b)`; numeric axes only, positive bounds (decision 18) | linear; base 10 |
+| `x_monthly()`, `y_monthly()`, `x_yearly()`, `y_yearly()` | `(lo..hi).monthly()`, `.yearly()` (`IntoMonthly`, `IntoYearly`): key points at month or year starts; date and timestamp axes only (decision 23) | the coordinate's key points |
 | `root_fill(color)` | `root.fill(&WHITE)` | `'white'` (plotters: black bitmap, transparent SVG) |
 | `draw_series(series \| series[])` | `ChartContext::draw_series` | |
 | `configure_mesh()` | `ChartContext::configure_mesh()` | returns `MESH` |
@@ -200,9 +204,10 @@ These scalar functions take and return `CHART`.
 | `configure_secondary_axes()` | `configure_secondary_axes()` | returns `MESH` (mesh lines disabled, as in plotters) |
 
 `build_cartesian_2d` itself has no SQL function.
-The range expressions it takes are covered by `x_range`/`y_range`,
-the log and segmented combinators by `x_log_scale`/`y_log_scale` and the series kinds,
-and the value types by the column types.
+The range expressions it takes are covered by `x_range`/`y_range`, the log,
+monthly and yearly combinators by `x_log_scale`/`y_log_scale`, `x_monthly`/`x_yearly` and the `y_` ones,
+the segmented and stepped combinators by the series kinds and `step(s)`, and the value types by the column types.
+The last scale call on an axis wins.
 
 ### Mesh
 
@@ -214,7 +219,7 @@ Names, parameters and defaults are plotters' (`MeshStyle`, plotters 0.3.7).
 | `x_desc(text)`, `y_desc(text)` | `VARCHAR` | none |
 | `axis_desc_style(size \| font)` | | the label style |
 | `x_labels(n)`, `y_labels(n)` | max labels and bold lines, 0 to 1000 | 11 |
-| `x_label_formatter(fmt)`, `y_label_formatter(fmt)` | a DuckDB `format()` template for numbers and categories (`'{:.1f} °C'`), a `strftime` pattern for date and time axes (`'%b %d'`); see decision 18 | the coordinate's formatter |
+| `x_label_formatter(fmt)`, `y_label_formatter(fmt)` | a DuckDB `format()` template for numbers and categories (`'{:.1f} °C'`), a `strftime` pattern for date and time axes (`'%b %d'`); see decision 19 | the coordinate's formatter |
 | `label_style(size \| font)`, `x_label_style(...)`, `y_label_style(...)` | | sans-serif 12, black |
 | `x_label_offset(px)`, `y_label_offset(px)` | may be negative | 0 |
 | `x_max_light_lines(n)`, `y_max_light_lines(n)`, `max_light_lines(n)` | 0 to 100 | 10 |
@@ -272,12 +277,15 @@ duckers draws `configure_series_labels().draw()` with defaults last.
 
 - The column types pick the axes: numeric → `RangedCoordf64`; `DATE` → `RangedDate`;
   `TIMESTAMP` and friends → `RangedDateTime`; `VARCHAR` → a category axis
-  (`RangedSlice`, segmented for histograms); integer histogram buckets → a segmented integer axis.
+  (`RangedSlice`, segmented for histograms);
+  integer histogram and boxplot buckets → a segmented integer axis;
+  numeric histogram buckets with `.step(s)` → one band per bin of width `s`.
   The x axis follows `x` or a vertical histogram's buckets, the y axis `y` or a horizontal histogram's buckets
   (decision 16).
   Every series drawn on one chart must agree on the x kind and on the y kind; a mismatch is an error naming both.
 - Default ranges are the data extent over all series on the axis, with no padding (plotters' `fitting_range`).
-  Histograms and area series include their baseline.
+  Histograms and area series include their baseline, error bars their minima and maxima,
+  candlesticks their lows and highs, and boxplots their fences.
   An empty chart gets `0..1`.
 - `x_range(lo, hi)` with `lo > hi` reverses the axis, as in plotters.
   `lo = hi` is an error.
@@ -542,7 +550,8 @@ Each spike answers a question that a later milestone assumes.
 
 - `area_series`, `dashed_line_series`, `error_bar_*`, `candle_stick`, `boxplot_*`.
 - `histogram_vertical(...).step(s)` (and horizontal) for numeric buckets (`.step(s).use_round().into_segmented()`).
-- Time-axis niceties: monthly and yearly key points, `strftime` formatters.
+- Time-axis niceties: monthly and yearly key points (`x_monthly()`, `x_yearly()`, and the `y_` ones);
+  the `strftime` formatters came with M4.
 
 ### M6: layout
 
@@ -729,6 +738,64 @@ Each item records the choice, the alternative, and why.
     Alternative: DuckDB's full `format()` or `printf()`.
     Rejected because an extension cannot call them per label, and the fmt-spec subset covers what axis labels need.
     The last formatter call on an axis wins, as in plotters.
+20. **Extra per-row values live in the kind's options.**
+    A `SERIES` keeps one column per axis
+    (decision 17);
+    the value column of an error bar is its `avg`, of a candlestick its `close`, of a boxplot its median,
+    and the other values (min and max; open, high and low; the five quartile values) are vectors in the kind's options,
+    one entry per point.
+    The default extent of the value axis includes them.
+    A boxplot stores plotters' `Quartiles::values()` per bucket, the `f32` numbers widened to `f64`,
+    computed at finalize.
+    Fed back through `Quartiles::new`, those five give the same quartiles exactly
+    (the 25th, 50th and 75th percentile of five sorted values are the middle three),
+    but fences only within one `f32` rounding step, since plotters recomputes them from the rounded quartiles.
+    So the renderer draws the stored numbers: `Boxplot` is built as plotters builds it,
+    and its drawing code is handed the positions of the stored values, which also avoids its `f32` coordinates,
+    which the chart's `f64` axes cannot map.
+    Alternative: the raw values per bucket, with the quartiles computed at render time.
+    Rejected because a boxplot of a million rows would carry the million rows.
+21. **A boxplot's first parameter is `bucket`, not `key`.** plotters calls it `key`
+    (`Boxplot::new_vertical(key, &quartiles)`),
+    but every series aggregate has a named `key :=` parameter, and DuckDB refuses two parameters of one name.
+    `bucket` is the histogram's word for the same thing: the values that make a band axis.
+22. **`step(s)` bins at multiples of `s`, and integer buckets can be stepped.**
+    Bin `k` holds the values from `k * s` up to `(k + 1) * s`
+    (`floor(x / s)`, with a quotient within a relative 1e-9 of an integer taken as that integer,
+    so `0.3` is in bin 3 of step `0.1`), and the bands run from the lowest bin to the highest,
+    or over the bins that cover `x_range(lo, hi)`.
+    A band is labelled with its bin's start at its centre, through the numeric label path,
+    so `x_label_formatter` templates apply. plotters' `(lo..hi).step(s).use_round()` places grid values from `lo`
+    and maps a value to the nearest one; with the data's minimum as `lo`,
+    that would make the bins depend on the data and put them off the round numbers.
+    Integer buckets become numbers when stepped
+    (`histogram_vertical(age, 1).step(10)`), since `(0..100).step(10)` is the same combinator.
+    A line or other series with numeric x on a stepped axis is placed at the centre of its value's bin,
+    as points are on date bands.
+    Two histograms on one axis must have the same step, and a stepped axis has no log scale.
+23. **Monthly and yearly key points are scales.**
+    `x_monthly()` and friends are appended `Scale` variants, checked against the axis kind as the log scale is.
+    On date and timestamp axes the key points and labels are plotters' `Monthly`/`Yearly` ones
+    (`2024-1`, the month unpadded, which is plotters' `{}-{}` format);
+    a strftime formatter replaces the labels as on any time axis. plotters has no `Monthly` over `NaiveDateTime` ranges,
+    so timestamps use `DateTime<Utc>`, which is how duckers reads them.
+    On a date-bucket axis the bands stay one per day,
+    and the key points and labels go on the bands of the days that start a month
+    or year. plotters' `(lo..hi).monthly().into_segmented()` would make one band per month instead,
+    but its `Histogram` does not sum the days of a month
+    (it draws one overlapping bar per distinct day),
+    so that is not a monthly histogram either; SQL's `date_trunc('month', d)` is the way to bin by month.
+24. **Styles of the M5 kinds follow the paradigm's defaults, with plotters' shapes.**
+    Series colours come from `Palette99` for every kind, including boxplots (plotters' default is black) and areas
+    (plotters' examples use a translucent colour; `mix` gives one).
+    A candlestick has no `style`: `CandleStick::new` takes a gain and a loss style,
+    so `style()` is an error naming `gain_style` and `loss_style`,
+    which default to `'green'` and `'red'` and take the series' stroke width and fill.
+    An area's polygon is always filled, so `filled()` is accepted on it and changes nothing;
+    a dashed line and a boxplot have nothing `filled()` could fill,
+    so it is an error there. plotters draws a boxplot's box unfilled
+    and its lower whisker 1 px wide whatever the stroke width; duckers keeps that.
+    `Boxplot::whisker_width` and `offset` are not exposed.
 
 ## Open questions
 
