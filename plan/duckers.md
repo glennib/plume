@@ -288,26 +288,28 @@ duckers draws `configure_series_labels().draw()` with defaults last.
 | `to_png(chart [, width, height])` | `BitMapBackend::with_buffer` + PNG encoding | `BLOB` |
 | `show(chart, viewer := ..., wait := ..., width := ..., height := ...)` | | shows the chart, see [Display](#display); returns the `CHART` |
 | `duckers_set(key, value)`, `duckers_get(key)` | | set or read a process-wide `show()` default, see [Display](#display); `VARCHAR` |
-| `COPY (...) TO 'f.png' (FORMAT png)`, `(FORMAT svg)` | `BitMapBackend::new(path)`, `SVGBackend::new(path)` | a copy function (M7) |
+| `COPY (SELECT chart ...) TO 'f.png' (FORMAT png, WIDTH w, HEIGHT h)`, `(FORMAT svg)` | `BitMapBackend::new(path)`, `SVGBackend::new(path)` | one file per chart, one chart per file (M7) |
 
 The default size is 640×480 and the maximum 8192 px per side.
 Rendering is deterministic: the same chart value renders to the same bytes, which the tests rely on.
 
-Until the copy function exists, files are written with DuckDB's own `COPY ... (FORMAT blob)`,
-which takes exactly one `BLOB` column, so SVG needs `to_svg().encode()`.
-It concatenates several rows into one file, and `PARTITION_BY` writes one file per partition,
-which is the way to get one file per group:
+The copy functions take one `CHART` column and write one chart per file: a second row for a file is an error,
+as are zero rows and a `NULL` chart.
+`PARTITION_BY` is the way to get one file per group; it needs `FILE_EXTENSION 'png'`,
+because the C API cannot declare the extension DuckDB puts on partition files:
 
 ```sql
-COPY (SELECT city, chart().draw_series(line_series(day, temp)).to_png() AS png
+COPY (SELECT city, chart().draw_series(line_series(day, temp)) AS chart
       FROM weather GROUP BY city)
-TO 'charts' (FORMAT blob, PARTITION_BY city);
+TO 'charts' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
 ```
 
-A `CHART` value passes the `FORMAT blob` check too, because the custom type is a tagged `BLOB`,
+Without `FORMAT`, DuckDB infers it from the file extension (`TO 'f.svg'`).
+The files are local only (see decision 15).
+DuckDB's own `COPY ... (FORMAT blob)` stays the route for remote paths: it takes exactly one `BLOB` column,
+so it writes `to_png()` or `to_svg().encode()`.
+A `CHART` value passes its check too, because the custom type is a tagged `BLOB`,
 and then the file holds the encoded spec, not an image.
-The copy function keeps the `COPY` shape
-(`FORMAT png`, `FORMAT svg`, `PARTITION_BY`), takes a `CHART` column directly, and removes that trap.
 
 ### Display
 
@@ -648,6 +650,26 @@ Each item records the choice, the alternative, and why.
     which is every statement in the shell and every `execute`, `sql` and relation fetch in the Python client.
     Alternative: a process-wide count reset when no call is executing;
     rejected because it resets inside a single parallel query.
+15. **The copy functions write one chart per file, with `std::fs`, to local paths.**
+    A PNG or SVG file holds one image, so a file takes exactly one row, and `PARTITION_BY` makes one file per group;
+    two rows for a file, zero rows and a `NULL` chart are errors rather than a silent pick.
+    The v2 C API gives a copy function the file path as a string and no file-system handle
+    (`FileSystem` is C++ only), so duckers writes the file itself and refuses remote schemes at bind time.
+    Alternative: concatenate rows as `FORMAT blob` does, or name one file per row;
+    rejected because the first writes files no viewer opens,
+    and the second invents a naming scheme next to DuckDB's partitioning.
+    Other C API constraints shape the details:
+    - The C API has no way to declare the file extension DuckDB appends to partition files
+      (the C++ `CopyFunction::extension`), so the name would be `data_0.`;
+      duckers requires `FILE_EXTENSION` instead of writing a file under a name DuckDB does not know,
+      which would escape DuckDB's cleanup on failure and its `RETURN_FILES` list.
+    - The C API is batch-based: the batch callback runs on any thread
+      and is handed the init data of the first file opened, not its own,
+      so rows reach their file only in the flush callback, which DuckDB serializes per file.
+      The file is rendered and written in finalize, once per file.
+    - On failure DuckDB removes the files it saw finalized and the directories it created,
+      so duckers only has to avoid partial files of its own: it writes nothing before the chart has rendered,
+      and removes the file if the write fails.
 
 ## Open questions
 

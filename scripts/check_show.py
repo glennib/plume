@@ -8,6 +8,10 @@
   written to stdout.
 - The browser viewer, with a stand-in `xdg-open` on PATH that records what it was asked to open,
   so no real browser starts: the page embeds the chart, and max_show caps the pages.
+- The Python client (the test venv's duckdb wheel, not the CLI), in a pseudo-terminal as a REPL
+  is: show() with viewer 'auto' draws in the terminal. With no controlling terminal (as in a
+  Jupyter kernel) and a display with no server behind it, 'auto' skips the terminal and the
+  window and opens the page with the stand-in opener. The chart comes back as bytes either way.
 - test/show/*.test, sqllogictests run with no terminal and no display.
 
 Every process gets a scrubbed environment and a temporary HOME, so the user's terminal, display,
@@ -237,6 +241,66 @@ def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
         check(png_size(base64.b64decode(m.group(1))) == (640, 480), "PNG size")
 
 
+PYTHON_CLIENT = """
+import sys
+import duckdb
+
+con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
+con.load_extension(sys.argv[1])
+chart, viewer = con.sql(
+    "SELECT chart().caption('python').show() AS c, duckers_get('viewer')"
+).fetchone()
+print(type(chart).__name__, viewer, con.sql("SELECT ?::CHART::VARCHAR", params=[chart]).fetchone()[0])
+"""
+
+
+def check_python_terminal(duckdb: Path, ext: Path, tmp: Path) -> None:
+    """The Python client run from a terminal, as a REPL is: 'auto' draws in the terminal."""
+    argv = [sys.executable, "-c", PYTHON_CLIENT, str(ext)]
+    out, code = run_in_pty(argv, terminal_env(tmp))
+    check(code == 0, f"exit code {code}: {out[-500:]!r}")
+    images = kitty_images(out)
+    check(len(images) == 1, f"expected 1 image, got {len(images)}")
+    check(png_size(images[0][1]) == (640, 480), f"image size {png_size(images[0][1])}")
+    check(b"bytes auto CHART(" in out, f"unexpected output: {out[-200:]!r}")
+
+
+def check_python_auto(duckdb: Path, ext: Path, tmp: Path) -> None:
+    """The Python client with no terminal and no working display: 'auto' falls through to the
+    browser, and the chart comes back as bytes."""
+    bin_dir = tmp / "bin"
+    bin_dir.mkdir()
+    log = tmp / "opened.txt"
+    opener = bin_dir / "xdg-open"
+    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{log}"\n')
+    opener.chmod(0o755)
+    env = base_env(
+        tmp,
+        PATH=f"{bin_dir}:/usr/bin:/bin",
+        XDG_CACHE_HOME=str(tmp / "cache"),
+        # A display number with no X server behind it: the window viewer tries it and fails,
+        # and the browser viewer only needs a graphical session to be named.
+        DISPLAY=":987",
+    )
+    argv = [sys.executable, "-c", PYTHON_CLIENT, str(ext)]
+    r = run_without_tty(argv, env)
+    check(r.returncode == 0, f"exit code {r.returncode}: {r.stderr!r}")
+    check(
+        r.stdout.decode().split()
+        == ["bytes", "auto", "CHART(empty,", "caption", "'python')"],
+        f"unexpected output: {r.stdout!r}",
+    )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not log.exists():
+        time.sleep(0.05)
+    time.sleep(0.2)
+    lines = log.read_text().splitlines() if log.exists() else []
+    check(len(lines) == 1, f"expected 1 page opened, got {lines}")
+    page = Path(lines[0])
+    check(page.parent == tmp / "cache" / "duckers", f"page outside the cache: {page}")
+    check("data:image/png;base64," in page.read_text(), "the page embeds no PNG")
+
+
 def check_headless_sql(ext: Path, tmp: Path) -> None:
     """test/show/*.test with no terminal and no display, and invalid or set DUCKERS_* variables."""
     env = base_env(
@@ -271,6 +335,8 @@ def main() -> int:
         ("terminal: stdout redirected", check_stdout_redirected),
         ("terminal: no controlling terminal", check_no_tty),
         ("browser: stand-in opener", check_browser),
+        ("python: terminal viewer in a pseudo-terminal", check_python_terminal),
+        ("python: auto falls through to the browser", check_python_auto),
     ]
     failed = 0
     for name, f in checks:

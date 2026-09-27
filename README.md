@@ -88,8 +88,9 @@ make test_release   # the same on the release build
   These cover the shell's rendering of duckers values, which the Python runner cannot see.
 - `make test_show_debug`: `show()` in the preview CLI
   (`scripts/check_show.py`, Linux only):
-  the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in opener,
-  and the sqllogictests in `test/show/` with no terminal and no display.
+  the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in opener, the Python client
+  (the test venv's wheel)
+  in a pseudo-terminal and with no terminal, and the sqllogictests in `test/show/` with no terminal and no display.
   Each process gets a scrubbed environment and a temporary `HOME`, so nothing opens on the desktop.
 
 `make lint` runs rustfmt, clippy and ruff in check mode, and `make fmt` applies the formatters.
@@ -179,23 +180,19 @@ A chart expression in a query with `GROUP BY` gives one chart per group.
 
 ### Writing files
 
-Until duckers has its own copy function (M7), files are written with DuckDB's `COPY ... (FORMAT blob)`,
-which takes exactly one `BLOB` column, so SVG needs `.encode()`.
-`PARTITION_BY` writes one file per group, as `charts/city=Oslo/data_0.blob` and so on:
+Files are written with duckers' copy functions, `COPY (SELECT <chart>) TO 'chart.png' (FORMAT png)` and `(FORMAT svg)`;
+see [M7](#m7-files-and-hosts).
+
+DuckDB's own `COPY ... (FORMAT blob)` also works,
+and is the route on DuckDB builds where the copy functions are not available, or for remote paths:
+it takes exactly one `BLOB` column (`to_png()`, or `to_svg().encode()`) and writes the bytes as they are.
+A `CHART` passes its check too (the custom type is a tagged `BLOB`), and the file then holds the encoded chart,
+not an image.
 
 ```sql
 COPY (SELECT chart().draw_series(line_series(i, i * i)).to_png(800, 600) FROM range(10) r(i))
 TO 'squares.png' (FORMAT blob);
-
-COPY (SELECT chart().draw_series(line_series(i, i * i)).to_svg().encode() FROM range(10) r(i))
-TO 'squares.svg' (FORMAT blob);
-
-COPY (SELECT city, chart().draw_series(line_series(day, temp)).to_png() AS png FROM weather GROUP BY city)
-TO 'charts' (FORMAT blob, PARTITION_BY city);
 ```
-
-A `CHART` passes the `FORMAT blob` check too
-(the custom type is a tagged `BLOB`), and the file then holds the encoded chart, not an image.
 
 ### Caveats
 
@@ -346,3 +343,115 @@ Unverified, inferred from the source and documentation:
   windows on worker threads and process exit with windows open, and `ShellExecuteW` for the browser.
 - Terminals: kitty, WezTerm, iTerm2, foot and Windows Terminal were not run at all;
   Konsole (kitty graphics) and xterm (sixel) only with the standalone viewer example, not in the shell.
+
+## M7: files and hosts
+
+### Writing files: `FORMAT png` and `FORMAT svg`
+
+`COPY` writes a chart to a file with duckers' copy functions.
+The query gives the `CHART` itself, and the copy function renders it, exactly as `to_png()` and `to_svg()` would:
+
+```sql
+COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo')
+TO 'oslo.png' (FORMAT png);
+
+COPY (SELECT chart()) TO 'sized.svg' (FORMAT svg, WIDTH 300, HEIGHT 200);
+
+-- Without FORMAT, DuckDB takes the format from the file extension (in any case).
+COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i)) TO 'squares.png';
+```
+
+- Options: `WIDTH` and `HEIGHT`, integer px, 640×480 by default and at most 8192 per side; either can be left out.
+  Any other option (`COMPRESSION`, a misspelling) is a binder error naming it.
+  DuckDB's generic `COPY` options (`OVERWRITE`, `FILENAME_PATTERN`, `FILE_EXTENSION`, `RETURN_FILES`, ...) work as
+  for any format.
+- The query must give exactly one column, of type `CHART`.
+  Anything else is a binder error naming the columns or the type; a `BLOB` or `VARCHAR` column
+  (the result of `to_png()` or `to_svg()`) gets a hint to pass the chart itself.
+- **One chart per file.** A file receives exactly one row.
+  A second row is an error ("a file holds one chart, and the query gave more than one row for '...';
+  use PARTITION_BY to write one file per group, or one COPY per chart"), zero rows is "no chart to write to '...'",
+  and a `NULL` chart is an error too.
+- **Local files only.**
+  The C API gives a copy function a path but no file system,
+  so duckers writes the file itself with the operating system's file API.
+  Remote paths (`s3://`, `https://`, ...) are a binder error; `file://` paths are local and work.
+  For a remote target, write `to_png()`
+  (or `to_svg().encode()`) with `FORMAT blob`, which goes through DuckDB's file system.
+- A failed `COPY` leaves no file behind:
+  duckers writes the file only once the chart has rendered and removes a partial write,
+  and DuckDB removes the files and directories the statement had already created.
+  An existing file is replaced only by a successful `COPY`
+  (DuckDB writes to `tmp_<name>` first, which is the name error messages then show).
+- The formats are called `png` and `svg`.
+  Neither DuckDB nor the extensions it knows of
+  (its list of extension formats and file suffixes) use either name, so they do not clash.
+
+### One file per group: `PARTITION_BY`
+
+`PARTITION_BY` writes one file per partition, with one chart each:
+
+```sql
+COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
+TO 'cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
+```
+
+gives `cities/city=Bergen/data_0.png`, `cities/city=Oslo/data_0.png` and `cities/city=Troms%C3%B8/data_0.png`
+(DuckDB percent-encodes partition values).
+
+`FILE_EXTENSION` is required.
+DuckDB names partition files `data_<n>.<extension>` with an extension the copy function declares,
+and the v2 C API has no way to declare one,
+so without the option the name would be `data_0.` with a bare dot. duckers refuses that name before anything is written:
+"the file name 'cities/city=Bergen/data_0.' has no extension; with PARTITION_BY,
+add FILE_EXTENSION 'png' to the COPY options to get data_0.png".
+`FILENAME_PATTERN`, `OVERWRITE` and `WRITE_PARTITION_COLUMNS` behave as for DuckDB's own formats;
+with `WRITE_PARTITION_COLUMNS` the query has two columns, which is an error.
+A partition with two rows fails the whole `COPY`, and DuckDB removes what it had written.
+
+The rows are rendered on whichever threads DuckDB runs the copy on; each file is written once, by one thread.
+
+### Python
+
+The Python client returns duckers values as `bytes`: a `CHART` from `fetchone()` is the encoded chart,
+`to_png()` gives the PNG bytes and `to_svg()` a `str`.
+Cast to `VARCHAR` for the summary.
+
+`show()` picks its viewer as in the shell:
+
+- In a Python REPL run from a terminal, the process has a controlling terminal (`/dev/tty`),
+  so `'auto'` draws inline in a terminal that supports images (kitty, ghostty, WezTerm, ...),
+  and opens a window elsewhere.
+- In Jupyter the kernel runs in a session of its own with no controlling terminal
+  (jupyter_client starts kernels that way),
+  so `'auto'` opens a window where there is a display and falls through to the browser otherwise.
+  A kernel on a remote machine opens them on that machine, where nobody sees them.
+
+The Python client has no display hook for custom types, so a `CHART` cannot render itself in a notebook cell.
+Inline display goes through `to_png()` or `to_svg()` and IPython's display classes:
+
+```python
+from IPython.display import Image, SVG
+
+Image(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_png() FROM range(10) r(i)").fetchone()[0])
+SVG(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_svg() FROM range(10) r(i)").fetchone()[0])
+```
+
+`make test_show_debug` runs the Python client from the test venv in a pseudo-terminal
+(the terminal viewer draws)
+and with no controlling terminal and no working display
+(`'auto'` falls through to the browser); Jupyter itself was not run.
+
+### R and Node (unverified)
+
+Neither was run: DuckDB v2 has an R build on r-universe (`duckdb.2.0.dev`) but no Node build yet.
+From how the clients treat `BLOB`s and how `show()` probes, expect:
+
+- Values come back as the client's blob type
+  (in R a `blob` column, a list of raw vectors); `to_svg()` comes back as a string.
+  Display in a notebook or IDE goes through the same route as in Python:
+  `to_png()` or `to_svg()` into the host's image display
+  (for instance `IRdisplay::display_png()` in an R Jupyter kernel).
+- `show()` in R or Node started from a terminal can use the terminal viewer;
+  in RStudio, an R Jupyter kernel or a Node process without a terminal, `'auto'` goes to a window or the browser.
+- `COPY ... (FORMAT png)` behaves the same in every client, since the engine runs it.
