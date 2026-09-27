@@ -189,7 +189,7 @@ These scalar functions take and return `CHART`.
 | `x_label_area_size(px)`, `y_label_area_size(px)`, `top_x_label_area_size(px)`, `right_y_label_area_size(px)` | same | bottom 30, left 40, top 0, right 0 (plotters: all 0) |
 | `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)` | same | |
 | `x_range(lo, hi)`, `y_range(lo, hi)` | the range arguments of `build_cartesian_2d` | the data extent, see [Coordinates](#coordinates-and-ranges) |
-| `x_log_scale([base])`, `y_log_scale([base])` | `(lo..hi).log_scale().base(b)` | linear |
+| `x_log_scale([base])`, `y_log_scale([base])` | `(lo..hi).log_scale().base(b)`; numeric axes only, positive bounds (decision 17) | linear; base 10 |
 | `root_fill(color)` | `root.fill(&WHITE)` | `'white'` (plotters: black bitmap, transparent SVG) |
 | `draw_series(series \| series[])` | `ChartContext::draw_series` | |
 | `configure_mesh()` | `ChartContext::configure_mesh()` | returns `MESH` |
@@ -213,15 +213,15 @@ Names, parameters and defaults are plotters' (`MeshStyle`, plotters 0.3.7).
 |---|---|---|
 | `x_desc(text)`, `y_desc(text)` | `VARCHAR` | none |
 | `axis_desc_style(size \| font)` | | the label style |
-| `x_labels(n)`, `y_labels(n)` | max labels and bold lines | 11 |
-| `x_label_formatter(fmt)`, `y_label_formatter(fmt)` | a DuckDB `format()` template for numbers (`'{:.1f} °C'`), a `strftime` pattern for time axes (`'%b %d'`) | the coordinate's formatter |
+| `x_labels(n)`, `y_labels(n)` | max labels and bold lines, 0 to 1000 | 11 |
+| `x_label_formatter(fmt)`, `y_label_formatter(fmt)` | a DuckDB `format()` template for numbers and categories (`'{:.1f} °C'`), a `strftime` pattern for date and time axes (`'%b %d'`); see decision 18 | the coordinate's formatter |
 | `label_style(size \| font)`, `x_label_style(...)`, `y_label_style(...)` | | sans-serif 12, black |
-| `x_label_offset(px)`, `y_label_offset(px)` | | 0 |
-| `x_max_light_lines(n)`, `y_max_light_lines(n)`, `max_light_lines(n)` | | 10 |
+| `x_label_offset(px)`, `y_label_offset(px)` | may be negative | 0 |
+| `x_max_light_lines(n)`, `y_max_light_lines(n)`, `max_light_lines(n)` | 0 to 100 | 10 |
 | `light_line_style(color [, w])`, `bold_line_style(color [, w])`, `axis_style(color [, w])` | | `mix('black', 0.1)`, `mix('black', 0.2)`, `'black'` |
 | `disable_x_mesh()`, `disable_y_mesh()`, `disable_mesh()` | | mesh drawn |
 | `disable_x_axis()`, `disable_y_axis()`, `disable_axes()` | | axes drawn |
-| `set_tick_mark_size(position, px)`, `set_all_tick_mark_size(px)` | position `'top'`, `'bottom'`, `'left'`, `'right'` | 5 |
+| `set_tick_mark_size(position, px)`, `set_all_tick_mark_size(px)` | position `'top'`, `'bottom'`, `'left'`, `'right'`; a negative size points inwards | 5 |
 | `draw()` | | returns `CHART` |
 
 If a chain never calls `configure_mesh().draw()`,
@@ -262,13 +262,19 @@ duckers draws `configure_series_labels().draw()` with defaults last.
   Bitmaps render text with an embedded font
   (DejaVu Sans, as in the first attempt) through plotters' `ab_glyph` engine, so no system fonts are needed.
   SVG output still needs the embedded font for layout, and writes `family` into the file for the viewer to resolve.
+  The embedded font is registered under every family any `FONT` in the chart names.
+  It is one regular face, and plotters falls back to a family's normal face, so bitmaps draw bold,
+  italic and oblique text in the regular face; SVG writes the style for the viewer.
 - **Sizes** are integer pixels.
   plotters' relative sizes (`10.percent()`) are not exposed.
 
 ### Coordinates and ranges
 
-- The x column type picks the axis: numeric → `RangedCoordf64`; `DATE` → `RangedDate`;
-  `TIMESTAMP` and friends → `RangedDateTime`; `VARCHAR` → a category axis (`RangedSlice`, segmented for histograms).
+- The column types pick the axes: numeric → `RangedCoordf64`; `DATE` → `RangedDate`;
+  `TIMESTAMP` and friends → `RangedDateTime`; `VARCHAR` → a category axis
+  (`RangedSlice`, segmented for histograms); integer histogram buckets → a segmented integer axis.
+  The x axis follows `x` or a vertical histogram's buckets, the y axis `y` or a horizontal histogram's buckets
+  (decision 16).
   Every series drawn on one chart must agree on the x kind and on the y kind; a mismatch is an error naming both.
 - Default ranges are the data extent over all series on the axis, with no padding (plotters' `fitting_range`).
   Histograms and area series include their baseline.

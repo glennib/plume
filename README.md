@@ -145,8 +145,8 @@ The paradigm and every name are in the [plan](plan/duckers.md#the-user-api); M2 
   the default size is 640×480 and the maximum 8192 px per side.
   Text is laid out with an embedded DejaVu Sans, so rendering needs no system fonts and is deterministic.
 
-`margin`, `x_label_area_size`, `y_label_area_size`, `border_style`, `background_style` and `mix` are M4 items,
-available early with the API the plan gives them.
+`margin`, `x_label_area_size`, `y_label_area_size`, `border_style`,
+`background_style` and `mix` belong to M4's styling and are described there.
 Every scalar returns `NULL` for a `NULL` argument.
 Wrong argument types are bind errors; bad values
 (an unknown colour, `x_range(1, 1)`, series with different x axis kinds on one chart)
@@ -343,6 +343,169 @@ Unverified, inferred from the source and documentation:
   windows on worker threads and process exit with windows open, and `ShellExecuteW` for the browser.
 - Terminals: kitty, WezTerm, iTerm2, foot and Windows Terminal were not run at all;
   Konsole (kitty graphics) and xterm (sixel) only with the standalone viewer example, not in the shell.
+
+## M4: styling breadth
+
+Every plotters styling call the plan lists for the builder, the mesh, the legend and the M2 series, plus fonts,
+log scales and horizontal histograms.
+The [plan](plan/duckers.md#the-user-api) has the tables; M4 covers the following.
+
+- Series: `histogram_horizontal(bucket, value)`
+  (plotters' `Histogram::horizontal`: buckets on the y axis, bars rightwards from the baseline),
+  with the bucket types, `key :=` and `order_by :=` of `histogram_vertical`.
+  `marker(name)` on `point_series`: `'circle'`, `'cross'`, `'triangle'` or `'pixel'`
+  (plotters' `Circle`, `Cross`, `TriangleMarker`, `Pixel`).
+  `margin(px)` (`Histogram::margin`) and `baseline(v)` (`Histogram::baseline`) on both histograms.
+- Chart builder, on `CHART`: `margin(px)`, `margin_top(px)`, `margin_bottom(px)`, `margin_left(px)`,
+  `margin_right(px)`, `x_label_area_size(px)`, `y_label_area_size(px)`, `top_x_label_area_size(px)`,
+  `right_y_label_area_size(px)`, `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)`,
+  and `x_log_scale([base])`, `y_log_scale([base])`.
+- Mesh, on `MESH`: `x_desc(text)`, `y_desc(text)`, `axis_desc_style(size | font)`, `x_labels(n)`, `y_labels(n)`,
+  `x_label_formatter(fmt)`, `y_label_formatter(fmt)`, `label_style(size | font)`, `x_label_style(size | font)`,
+  `y_label_style(size | font)`, `x_label_offset(px)`, `y_label_offset(px)`, `x_max_light_lines(n)`,
+  `y_max_light_lines(n)`, `max_light_lines(n)`, `light_line_style(color [, w])`, `bold_line_style(color [, w])`,
+  `axis_style(color [, w])`, `disable_x_mesh()`, `disable_y_mesh()`, `disable_mesh()`, `disable_x_axis()`,
+  `disable_y_axis()`, `disable_axes()`, `set_tick_mark_size(position, px)`
+  (position `'top'`, `'bottom'`, `'left'` or `'right'`), `set_all_tick_mark_size(px)` and `draw()`.
+  They apply in chain order, as the Rust chain does.
+- Legend, on `SERIES_LABELS`: `position(name)`, `position(x, y)`, `margin(px)`, `legend_area_size(px)`,
+  `border_style(color [, w])`, `background_style(color)`, `label_font(size | font)` and `draw()`.
+- Fonts: `font(family, size [, style])` returns a `FONT`
+  (`FontDesc::new`; style `'normal'`, `'bold'`, `'italic'` or `'oblique'`), and `color(font, color)` sets its colour.
+  Every text-style parameter takes a bare size,
+  meaning sans-serif of that size as plotters' `IntoTextStyle` for a `u32` does, or a `FONT`:
+  `caption(text, size | font)`, the mesh's label and description styles, and the legend's `label_font`.
+- `mix(color, alpha)` mirrors `WHITE.mix(0.8)`.
+
+`margin` is a method on `SERIES` (a histogram's bar margin), `CHART` (the builder margin) and `SERIES_LABELS`
+(the legend's padding); DuckDB picks the overload by the type of the first argument.
+Offsets and tick sizes may be negative, as in plotters.
+Methods that do not apply to a series kind
+(`marker` on a line, `baseline` on points) are errors that name the plotters term, like `point_size` and `size`.
+
+```sql
+-- Shortened from test/svg/mesh_styled.sql.
+SELECT chart()
+         .caption('Oslo, styled mesh', font('serif', 24, 'bold'))
+         .x_label_area_size(50).y_label_area_size(80)
+         .configure_mesh()
+           .x_desc('day').y_desc('temperature')
+           .x_label_formatter('%b %d')
+           .y_label_formatter('{:+.1f} °C')
+           .label_style(font('sans-serif', 11).color('grey_700'))
+           .light_line_style('blue_50').bold_line_style('blue_200', 1).axis_style('blue_900', 2)
+           .disable_x_mesh()
+           .set_tick_mark_size('bottom', 8)
+           .draw()
+         .draw_series(line_series(day, temp).style('red', 2))
+         .to_svg(800, 500)
+FROM weather
+WHERE city = 'Oslo';
+
+-- From test/svg/histogram_horizontal.sql: the largest bar on top, bars from 150 (counts below it go left).
+SELECT chart()
+         .caption('Articles per section', 20)
+         .y_label_area_size(70)
+         .draw_series(histogram_horizontal(section, n, order_by := n).style('teal_400').margin(2).baseline(150))
+         .to_svg()
+FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
+
+-- Shortened from test/svg/log_scales.sql.
+SELECT chart()
+         .x_log_scale().y_log_scale()
+         .draw_series(line_series(x, x * x).label('x²'))
+         .draw_series(point_series(x, x * x * x).marker('triangle').size(4).label('x³'))
+         .configure_series_labels().position('upper_left').border_style('black').draw()
+         .to_svg()
+FROM (SELECT pow(10, i / 10.0) AS x FROM range(0, 31) r(i));
+
+-- Shortened from test/svg/legend_styled.sql.
+SELECT chart()
+         .draw_series(line_series(day, temp, key := city))
+         .configure_series_labels()
+           .position(20, 10).margin(8).legend_area_size(40)
+           .border_style('grey_600', 2).background_style(mix('white', 0.85))
+           .label_font(font('serif', 16, 'italic').color('bluegrey_800'))
+           .draw()
+         .to_svg()
+FROM weather
+WHERE day < DATE '2024-02-01';
+```
+
+### Label formatters
+
+`x_label_formatter(fmt)` and `y_label_formatter(fmt)` take a string in place of plotters' formatter closure:
+
+- A DuckDB `format()`-style template for numeric, log, integer-bucket and category axes:
+  literal text around exactly one `{}`, with `{{` and `}}` for literal braces.
+  The placeholder takes an optional spec, `{:[[fill]align][sign][0][width][,][.precision][type]}`: `align` is `<`,
+  `>` or `^`, `sign` is `+`, `-` or a space, `,` groups thousands,
+  and `type` is `f` (fixed), `e` (exponent), `g` (general), `d` (rounded to an integer) or `%`
+  (times 100, fixed, with a percent sign).
+  A precision without a type is `g`.
+  `{}` alone is the axis' own label, as plotters writes it
+  (`2.5`, the category name, `1e6` on a log axis), so `'{} °C'` adds a unit and nothing else.
+  On a category axis only fill, alignment, width and precision apply (precision truncates the name).
+- A chrono `strftime` pattern for date, timestamp and date-bucket axes: `'%b %d'`, `'%H:%M'`.
+
+The string is checked when the formatter is set: a template must have one placeholder and a supported spec,
+and anything else must contain a strftime conversion.
+Whether it suits the axis is checked when the chart renders, since the axis kind can come from a series drawn later;
+a mismatch is an error naming the axis kind, e.g. "to_svg: x_label_formatter:
+a strftime pattern does not apply to the numeric x axis; use a format() template such as '{:.1f}'".
+The last formatter call on an axis wins, as in plotters.
+
+```sql
+SELECT chart().configure_mesh().x_label_formatter('[{}]').y_label_formatter('{:,.0f}').draw()
+         .draw_series(histogram_vertical(s, n)).to_svg()
+FROM (VALUES ('news', 1500), ('sport', 900)) t(s, n);
+```
+
+### Log scales
+
+`x_log_scale([base])` and `y_log_scale([base])` draw the axis with plotters' `LogCoord`
+(`(lo..hi).log_scale().base(base)`, base 10 unless given).
+The mapping is linear in `ln(v)` whatever the base; the base changes the key points only, as in plotters.
+
+- Only numeric axes take a log scale, including a histogram's value axis.
+  On a category, date, timestamp or integer-bucket axis it is an error naming the kind,
+  raised by the call when the axis kind is known and by `draw_series` otherwise.
+- Both bounds must be positive.
+  A bound of zero or below, from `x_range`/`y_range` or from the data, is an error when the chart renders,
+  which says where it came from and suggests the fix.
+  A histogram's extent includes its baseline, 0 by default,
+  so bars on a log axis need `baseline(v)` with a positive value or an explicit range.
+  With an explicit positive range, points at or below zero are not drawn,
+  and bars from a lower baseline start at the axis' low end.
+- Without data a log axis shows `1..base`; a single value `v` is widened to `v / base .. v * base`.
+- Labels are plotters' float printer with scientific notation (`1`, `100`, `0.001`, `1e6`) instead of `LogCoord`'s
+  `{:?}` (`1000000.0`); a label formatter applies as on a linear axis.
+
+### Fonts
+
+Every family renders with the embedded DejaVu Sans:
+duckers registers it under each family any `FONT` in the chart names,
+so rendering needs no system fonts and stays deterministic.
+There is one embedded face, and plotters falls back to a family's normal face, so PNG output draws bold,
+italic and oblique text in the regular face.
+SVG output writes the family, size and style into the file
+(`font-family`, `font-size`, `font-style`),
+and the viewer draws the text with its own fonts. plotters' `FontDesc` sizes are in its own units;
+`ab_glyph` lays text out at `size / 1.24` px, the same for every duckers text style.
+
+### Caveats
+
+- A horizontal histogram's first bucket is at the bottom of the y axis, which points up, as in plotters;
+  `order_by := n` puts the largest bar on top, `order_by := -n` at the bottom.
+- The default label areas (bottom 30 px, left 40 px) are sized for numbers; long category names or formatted labels
+  need `y_label_area_size`/`x_label_area_size`.
+- plotters draws the labels and axis descriptions again in the top and right label areas, and in 0.3.7 a negative
+  tick size also moves the labels and the axis line to the inner edge of the label area.
+- `set_tick_mark_size` and `set_all_tick_mark_size` take px; plotters' relative sizes (`5.percent()`) are not
+  exposed.
+- The legend glyph is 20 px wide whatever `legend_area_size` is, as in plotters' examples; below 20 px it runs into
+  the label text.
+- plotters' `Pixel` marker is one pixel, whatever `size` says.
 
 ## M7: files and hosts
 
