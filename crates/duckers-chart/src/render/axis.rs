@@ -1,11 +1,14 @@
-//! The coordinate types of the chart axes and how data values map onto them.
+//! The coordinate type of the chart axes and how data values map onto them.
 //!
 //! plotters fixes the coordinate type of a chart at compile time
 //! (`ChartContext<DB, Cartesian2d<X, Y>>`), while a chart value only knows its axis kinds at
-//! run time. Each axis is therefore resolved to one variant of [`XCoord`] or [`YCoord`], and the
-//! drawing code is generic over [`DataAxis`], which every coordinate type implements. The
-//! render entry point matches on both enums and calls the generic code once per combination.
-//! A new axis kind (log scales, secondary axes) is a new variant and a `DataAxis` impl.
+//! run time. Every axis is therefore one [`AxisCoord`]: a run-time choice between plotters'
+//! coordinate types, with `f64` values on every axis. Numbers are themselves, dates are days
+//! since 1970-01-01, timestamps are microseconds since 1970-01-01 00:00:00, and bands are
+//! positions in band units (band `i` spans `i..i + 1`). Each variant converts the `f64` to its
+//! inner coordinate's value type and delegates mapping, key points and label formatting to it,
+//! so the drawing code works on one `Cartesian2d<AxisCoord, AxisCoord>` whatever the axis
+//! kinds, and a new axis kind is a new variant rather than a new type combination.
 
 use crate::error::{Error, Result};
 use crate::spec::{AxisKind, AxisRange, Chart, Column, Series, SeriesKind};
@@ -17,53 +20,119 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::Arc;
 
-/// A plotters coordinate that can place the values of a [`Column`] or a number.
-pub(crate) trait DataAxis:
-    Ranged + ValueFormatter<<Self as Ranged>::ValueType> + Clone + 'static
-{
+/// One axis of a chart, with `f64` values whatever its kind.
+#[derive(Clone)]
+pub(crate) enum AxisCoord {
+    /// `RangedCoordf64`.
+    Linear(RangedCoordf64),
+    /// `RangedDate`; values are days since 1970-01-01.
+    Date(Oriented<RangedDate<NaiveDate>>),
+    /// `RangedDateTime`; values are microseconds since 1970-01-01 00:00:00. `f64` holds every
+    /// microsecond exactly up to about the year 2255.
+    Timestamp(TimeCoord),
+    /// A segmented axis; values are band positions.
+    Band(BandCoord),
+}
+
+impl AxisCoord {
     /// The position of value `i` of `column`: the value itself, or the centre of its band.
-    fn at(&self, column: &Column, i: usize) -> Option<Self::ValueType>;
-
-    /// The position of a number (a y value, a bar height or a baseline).
-    fn number(&self, _value: f64) -> Option<Self::ValueType> {
-        None
-    }
-
-    /// The left and right edge of the band of value `i` of `column`, as
-    /// `SegmentValue::Exact(v)` and `SegmentValue::Exact(v + 1)`. `None` on axes without bands
-    /// and for values outside the axis, which plotters' segmented coordinates drop.
-    fn band(&self, _column: &Column, _i: usize) -> Option<(Self::ValueType, Self::ValueType)> {
-        None
-    }
-}
-
-impl DataAxis for RangedCoordf64 {
-    fn at(&self, column: &Column, i: usize) -> Option<f64> {
-        match column {
-            Column::Numeric(v) => Some(v[i]),
+    /// `None` for a column of another kind and for a date or timestamp chrono cannot represent.
+    pub(crate) fn at(&self, column: &Column, i: usize) -> Option<f64> {
+        match (self, column) {
+            (AxisCoord::Linear(_), Column::Numeric(v)) => Some(v[i]),
+            (AxisCoord::Date(_), Column::Date(v)) => date(v[i]).map(|_| f64::from(v[i])),
+            (AxisCoord::Timestamp(_), Column::Timestamp(v)) => timestamp(v[i]).map(|_| v[i] as f64),
+            (AxisCoord::Band(b), _) => Some(b.index(column, i)? as f64 + 0.5),
             _ => None,
         }
     }
 
-    fn number(&self, value: f64) -> Option<f64> {
-        Some(value)
+    /// The position of a number (a y value, a bar height or a baseline), on numeric axes.
+    pub(crate) fn number(&self, value: f64) -> Option<f64> {
+        match self {
+            AxisCoord::Linear(_) => Some(value),
+            _ => None,
+        }
     }
-}
 
-impl DataAxis for Oriented<RangedDate<NaiveDate>> {
-    fn at(&self, column: &Column, i: usize) -> Option<NaiveDate> {
-        match column {
-            Column::Date(v) => date(v[i]),
+    /// The low and high edge of the band of value `i` of `column`, where
+    /// `SegmentValue::Exact(v)` and `SegmentValue::Exact(v + 1)` would map. `None` on axes
+    /// without bands and for values outside the axis, which plotters' segmented coordinates
+    /// drop.
+    pub(crate) fn band(&self, column: &Column, i: usize) -> Option<(f64, f64)> {
+        match self {
+            AxisCoord::Band(b) => b.band(column, i),
             _ => None,
         }
     }
 }
 
-impl DataAxis for TimeCoord {
-    fn at(&self, column: &Column, i: usize) -> Option<NaiveDateTime> {
-        match column {
-            Column::Timestamp(v) => timestamp(v[i]),
-            _ => None,
+/// A date axis value (days since the epoch) as the date, `None` beyond chrono's range.
+fn day_of(value: f64) -> Option<NaiveDate> {
+    date(value.round() as i32)
+}
+
+fn days_of(d: NaiveDate) -> f64 {
+    (d - NaiveDate::default()).num_days() as f64
+}
+
+/// A timestamp axis value (microseconds since the epoch) as the timestamp.
+fn instant_of(value: f64) -> Option<NaiveDateTime> {
+    timestamp(value.round() as i64)
+}
+
+fn micros_of(t: NaiveDateTime) -> f64 {
+    t.and_utc().timestamp_micros() as f64
+}
+
+impl Ranged for AxisCoord {
+    type FormatOption = NoDefaultFormatting;
+    type ValueType = f64;
+
+    fn map(&self, value: &f64, limit: (i32, i32)) -> i32 {
+        match self {
+            AxisCoord::Linear(c) => c.map(value, limit),
+            // Positions come from `at`, which only yields representable dates and times.
+            AxisCoord::Date(c) => day_of(*value).map_or(limit.0, |d| c.map(&d, limit)),
+            AxisCoord::Timestamp(c) => instant_of(*value).map_or(limit.0, |t| c.map(&t, limit)),
+            AxisCoord::Band(c) => c.map(value, limit),
+        }
+    }
+
+    fn key_points<Hint: KeyPointHint>(&self, hint: Hint) -> Vec<f64> {
+        match self {
+            AxisCoord::Linear(c) => c.key_points(hint),
+            AxisCoord::Date(c) => c.key_points(hint).into_iter().map(days_of).collect(),
+            AxisCoord::Timestamp(c) => c.key_points(hint).into_iter().map(micros_of).collect(),
+            AxisCoord::Band(c) => c.key_points(hint),
+        }
+    }
+
+    fn range(&self) -> Range<f64> {
+        match self {
+            AxisCoord::Linear(c) => c.range(),
+            AxisCoord::Date(c) => {
+                let r = c.range();
+                days_of(r.start)..days_of(r.end)
+            }
+            AxisCoord::Timestamp(c) => {
+                let r = c.range();
+                micros_of(r.start)..micros_of(r.end)
+            }
+            AxisCoord::Band(c) => c.range(),
+        }
+    }
+}
+
+impl ValueFormatter<f64> for AxisCoord {
+    fn format_ext(&self, value: &f64) -> String {
+        match self {
+            AxisCoord::Linear(c) => c.format_ext(value),
+            AxisCoord::Date(c) => day_of(*value).map_or_else(String::new, |d| c.format_ext(&d)),
+            AxisCoord::Timestamp(c) => {
+                instant_of(*value).map_or_else(String::new, |t| c.format_ext(&t))
+            }
+            AxisCoord::Band(c) => c.format_ext(value),
         }
     }
 }
@@ -124,32 +193,6 @@ impl ValueFormatter<NaiveDateTime> for TimeCoord {
     fn format_ext(&self, value: &NaiveDateTime) -> String {
         value.format(self.format).to_string()
     }
-}
-
-impl DataAxis for BandCoord {
-    fn at(&self, column: &Column, i: usize) -> Option<f64> {
-        Some(self.index(column, i)? as f64 + 0.5)
-    }
-
-    fn band(&self, column: &Column, i: usize) -> Option<(f64, f64)> {
-        let index = self.index(column, i)?;
-        (0..self.n as i64)
-            .contains(&index)
-            .then_some((index as f64, index as f64 + 1.0))
-    }
-}
-
-/// The resolved x axis.
-pub(crate) enum XCoord {
-    Linear(RangedCoordf64),
-    Date(Oriented<RangedDate<NaiveDate>>),
-    Timestamp(TimeCoord),
-    Band(BandCoord),
-}
-
-/// The resolved y axis.
-pub(crate) enum YCoord {
-    Linear(RangedCoordf64),
 }
 
 pub(crate) fn date(days: i32) -> Option<NaiveDate> {
@@ -232,7 +275,7 @@ pub(crate) fn check_kinds(series: &[&Series]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
+pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
     let range = chart.x_axis.range;
     let kind = series
         .first()
@@ -267,7 +310,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
                     1.0,
                 ),
             };
-            XCoord::Linear((lo..hi).into())
+            AxisCoord::Linear((lo..hi).into())
         }
         AxisKind::Timestamp => {
             let (lo, hi) = match range {
@@ -290,7 +333,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
             let (lo, hi) = (lo.min(hi), lo.max(hi));
             let lo = timestamp(lo).ok_or_else(|| out_of_range("the x range"))?;
             let hi = timestamp(hi).ok_or_else(|| out_of_range("the x range"))?;
-            XCoord::Timestamp(TimeCoord::new(lo, hi, reversed))
+            AxisCoord::Timestamp(TimeCoord::new(lo, hi, reversed))
         }
         AxisKind::Date | AxisKind::Integer => {
             let (lo, hi): (i64, i64) = match (kind, range) {
@@ -325,7 +368,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
                         .ok_or_else(|| out_of_range("the x range"))?;
                     BandLabels::Date(first)
                 };
-                XCoord::Band(BandCoord {
+                AxisCoord::Band(BandCoord {
                     n,
                     reversed,
                     labels,
@@ -337,7 +380,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
                         .and_then(date)
                         .ok_or_else(|| out_of_range("the x range"))
                 };
-                XCoord::Date(Oriented {
+                AxisCoord::Date(Oriented {
                     inner: RangedDate::from(day(lo)?..day(hi)?),
                     reversed,
                 })
@@ -362,7 +405,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
             if names.len() > MAX_BANDS {
                 return Err(too_many_bands(names.len() as i64));
             }
-            XCoord::Band(BandCoord {
+            AxisCoord::Band(BandCoord {
                 n: names.len().max(1),
                 reversed: false,
                 labels: BandLabels::Category(Arc::new(names), Arc::new(index)),
@@ -371,7 +414,7 @@ pub(crate) fn x_coord(chart: &Chart, series: &[&Series]) -> Result<XCoord> {
     })
 }
 
-pub(crate) fn y_coord(chart: &Chart, series: &[&Series]) -> Result<YCoord> {
+pub(crate) fn y_coord(chart: &Chart, series: &[&Series]) -> Result<AxisCoord> {
     let (lo, hi) = match chart.y_axis.range {
         Some(AxisRange::Numeric(lo, hi)) => (lo, hi),
         Some(_) => {
@@ -397,7 +440,7 @@ pub(crate) fn y_coord(chart: &Chart, series: &[&Series]) -> Result<YCoord> {
             )
         }
     };
-    Ok(YCoord::Linear((lo..hi).into()))
+    Ok(AxisCoord::Linear((lo..hi).into()))
 }
 
 /// More bands than this is a range mistake (a chart is at most 8192 px wide).
@@ -486,6 +529,13 @@ impl BandCoord {
             }
             _ => None,
         }
+    }
+
+    fn band(&self, column: &Column, i: usize) -> Option<(f64, f64)> {
+        let index = self.index(column, i)?;
+        (0..self.n as i64)
+            .contains(&index)
+            .then_some((index as f64, index as f64 + 1.0))
     }
 
     fn key_indices(&self, max: usize) -> Vec<usize> {
@@ -592,13 +642,16 @@ mod tests {
 
     fn ranges(chart: &Chart) -> (Range<f64>, Range<f64>) {
         let series: Vec<&Series> = chart.series().collect();
-        let x = match x_coord(chart, &series).unwrap() {
-            XCoord::Linear(x) => x.range(),
-            XCoord::Band(b) => b.range(),
-            _ => panic!("not a numeric or band axis"),
-        };
-        let YCoord::Linear(y) = y_coord(chart, &series).unwrap();
-        (x, y.range())
+        let x = x_coord(chart, &series).unwrap();
+        assert!(matches!(x, AxisCoord::Linear(_) | AxisCoord::Band(_)));
+        (x.range(), y_coord(chart, &series).unwrap().range())
+    }
+
+    fn band(coord: AxisCoord) -> BandCoord {
+        match coord {
+            AxisCoord::Band(b) => b,
+            _ => panic!("not a band axis"),
+        }
     }
 
     #[test]
@@ -658,9 +711,7 @@ mod tests {
             ),
         ]);
         let series: Vec<&Series> = c.series().collect();
-        let XCoord::Band(b) = x_coord(&c, &series).unwrap() else {
-            panic!("not a band axis")
-        };
+        let b = band(x_coord(&c, &series).unwrap());
         let labels: Vec<String> = b.key_points(11).iter().map(|v| b.format_ext(v)).collect();
         assert_eq!(labels, ["b", "a", "c"]);
     }
@@ -689,9 +740,7 @@ mod tests {
         let dates = hist(Column::Date(vec![19723, 19725]), vec![1.0, 1.0]);
         let c = chart(vec![dates]);
         let series: Vec<&Series> = c.series().collect();
-        let XCoord::Band(b) = x_coord(&c, &series).unwrap() else {
-            panic!("not a band axis")
-        };
+        let b = band(x_coord(&c, &series).unwrap());
         assert_eq!(b.n, 3);
         assert_eq!(b.format_ext(&0.5), "2024-01-01");
         assert_eq!(
@@ -708,7 +757,32 @@ mod tests {
         .unwrap();
         let c = chart(vec![line]);
         let series: Vec<&Series> = c.series().collect();
-        assert!(matches!(x_coord(&c, &series).unwrap(), XCoord::Date(_)));
+        let x = x_coord(&c, &series).unwrap();
+        assert!(matches!(x, AxisCoord::Date(_)));
+        assert_eq!(x.range(), 19723.0..19725.0);
+        assert_eq!(x.at(&series[0].x, 1), Some(19725.0));
+        assert_eq!(x.format_ext(&19724.0), "2024-01-02");
+    }
+
+    #[test]
+    fn timestamps_are_microseconds() {
+        let start = 1_704_067_200_000_000i64;
+        let line = Series::new(
+            SeriesAggregate::LineSeries,
+            Column::Timestamp(vec![start, start + 3_600_000_000]),
+            vec![1.0, 2.0],
+        )
+        .unwrap();
+        let c = chart(vec![line]);
+        let series: Vec<&Series> = c.series().collect();
+        let x = x_coord(&c, &series).unwrap();
+        assert!(matches!(x, AxisCoord::Timestamp(_)));
+        assert_eq!(x.map(&(start as f64), (0, 100)), 0);
+        assert_eq!(x.map(&((start + 3_600_000_000) as f64), (0, 100)), 100);
+        assert_eq!(x.format_ext(&((start + 1_800_000_000) as f64)), "00:30");
+        for key in x.key_points(5) {
+            assert!(key >= start as f64 && key <= (start + 3_600_000_000) as f64);
+        }
     }
 
     #[test]

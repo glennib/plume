@@ -670,6 +670,20 @@ Each item records the choice, the alternative, and why.
     - On failure DuckDB removes the files it saw finalized and the directories it created,
       so duckers only has to avoid partial files of its own: it writes nothing before the chart has rendered,
       and removes the file if the write fails.
+16. **One run-time coordinate type for every axis.**
+    The renderer draws on `Cartesian2d<AxisCoord, AxisCoord>`,
+    where `AxisCoord` is an enum over plotters' coordinate types
+    (`RangedCoordf64`, `RangedDate`, `RangedDateTime`, the segmented band axis, and `LogCoord`)
+    with `f64` values: numbers as themselves, dates as days since the epoch, timestamps as microseconds since the epoch,
+    bands as band positions.
+    Each variant converts and delegates `map`, `key_points` and label formatting to the plotters coordinate, so labels,
+    key points and pixels are plotters' own.
+    Alternative: generic drawing code monomorphised per x × y coordinate pair.
+    Rejected because every axis kind on either axis
+    (horizontal histograms),
+    more series (M5) and secondary axes (M6) multiply the combinations,
+    while one `f64`-valued type keeps the drawing code free of axis kinds.
+    Timestamps are exact as `f64` microseconds up to about the year 2255.
 
 ## Open questions
 

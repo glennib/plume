@@ -1,6 +1,6 @@
 //! Replaying a chart's calls on a plotters `ChartContext`.
 
-use super::axis::{self, DataAxis, XCoord, YCoord, bucket_sums};
+use super::axis::{self, AxisCoord, bucket_sums};
 use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::spec::{
@@ -106,40 +106,16 @@ pub(crate) fn draw<DB: DrawingBackend>(root: &DrawingArea<DB, Shift>, chart: &Ch
     root.fill(&chart.fill.to_plotters())
         .map_err(plotters_error)?;
     let ops = resolve(chart);
-    match x {
-        XCoord::Linear(x) => with_y(root, chart, &ops, x, y),
-        XCoord::Date(x) => with_y(root, chart, &ops, x, y),
-        XCoord::Timestamp(x) => with_y(root, chart, &ops, x, y),
-        XCoord::Band(x) => with_y(root, chart, &ops, x, y),
-    }
+    draw_on(root, chart, &ops, x, y)
 }
 
-fn with_y<DB: DrawingBackend, X: DataAxis>(
+fn draw_on<DB: DrawingBackend>(
     root: &DrawingArea<DB, Shift>,
     chart: &Chart,
     ops: &[Op<'_>],
-    x: X,
-    y: YCoord,
-) -> Result<()>
-where
-    X::ValueType: Clone + 'static,
-{
-    match y {
-        YCoord::Linear(y) => draw_on(root, chart, ops, x, y),
-    }
-}
-
-fn draw_on<DB: DrawingBackend, X: DataAxis, Y: DataAxis>(
-    root: &DrawingArea<DB, Shift>,
-    chart: &Chart,
-    ops: &[Op<'_>],
-    x: X,
-    y: Y,
-) -> Result<()>
-where
-    X::ValueType: Clone + 'static,
-    Y::ValueType: Clone + 'static,
-{
+    x: AxisCoord,
+    y: AxisCoord,
+) -> Result<()> {
     let mut builder = ChartBuilder::on(root);
     builder
         .margin_top(chart.margin.top)
@@ -195,20 +171,13 @@ where
     Ok(())
 }
 
-fn draw_series<'a, DB, X, Y>(
-    ctx: &mut ChartContext<'a, DB, Cartesian2d<X, Y>>,
+fn draw_series<'a, DB: DrawingBackend + 'a>(
+    ctx: &mut ChartContext<'a, DB, Cartesian2d<AxisCoord, AxisCoord>>,
     series: &Series,
     index: usize,
-    x: &X,
-    y: &Y,
-) -> Result<()>
-where
-    DB: DrawingBackend + 'a,
-    X: DataAxis,
-    Y: DataAxis,
-    X::ValueType: Clone + 'static,
-    Y::ValueType: Clone + 'static,
-{
+    x: &AxisCoord,
+    y: &AxisCoord,
+) -> Result<()> {
     let color = series
         .style
         .color
@@ -219,7 +188,7 @@ where
         filled: series.style.filled,
         stroke_width: series.style.stroke_width,
     };
-    let points = || -> Vec<(X::ValueType, Y::ValueType)> {
+    let points = || -> Vec<(f64, f64)> {
         (0..series.len())
             .filter_map(|i| Some((x.at(&series.x, i)?, y.number(series.y[i])?)))
             .collect()
@@ -248,12 +217,11 @@ where
         }
         SeriesKind::Histogram(options) => {
             let base = y.number(options.baseline);
-            let bars: Vec<Rectangle<(X::ValueType, Y::ValueType)>> = bucket_sums(series)
+            let bars: Vec<Rectangle<(f64, f64)>> = bucket_sums(series)
                 .into_iter()
                 .filter_map(|(row, sum)| {
                     let (left, right) = x.band(&series.x, row)?;
-                    let mut bar =
-                        Rectangle::new([(left, y.number(sum)?), (right, base.clone()?)], style);
+                    let mut bar = Rectangle::new([(left, y.number(sum)?), (right, base?)], style);
                     bar.set_margin(0, 0, options.margin, options.margin);
                     Some(bar)
                 })
