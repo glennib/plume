@@ -1,0 +1,82 @@
+# name: test/sql/aggregate.test
+# description: the aggregate layer, through the internal probe aggregate
+# group: [duckers]
+
+require duckers
+
+query T
+SELECT __duckers_agg_probe(i, i * 2) FROM range(5) r(i)
+----
+probe: rows=5 skipped=0 sum_x=10 sum_y=20
+
+# Named parameter with a default, passed by name.
+query T
+SELECT __duckers_agg_probe(i, 1.5::DOUBLE, label := 'L') FROM range(4) r(i)
+----
+L: rows=4 skipped=0 sum_x=6 sum_y=6
+
+# Dot-call syntax.
+query T
+SELECT (i).__duckers_agg_probe(i, label := 'dot') FROM range(4) r(i)
+----
+dot: rows=4 skipped=0 sum_x=6 sum_y=6
+
+# Any numeric type is accepted for the ANY parameters.
+query T
+SELECT __duckers_agg_probe(x, y) FROM (VALUES (1::TINYINT, 2::FLOAT), (3::TINYINT, 4::FLOAT)) t(x, y)
+----
+probe: rows=2 skipped=0 sum_x=4 sum_y=6
+
+# NULL rows reach the aggregate, which skips them.
+query T
+SELECT __duckers_agg_probe(x, y) FROM (VALUES (1, 2), (NULL, 3), (4, NULL)) t(x, y)
+----
+probe: rows=1 skipped=2 sum_x=1 sum_y=2
+
+# An empty input still produces a value.
+query T
+SELECT __duckers_agg_probe(i, i) FROM range(0) r(i)
+----
+probe: rows=0 skipped=0 sum_x=0 sum_y=0
+
+# One state per group.
+query IT
+SELECT g, __duckers_agg_probe(i, i, label := 'g') FROM (SELECT i, i % 3 AS g FROM range(10) r(i)) GROUP BY g ORDER BY g
+----
+0	g: rows=4 skipped=0 sum_x=18 sum_y=18
+1	g: rows=3 skipped=0 sum_x=12 sum_y=12
+2	g: rows=3 skipped=0 sum_x=15 sum_y=15
+
+# Enough rows for several threads, so states are combined.
+query T
+SELECT __duckers_agg_probe(i, 1) FROM range(1000000) r(i)
+----
+probe: rows=1000000 skipped=0 sum_x=499999500000 sum_y=1000000
+
+query I
+SELECT count(*) FROM (SELECT g, __duckers_agg_probe(i, i) FROM (SELECT i, i % 1000 AS g FROM range(1000000) r(i)) GROUP BY g)
+----
+1000
+
+# The aggregate is order-independent, so ORDER BY inside the call is dropped instead of crashing
+# DuckDB (duckdb#26109).
+query T
+SELECT __duckers_agg_probe(i, i ORDER BY i DESC) FROM range(4) r(i)
+----
+probe: rows=4 skipped=0 sum_x=6 sum_y=6
+
+# Argument types are checked at bind time.
+statement error
+SELECT __duckers_agg_probe('a', 1)
+----
+Binder Error: __duckers_agg_probe: x must be a number, got VARCHAR
+
+statement error
+SELECT __duckers_agg_probe(1, 1, label := s) FROM (VALUES ('a')) t(s)
+----
+Binder Error: __duckers_agg_probe: the argument label must be a constant
+
+statement error
+SELECT __duckers_agg_probe(1, 1, bogus := 1)
+----
+Binder Error

@@ -2,7 +2,11 @@
 #
 #   make                 debug build plus footer: build/debug/duckers.duckdb_extension
 #   make release         the same, optimised: build/release/duckers.duckdb_extension
+#   make test            Rust unit tests, sqllogictests (Python wheel) and CLI tests on the debug build
+#   make test_release    the same on the release build
 #   make shell           the pinned DuckDB v2 preview CLI with the debug build loaded
+#
+# Tools: cargo, jq, curl, uv (for the test venv) and a Python 3 for the footer script.
 #
 # Variables worth overriding:
 #   TARGET=<triple>      cross-compile with `cargo build --target`, e.g. aarch64-apple-darwin
@@ -23,6 +27,7 @@ DUCKDB_RELEASE_URL := https://duckdb-staging.duckdb.org/$(DUCKDB_SOURCE_ID)/$(DU
 
 PYTHON ?= $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
 CARGO ?= cargo
+UV ?= uv
 
 HOST_TRIPLE := $(shell rustc -vV | sed -n 's/^host: //p')
 TARGET_TRIPLE := $(if $(TARGET),$(TARGET),$(HOST_TRIPLE))
@@ -31,7 +36,7 @@ CARGO_TARGET_FLAG := $(if $(TARGET),--target $(TARGET))
 # cargo's target directory may be configured anywhere (CARGO_TARGET_DIR, build.target-dir), so ask
 # cargo instead of assuming ./target.
 CARGO_METADATA := $(CARGO) metadata --format-version 1 --no-deps
-CARGO_TARGET_DIR_RAW := $(shell $(CARGO_METADATA) | jq -r .target_directory)
+CARGO_TARGET_DIR_RAW := $(shell $(CARGO_METADATA) | jq -r .target_directory | tr -d '\r')
 ifeq ($(OS),Windows_NT)
 CARGO_TARGET_DIR_RESOLVED := $(shell cygpath -u '$(CARGO_TARGET_DIR_RAW)')
 else
@@ -39,7 +44,7 @@ CARGO_TARGET_DIR_RESOLVED := $(CARGO_TARGET_DIR_RAW)
 endif
 CARGO_OUT_DIR := $(CARGO_TARGET_DIR_RESOLVED)$(if $(TARGET),/$(TARGET))
 
-EXTENSION_VERSION := v$(shell $(CARGO_METADATA) | jq -r '.packages[] | select(.name == "duckers") | .version')
+EXTENSION_VERSION := v$(shell $(CARGO_METADATA) | jq -r '.packages[] | select(.name == "duckers") | .version' | tr -d '\r')
 
 # The cdylib's file name: duckers.dll on Windows, libduckers.dylib on macOS, libduckers.so elsewhere.
 ifneq ($(findstring windows,$(TARGET_TRIPLE)),)
@@ -69,7 +74,8 @@ DUCKDB := $(CLI_DIR)/duckdb$(if $(findstring windows,$(HOST_PLATFORM)),.exe)
 SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
 
 .PHONY: all debug release build_debug build_release footer_debug footer_release duckdb shell \
-        shell_release bindings clean
+        shell_release venv test test_debug test_release test_rust test_sql_debug test_sql_release \
+        test_cli_debug test_cli_release fmt lint bindings clean
 
 all: debug
 
@@ -108,6 +114,54 @@ shell: debug $(DUCKDB)
 
 shell_release: release $(DUCKDB)
 	$(DUCKDB) -unsigned -cmd "LOAD '$(RELEASE_EXTENSION)'"
+
+# The test venv: the pinned DuckDB wheel and DuckDB's Python sqllogictest runner (pyproject.toml).
+venv:
+	$(UV) sync --locked
+
+test: test_debug
+test_debug: test_rust test_sql_debug test_cli_debug
+test_release: test_rust test_sql_release test_cli_release
+
+test_rust:
+	$(CARGO) nextest run --no-tests=pass
+
+SQLLOGICTEST = $(UV) run --locked python -m duckdb_sqllogictest --test-dir test/sql
+
+test_sql_debug: debug venv
+	$(SQLLOGICTEST) --external-extension $(DEBUG_EXTENSION)
+
+test_sql_release: release venv
+	$(SQLLOGICTEST) --external-extension $(RELEASE_EXTENSION)
+
+# CLI tests: each test/cli/<name>.sql runs in the preview CLI, and its output must equal
+# test/cli/<name>.out. They cover what the Python runner cannot see, such as how the shell renders
+# custom-type values.
+define run_cli_tests
+	@mkdir -p build/test-cli
+	@set -e; for sql in test/cli/*.sql; do \
+		name=$$(basename $$sql .sql); \
+		$(DUCKDB) -unsigned -bail -cmd "LOAD '$(1)'" -f $$sql > build/test-cli/$$name.out 2>&1 || { cat build/test-cli/$$name.out; exit 1; }; \
+		diff -u --strip-trailing-cr test/cli/$$name.out build/test-cli/$$name.out; \
+		echo "$$sql: ok"; \
+	done
+endef
+
+test_cli_debug: debug $(DUCKDB)
+	$(call run_cli_tests,$(DEBUG_EXTENSION))
+
+test_cli_release: release $(DUCKDB)
+	$(call run_cli_tests,$(RELEASE_EXTENSION))
+
+fmt:
+	$(CARGO) fmt
+	$(UV) run --locked ruff format scripts
+
+lint:
+	$(CARGO) fmt --check
+	$(CARGO) clippy --all-targets -- -D warnings
+	$(UV) run --locked ruff check scripts
+	$(UV) run --locked ruff format --check scripts
 
 # Regenerates crates/duckers-sys/src/bindings.rs from the vendored headers (needs libclang).
 bindings:

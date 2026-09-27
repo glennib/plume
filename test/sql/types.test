@@ -1,0 +1,124 @@
+# name: test/sql/types.test
+# description: the custom types, their casts and the value envelope
+# group: [duckers]
+
+require duckers
+
+# typeof reports the custom type names.
+query TTTTT
+SELECT
+    typeof(__duckers_envelope('CHART', ''::BLOB)::CHART),
+    typeof(__duckers_envelope('MESH', ''::BLOB)::MESH),
+    typeof(__duckers_envelope('SERIES_LABELS', ''::BLOB)::SERIES_LABELS),
+    typeof(__duckers_envelope('SERIES', ''::BLOB)::SERIES),
+    typeof(__duckers_envelope('FONT', ''::BLOB)::FONT)
+----
+CHART	MESH	SERIES_LABELS	SERIES	FONT
+
+query T
+SELECT typeof(NULL::CHART)
+----
+CHART
+
+# The VARCHAR cast is the one-line summary.
+query TTTTT
+SELECT
+    __duckers_envelope('CHART', 'abc'::BLOB)::CHART::VARCHAR,
+    __duckers_envelope('MESH', ''::BLOB)::MESH::VARCHAR,
+    __duckers_envelope('SERIES_LABELS', 'x'::BLOB)::SERIES_LABELS::VARCHAR,
+    __duckers_envelope('SERIES', 'a payload longer than twelve bytes'::BLOB)::SERIES::VARCHAR,
+    __duckers_envelope('FONT', 'ab'::BLOB)::FONT::VARCHAR
+----
+CHART(3 bytes)	MESH(0 bytes)	SERIES_LABELS(1 bytes)	SERIES(34 bytes)	FONT(2 bytes)
+
+# Type names are case-insensitive.
+query T
+SELECT __duckers_envelope('chart', ''::BLOB)::chart::varchar
+----
+CHART(0 bytes)
+
+# BLOB round trip: the bytes are the envelope, unchanged.
+query T
+SELECT __duckers_envelope('CHART', 'abc'::BLOB)::CHART::BLOB = __duckers_envelope('CHART', 'abc'::BLOB)
+----
+true
+
+query T
+SELECT octet_length(__duckers_envelope('SERIES', 'abc'::BLOB)::SERIES::BLOB)
+----
+10
+
+query T
+SELECT __duckers_envelope('CHART', 'abc'::BLOB)::CHART::BLOB::CHART::VARCHAR
+----
+CHART(3 bytes)
+
+# Casting foreign bytes to a duckers type fails, and TRY_CAST gives NULL.
+statement error
+SELECT 'abc'::BLOB::CHART
+----
+Conversion Error: not a duckers CHART value
+
+statement error
+SELECT __duckers_envelope('MESH', ''::BLOB)::CHART
+----
+Conversion Error: expected a CHART value, got a MESH value
+
+query T
+SELECT TRY_CAST('abc'::BLOB AS CHART) IS NULL
+----
+true
+
+# A string literal casts to the custom type through the base type without the envelope check;
+# the summary then reports the value as invalid.
+statement error
+SELECT ('abc'::CHART)::VARCHAR
+----
+Conversion Error: not a duckers CHART value
+
+# Values written by an incompatible duckers name the format version.
+statement error
+SELECT ('DKRS'::BLOB || '\x01\x07\x00'::BLOB)::CHART
+----
+format version 7
+
+# NULL stays NULL through every cast.
+query TTT
+SELECT NULL::CHART::VARCHAR IS NULL, NULL::CHART::BLOB IS NULL, NULL::BLOB::CHART IS NULL
+----
+true	true	true
+
+# Casts run per row over a column.
+query IT
+SELECT i, __duckers_envelope('CHART', repeat('x', i::INTEGER)::BLOB)::CHART::VARCHAR
+FROM range(0, 30, 10) r(i)
+ORDER BY i
+----
+0	CHART(0 bytes)
+10	CHART(10 bytes)
+20	CHART(20 bytes)
+
+query T
+SELECT count(*) FILTER (WHERE TRY_CAST(b AS CHART) IS NULL)
+FROM (SELECT CASE WHEN i % 2 = 0 THEN __duckers_envelope('CHART', ''::BLOB) ELSE 'junk'::BLOB END AS b FROM range(100) r(i))
+----
+50
+
+# Values can be stored in tables.
+statement ok
+CREATE TABLE charts(c CHART)
+
+statement ok
+INSERT INTO charts SELECT __duckers_envelope('CHART', i::VARCHAR::BLOB)::CHART FROM range(3) r(i)
+
+query T
+SELECT c::VARCHAR FROM charts
+----
+CHART(1 bytes)
+CHART(1 bytes)
+CHART(1 bytes)
+
+statement error
+SELECT __duckers_envelope('PLOT', ''::BLOB)
+----
+unknown duckers type PLOT

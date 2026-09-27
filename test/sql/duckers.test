@@ -1,0 +1,23 @@
+# name: test/sql/duckers.test
+# description: the extension loads and reports its version
+# group: [duckers]
+
+require duckers
+
+query T
+SELECT duckers_version() LIKE 'v%.%.%'
+----
+true
+
+# The version matches the one the build wrote into the metadata footer.
+query T
+SELECT extension_version = duckers_version()
+FROM duckdb_extensions()
+WHERE extension_name = 'duckers'
+----
+true
+
+query T
+SELECT typeof(duckers_version())
+----
+VARCHAR

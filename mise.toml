@@ -1,0 +1,6 @@
+# Tool versions for working on duckers. Tasks live in the Makefile; Python packages in pyproject.toml.
+[tools]
+uv = "0.12.19"
+jq = "1.8.2"
+rumdl = "0.2.77"
+"cargo:cargo-nextest" = "0.9.146"

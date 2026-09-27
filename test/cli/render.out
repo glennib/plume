@@ -1,0 +1,8 @@
+┌───────────┬────────────────┬─────────────────┐
+│ versioned │     chart      │     series      │
+├───────────┼────────────────┼─────────────────┤
+│ true      │ CHART(3 bytes) │ SERIES(0 bytes) │
+└───────────┴────────────────┴─────────────────┘
+mesh,font
+MESH(2 bytes),NULL
+[{"labels":"SERIES_LABELS(1 bytes)"}]

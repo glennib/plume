@@ -1,0 +1,81 @@
+# Builds the extension on every platform DuckDB v2 previews ship for, appends the metadata footer,
+# and runs the tests against the pinned preview (Python wheel and CLI). Everything goes through the
+# Makefile, so a local `make test` is what CI runs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # platform is the DuckDB platform the footer names; the Makefile derives it from the
+          # host's Rust target triple.
+          - { os: ubuntu-latest, platform: linux_amd64 }
+          - { os: ubuntu-24.04-arm, platform: linux_arm64 }
+          - { os: macos-latest, platform: osx_arm64 }
+          - { os: windows-latest, platform: windows_amd64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        # Git Bash on Windows, so the Makefile's shell commands (cygpath, sha256sum, tar) work.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.19"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Build (debug) and append the footer
+        run: make debug
+      - name: Test (Rust, sqllogictest via the wheel, preview CLI)
+        run: make test
+      - name: Build (release) and append the footer
+        run: make release
+      - name: Test the release build
+        run: make test_sql_release test_cli_release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # duckers.duckdb_extension is duckers.dll, libduckers.dylib or libduckers.so plus the
+          # footer; the file name must stay duckers.duckdb_extension, since DuckDB derives the
+          # entrypoint name (duckers_init_c_api_v2) from it.
+          name: duckers-${{ matrix.platform }}
+          path: build/release/duckers.duckdb_extension
+          if-no-files-found: error
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.19"
+      - run: make lint
+      - name: Bindings match the vendored headers
+        run: |
+          make bindings
+          git diff --exit-code crates/duckers-sys/src/bindings.rs

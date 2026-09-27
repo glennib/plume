@@ -1,7 +1,11 @@
 //! duckers: plotters charts for DuckDB v2, as a loadable extension on the stable v2 C API.
 
 pub mod capi;
-mod spike;
+pub mod envelope;
+mod functions;
+pub mod types;
+
+use capi::{Extension, Result};
 
 /// The extension entrypoint. DuckDB derives the symbol name from the file name (`duckers`) and
 /// the footer's ABI (`C_STRUCT` with a `v2.x.y` C API version selects `<name>_init_c_api_v2`).
@@ -12,5 +16,10 @@ mod spike;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn duckers_init_c_api_v2(input: *mut duckers_sys::duckdb_v2_extension_input) {
     // SAFETY: forwarded from the loader.
-    unsafe { capi::entrypoint(input, spike::load) }
+    unsafe { capi::entrypoint(input, load) }
+}
+
+fn load(ext: &Extension<'_>) -> Result<()> {
+    let types = types::register(ext, envelope::byte_count_summary)?;
+    functions::register(ext, &types)
 }
