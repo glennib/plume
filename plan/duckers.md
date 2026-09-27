@@ -287,6 +287,7 @@ duckers draws `configure_series_labels().draw()` with defaults last.
 | `to_svg(chart [, width, height])` | `SVGBackend::with_string` | `VARCHAR` |
 | `to_png(chart [, width, height])` | `BitMapBackend::with_buffer` + PNG encoding | `BLOB` |
 | `show(chart, viewer := ..., wait := ..., width := ..., height := ...)` | | shows the chart, see [Display](#display); returns the `CHART` |
+| `duckers_set(key, value)`, `duckers_get(key)` | | set or read a process-wide `show()` default, see [Display](#display); `VARCHAR` |
 | `COPY (...) TO 'f.png' (FORMAT png)`, `(FORMAT svg)` | `BitMapBackend::new(path)`, `SVGBackend::new(path)` | a copy function (M7) |
 
 The default size is 640×480 and the maximum 8192 px per side.
@@ -316,7 +317,7 @@ The viewers, in the order the automatic choice tries them:
 | Viewer | How | Where it works | `wait := true` |
 |---|---|---|---|
 | `'terminal'` | Writes the PNG as a kitty graphics sequence (or iTerm2, or sixel) to the controlling terminal (`/dev/tty`, `CONOUT$` on Windows). The image appears above the result table. | kitty, ghostty, WezTerm, iTerm2, Konsole; Windows Terminal via sixel. Not under tmux, not without a controlling terminal. | n/a, returns at once |
-| `'window'` | A native window on its own thread, in-process (`minifb`: no global state, one thread per window). | Linux and Windows, both modes. macOS: only `wait := true`, and only when the call runs on the process main thread (checked at run time); otherwise the next viewer. | blocks until the window is closed |
+| `'window'` | A native window on its own thread, in-process (`minifb`: no global state, one thread per window). | Linux (X11; Wayland desktops through Xwayland) and Windows, both modes. macOS: only `wait := true`, and only when the call runs on the process main thread (checked at run time); otherwise the next viewer. | blocks until the window is closed |
 | `'browser'` | Writes an HTML page to the cache directory and opens the default browser. | Everywhere with a browser. Cannot close the tab when DuckDB exits. | n/a |
 
 Behaviour:
@@ -329,11 +330,20 @@ Behaviour:
   With `wait := true` the shell blocks until the window is closed; Ctrl-C does not close it
   (DuckDB offers no interrupt hook to a scalar function), which the docs say plainly.
 - The process-wide defaults for `viewer` and `wait` come from the environment
-  (`DUCKERS_VIEWER`, `DUCKERS_WAIT`) and can be changed in a session with `duckers_set('viewer', 'browser')`.
+  (`DUCKERS_VIEWER`, `DUCKERS_WAIT`)
+  and can be changed in a session with `duckers_set('viewer', 'browser')`, which returns the new value;
+  `duckers_get('viewer')` reads one.
   They are process-wide because a v2 C-API extension cannot register `SET` options;
   the C++ shim could add real options later.
+  An invalid environment value is an error from every `show()` that needs it, until `duckers_set` replaces it.
+- A named argument left out or passed as `NULL` takes its default (the setting, or 640×480);
+  only a `NULL` chart gives `NULL`.
 - `show()` is volatile, so the optimizer neither folds it at plan time nor caches it.
-  A multi-row result shows every row, capped by `duckers_set('max_show', n)` (default 10).
+  A multi-row result shows every row, capped by `duckers_set('max_show', n)` (default 10; `0` shows nothing).
+  The cap counts per `show()` call in a planned statement, in the call's bind data:
+  every statement the shell or a client plans starts at zero,
+  and a prepared statement keeps one count across its executions.
+  Rows past the cap are returned unchanged.
 - A subprocess viewer (a helper binary owning its own main thread) is the only route to a detached native window on
   macOS.
   It is deliberately not on the roadmap:
@@ -422,6 +432,7 @@ FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
 - **Values are immutable.**
   Every method returns a new value; the same `SERIES` can be drawn on several charts.
 - **NULL in, NULL out** for every scalar function.
+  The exception is `show()`'s named parameters, where `NULL` means the default.
   A series aggregate over zero usable rows returns an empty `SERIES`, which draws nothing.
 - **Errors are raised at the call that can detect them.**
   Type mismatches between arguments are bind errors.
@@ -621,13 +632,30 @@ Each item records the choice, the alternative, and why.
     and `root_fill` (`root.fill`).
     Scalars that share a name with a DuckDB scalar, such as `position`, are overloads and keep their plotters names.
     Alternative: `histogram_series` or `bar_series`; rejected because they name no plotters item.
+13. **Linux windows use X11 only; Wayland desktops reach it through Xwayland.**
+    The Wayland backend of minifb, as minifb builds it, loads the system libwayland.
+    Each closed window then prints about 20 lines of `queue … destroyed while proxies still attached` into the shell.
+    Built without libwayland it closes silently but links `libxkbcommon.so.0`,
+    and the extension would then fail to load where that library is missing.
+    Alternatives: a process-wide libwayland log handler or a stderr redirect
+    (both reach into the host process), or a patched minifb.
+    Rejected for now; the `duckers-view/wayland` cargo feature keeps native Wayland, with the warning, for own builds.
+14. **`max_show` counts per call site, in bind data.**
+    DuckDB gives a scalar function no signal for the start of a query:
+    the init callback's local state is created and dropped per thread and task, several times within one `GROUP BY`.
+    Bind data exists once per planned call and is shared by its threads and executions,
+    so the count is exact for a statement planned once and run once,
+    which is every statement in the shell and every `execute`, `sql` and relation fetch in the Python client.
+    Alternative: a process-wide count reset when no call is executing;
+    rejected because it resets inside a single parallel query.
 
 ## Open questions
 
 - Named parameters are verified on v2 C-API aggregates; scalar functions use the same signature API but were not
   tried (M0 spike 1).
 - Whether duckdb#26109 gets fixed before v2.0 GA, which would also unblock `OVER ()` on series aggregates.
-- macOS and Windows viewer behaviour is inferred from source, not tested (M3 acceptance).
+- macOS and Windows viewer behaviour is inferred from source, not tested;
+  the README lists it as unverified and `docs/manual-acceptance-m3.md` has the checks to run.
 - How the shim is enabled (`active_grammar_extensions` is per-connection) and how it ensures the core is loaded
   (M8).
 - How far the grammar-extension API moves before v2.0 GA (M8).

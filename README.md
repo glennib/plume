@@ -86,6 +86,11 @@ make test_release   # the same on the release build
   `make update_svg` rewrites the expected files, to be reviewed like any other change.
 - `make test_cli_debug`: each `test/cli/<name>.sql` runs in the preview CLI and must print `test/cli/<name>.out`.
   These cover the shell's rendering of duckers values, which the Python runner cannot see.
+- `make test_show_debug`: `show()` in the preview CLI
+  (`scripts/check_show.py`, Linux only):
+  the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in opener,
+  and the sqllogictests in `test/show/` with no terminal and no display.
+  Each process gets a scrubbed environment and a temporary `HOME`, so nothing opens on the desktop.
 
 `make lint` runs rustfmt, clippy and ruff in check mode, and `make fmt` applies the formatters.
 CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64), macOS (arm64) and Windows (x86_64).
@@ -102,9 +107,10 @@ CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64
   which convert DuckDB vectors to calls on `duckers-chart`.
 - `crates/duckers-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
   and the plotters renderer with the embedded font; it does not depend on DuckDB.
-- `crates/duckers-view`: the viewers `show()` will use (M3).
-- `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner.
-- `test/sql/`, `test/svg/`, `test/cli/`: the SQL tests.
+- `crates/duckers-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
+- `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
+  `scripts/check_show.py`: the `show()` checks.
+- `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`: the SQL tests.
 
 ## M2: first charts
 
@@ -207,3 +213,136 @@ A `CHART` passes the `FORMAT blob` check too
   `root_fill` for `root.fill`.
 - The shell's `json` output mode prints the elements of a `SERIES[]` as raw bytes;
   the other modes use the summary.
+
+## M3: show
+
+`show()` renders a chart and hands it to a viewer: an inline image in the terminal, a native window, or a browser tab.
+It returns the chart unchanged, so it can sit anywhere in a query.
+
+```sql
+SELECT chart().draw_series(line_series(day, temp, key := city)).show() FROM weather;
+
+SELECT chart().draw_series(line_series(cos(t), sin(t), order_by := t))
+         .show(viewer := 'window', wait := true, width := 800, height := 800)
+FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
+```
+
+`show(chart, viewer := ..., wait := ..., width := ..., height := ...)`:
+
+- `viewer`: `'auto'`, `'terminal'`, `'window'` or `'browser'` (case-insensitive).
+- `wait`: whether to block until the window is closed.
+  Only the window viewer can block; the others return at once either way.
+- `width`, `height`: the image size in px, 640×480 by default, at most 8192 per side.
+- A named argument left out, or passed as `NULL`, takes its default: the process-wide setting for `viewer` and `wait`,
+  640×480 for the size.
+  A `NULL` chart gives `NULL` and shows nothing.
+- A constant bad `viewer` or size is a bind error; one that comes from a column is an error at run time.
+  When no viewer can work, the query fails with the reason for each viewer tried, e.g. "IO Error: show:
+  no viewer can show the chart here: terminal: cannot open /dev/tty ...; window: no display:
+  neither WAYLAND_DISPLAY nor DISPLAY is set; browser: no graphical session: ...".
+- `show()` is volatile: it is never evaluated at plan time, and runs once per row.
+
+### Viewers
+
+`'auto'` tries these in order and takes the first that works:
+
+1. **terminal**: the PNG as a kitty graphics, iTerm2 or sixel sequence, written to the controlling terminal
+   (`/dev/tty`, `CONOUT$` on Windows), never to stdout.
+   In the DuckDB shell the image appears above the result table, and output redirected with `.output`,
+   `.once` or `> file` stays free of escape sequences.
+   The protocol is chosen from environment variables only, and the terminal is never queried:
+   `TERM=xterm-kitty`/`xterm-ghostty`, Konsole and `TERM_PROGRAM=ghostty` get kitty graphics,
+   WezTerm and iTerm2 get iTerm2 images, foot and Windows Terminal get sixel.
+   It is unavailable inside tmux or screen, in terminals not on that list
+   (xterm, alacritty, VS Code), and without a controlling terminal.
+2. **window**: a native window ([minifb](https://github.com/emoon/rust_minifb)) on a thread of its own,
+   titled `duckers chart N`, closed with the title-bar button or Escape.
+   Without `wait` the call returns once the window is up and the shell carries on;
+   the window stays until it is closed or the process exits.
+   On Linux and the BSDs it needs an X11 display (`DISPLAY`); Wayland desktops provide one through Xwayland.
+3. **browser**: a self-contained HTML page in the cache directory
+   (`$XDG_CACHE_HOME/duckers` or `~/.cache/duckers`, `~/Library/Caches/duckers`, `%LOCALAPPDATA%\duckers`),
+   opened with `xdg-open`, `open` or `ShellExecuteW`.
+   On Linux it needs a graphical session (`WAYLAND_DISPLAY` or `DISPLAY`).
+   Pages older than a day are removed on the next write.
+
+### Settings
+
+The defaults for `viewer` and `wait`, and the multi-row cap, are process-wide:
+a C-API extension cannot register `SET` options.
+
+| Key | Environment | Values | Default |
+|---|---|---|---|
+| `viewer` | `DUCKERS_VIEWER` | `auto`, `terminal`, `window`, `browser` | `auto` |
+| `wait` | `DUCKERS_WAIT` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` | `false` |
+| `max_show` | | a non-negative integer | `10` |
+
+- `duckers_set(key, value)` changes a setting and returns the new value; `value` may be text, a number or a boolean.
+  `duckers_get(key)` returns the current value.
+  Keys and values are case-insensitive, and an invalid key or value is an error that changes nothing.
+- The environment is read the first time a setting is needed.
+  An invalid `DUCKERS_VIEWER` or `DUCKERS_WAIT` is an error from every `show()` that needs that default,
+  naming the variable, until `duckers_set` gives the key a valid value.
+
+```sql
+SELECT duckers_set('viewer', 'browser');
+SELECT duckers_set('max_show', 3), duckers_get('wait');
+```
+
+### The multi-row cap
+
+A query that shows more rows than `max_show` shows the first `max_show` it evaluates
+and still returns every row with its chart; `max_show = 0` shows nothing.
+
+- The count belongs to one `show()` call in one planned statement.
+  Two `show()` calls in the same query are capped separately.
+- Every statement run in the shell, and every `execute`, `sql` or relation fetch in the Python client,
+  is planned anew and starts from zero.
+  A statement prepared once and run many times
+  (`PREPARE` and `EXECUTE`, or a reused prepared statement in a client)
+  keeps one count across its executions,
+  so once `max_show` rows are shown it shows nothing more until it is prepared again.
+  DuckDB gives a scalar function no signal for the start of an execution; per-execution state exists,
+  but DuckDB creates and drops it per thread and task within one query, so it cannot mark a query's start either.
+- "First" means first evaluated.
+  When a query runs `show()` on several threads, which rows are shown is not determined; the number is.
+- Rows past the cap are still checked: a bad `viewer` or size in any row fails the query.
+
+### Caveats
+
+- **Ctrl-C does not close a waiting window.**
+  DuckDB gives a scalar function no way to notice an interrupt.
+  The shell returns to the prompt after the window is closed, without the interrupted result.
+- **tmux and screen** swallow inline images, so `'auto'` skips the terminal inside them and opens a window.
+- **Python** evaluates a query's `SELECT` list when the result is fetched:
+  `con.execute("SELECT duckers_set('viewer', 'window')")` changes nothing until `.fetchall()` or similar,
+  and the same holds for `show()`.
+- **macOS** allows a window only on the process main thread, and nothing pumps its events once `show()` returns.
+  So the window viewer works there only with `wait := true` and only when DuckDB runs the call on the main thread,
+  which `SET threads = 1` makes likely for a small query; otherwise `'auto'` falls through to the browser.
+- **Wayland without Xwayland** has no window viewer: duckers builds minifb's X11 backend only.
+  Its Wayland backend, as minifb builds it, loads the system libwayland,
+  which prints "queue ... destroyed while proxies still attached" to stderr
+  (about 20 lines, between shell prompts)
+  each time a window is closed; built without that, it would make the extension require `libxkbcommon.so.0` to load.
+  A build with the `duckers-view/wayland` cargo feature
+  (`cargo build --lib --release --features duckers-view/wayland && make footer_release`)
+  adds native Wayland windows with that warning.
+- The browser cannot close its tab when DuckDB exits.
+  Snap-packaged browsers cannot read `~/.cache`, so the page may not open in them.
+
+### Platforms
+
+Verified on Linux (Arch, sway with Xwayland) in the pinned preview CLI: the terminal viewer in ghostty,
+windows with and without `wait`, and exit with windows open.
+[`docs/manual-acceptance-m3.md`](docs/manual-acceptance-m3.md) lists the checks to repeat by hand.
+
+Unverified, inferred from the source and documentation:
+
+- **macOS:** the main-thread check (`pthread_main_np`), a blocking window on the main thread, `open` for the browser,
+  and iTerm2 inline images.
+  The macOS window code has not been compiled here.
+- **Windows:** the terminal viewer through `CONOUT$` (sixel in Windows Terminal 1.22 or later),
+  windows on worker threads and process exit with windows open, and `ShellExecuteW` for the browser.
+- Terminals: kitty, WezTerm, iTerm2, foot and Windows Terminal were not run at all;
+  Konsole (kitty graphics) and xterm (sixel) only with the standalone viewer example, not in the shell.
