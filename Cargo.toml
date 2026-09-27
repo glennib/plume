@@ -3,22 +3,4 @@ name = "duckers"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-crate-type = ["cdylib"]
-
-[profile.release]
-lto = true
-strip = true
-
-[[example]]
-# crate-type can't be overridden for specific targets: src/wasm_lib.rs forwards
-# to src/lib.rs so the Wasm build can use staticlib (linking is done by emcc)
-# while native builds use cdylib.
-name = "duckers"
-path = "src/wasm_lib.rs"
-crate-type = ["staticlib"]
-
 [dependencies]
-# The crate version encodes the DuckDB version: 1.10505.x is DuckDB v1.5.5.
-# Keep it in sync with TARGET_DUCKDB_VERSION in the Makefile.
-duckdb = { version = "~1.10505.0", features = ["loadable-extension", "vscalar"] }
