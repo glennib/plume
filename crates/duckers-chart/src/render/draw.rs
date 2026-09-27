@@ -155,6 +155,9 @@ fn draw_on<DB: DrawingBackend>(
                         SeriesLabelSetting::BackgroundStyle(color) => {
                             labels.background_style(color.to_plotters())
                         }
+                        SeriesLabelSetting::Margin(px) => labels.margin(*px),
+                        SeriesLabelSetting::LegendAreaSize(px) => labels.legend_area_size(*px),
+                        SeriesLabelSetting::LabelFont(f) => labels.label_font(text_style(f)),
                     };
                 }
                 labels.draw().map_err(plotters_error)?;

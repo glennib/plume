@@ -781,6 +781,30 @@ impl SeriesLabels {
         Ok(self)
     }
 
+    /// `SeriesLabelStyle::margin`: px of padding inside the legend box.
+    pub fn margin(mut self, margin: i64) -> Result<SeriesLabels> {
+        let margin = px("margin", margin)?;
+        self.style.settings.push(SeriesLabelSetting::Margin(margin));
+        Ok(self)
+    }
+
+    /// `SeriesLabelStyle::legend_area_size`: px width of the glyph column.
+    pub fn legend_area_size(mut self, size: i64) -> Result<SeriesLabels> {
+        let size = px("legend_area_size", size)?;
+        self.style
+            .settings
+            .push(SeriesLabelSetting::LegendAreaSize(size));
+        Ok(self)
+    }
+
+    /// `SeriesLabelStyle::label_font`.
+    pub fn label_font(mut self, font: Font) -> SeriesLabels {
+        self.style
+            .settings
+            .push(SeriesLabelSetting::LabelFont(font));
+        self
+    }
+
     /// `SeriesLabelStyle::draw`: draws the legend at this point of the chain and returns the
     /// chart.
     pub fn draw(self) -> Chart {
@@ -1367,6 +1391,26 @@ mod tests {
                 .border_style("nope", None)
                 .is_err()
         );
+        let labels = Chart::new()
+            .configure_series_labels()
+            .margin(3)
+            .unwrap()
+            .legend_area_size(0)
+            .unwrap()
+            .label_font(Font::sans_serif(9).unwrap());
+        assert_eq!(
+            labels.style.settings,
+            [
+                SeriesLabelSetting::Margin(3),
+                SeriesLabelSetting::LegendAreaSize(0),
+                SeriesLabelSetting::LabelFont(Font {
+                    size: 9,
+                    ..Font::default()
+                })
+            ]
+        );
+        assert!(labels.clone().margin(-2).is_err());
+        assert!(labels.legend_area_size(8193).is_err());
     }
 
     #[test]

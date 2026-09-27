@@ -1,0 +1,61 @@
+# name: test/sql/legend.test
+# description: the SeriesLabelStyle methods on SERIES_LABELS beyond position and the styles
+# group: [duckers]
+
+require duckers
+
+query T
+SELECT chart().configure_series_labels().margin(4).legend_area_size(40).label_font(14).label_font(font('serif', 10, 'italic').color('grey_700'))::VARCHAR
+----
+SERIES_LABELS(margin 4px, legend_area_size 40px, label_font FONT(sans-serif, 14), label_font FONT(serif, 10, italic, #616161)) of CHART(empty)
+
+query T
+SELECT __duckers_debug(chart().configure_series_labels().margin(0).legend_area_size(12)).regexp_extract('settings: .*\] \}')
+----
+settings: [Margin(0), LegendAreaSize(12)] }
+
+# Every option together renders, and the label font's family and colour reach the SVG.
+query T
+SELECT regexp_matches(svg, 'font-family="Fira Sans"[^>]*fill="#1976D2"') AND regexp_matches(svg, '\ntemp\n')
+FROM (
+    SELECT chart().draw_series(line_series(i, i).label('temp'))
+             .configure_series_labels().position('upper_left').margin(6).legend_area_size(36)
+             .border_style('black', 2).background_style(mix('white', 0.8))
+             .label_font(font('Fira Sans', 16).color('blue_700')).draw()
+             .to_svg() AS svg
+    FROM range(5) r(i)
+)
+----
+true
+
+statement error
+SELECT chart().configure_series_labels().margin(-1)
+----
+Invalid Input Error: margin must be between 0 and 8192 px, got -1
+
+statement error
+SELECT chart().configure_series_labels().legend_area_size(10000)
+----
+Invalid Input Error: legend_area_size must be between 0 and 8192 px, got 10000
+
+statement error
+SELECT chart().configure_series_labels().label_font(0)
+----
+Invalid Input Error: label_font: font size must be at least 1 px
+
+statement error
+SELECT chart().configure_series_labels().label_font('big')
+----
+Binder Error
+
+statement error
+SELECT chart().configure_mesh().legend_area_size(3)
+----
+Binder Error
+
+query TTTTT
+SELECT chart().configure_series_labels().margin(NULL) IS NULL, chart().configure_series_labels().legend_area_size(NULL) IS NULL,
+       chart().configure_series_labels().label_font(NULL::FONT) IS NULL, chart().configure_series_labels().label_font(NULL::BIGINT) IS NULL,
+       (NULL::SERIES_LABELS).margin(1) IS NULL
+----
+true	true	true	true	true

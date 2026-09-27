@@ -206,11 +206,11 @@ SELECT __duckers_debug(histogram_vertical('a', 1).margin(0).baseline(-2.5)).rege
 ----
 kind: Histogram(HistogramOptions { margin: 0, baseline: -2.5 })	kind: HistogramHorizontal(HistogramOptions { margin: 12, baseline: 1.0 })
 
-# margin is a method on SERIES and CHART; the first argument picks the overload.
-query TT
-SELECT typeof(histogram_vertical('a', 1).margin(2)), typeof(chart().margin(2))
+# margin is a method on SERIES, CHART and SERIES_LABELS; the first argument picks the overload.
+query TTT
+SELECT typeof(histogram_vertical('a', 1).margin(2)), typeof(chart().margin(2)), typeof(chart().configure_series_labels().margin(2))
 ----
-SERIES	CHART
+SERIES	CHART	SERIES_LABELS
 
 statement error
 SELECT point_series(1, 1).marker('star')

@@ -125,6 +125,9 @@ impl SeriesLabels {
                 SeriesLabelSetting::BackgroundStyle(color) => {
                     format!("background_style {color}")
                 }
+                SeriesLabelSetting::Margin(px) => format!("margin {px}px"),
+                SeriesLabelSetting::LegendAreaSize(px) => format!("legend_area_size {px}px"),
+                SeriesLabelSetting::LabelFont(f) => format!("label_font {}", f.summary()),
             })
             .collect();
         format!(

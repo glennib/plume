@@ -403,6 +403,21 @@ fn register_series_labels(ext: &Extension<'_>, t: &Types) -> Result<()> {
         &[("color", &t.varchar)],
         |l, a| a.check(l.background_style(a.str(1)?)),
     ))?;
+    // `margin` is also a method on CHART and SERIES; the first argument picks the overload.
+    ext.register_scalar(labels("margin", &[("px", &t.bigint)], |l, a| {
+        a.check(l.margin(a.i64(1)?))
+    }))?;
+    ext.register_scalar(labels("legend_area_size", &[("px", &t.bigint)], |l, a| {
+        a.check(l.legend_area_size(a.i64(1)?))
+    }))?;
+    text_style_methods(
+        ext,
+        t,
+        &t.series_labels,
+        "series_labels",
+        "label_font",
+        SeriesLabels::label_font,
+    )?;
     ext.register_scalar(
         scalar("draw", &t.chart, |a| {
             let labels: SeriesLabels = a.value(0)?;

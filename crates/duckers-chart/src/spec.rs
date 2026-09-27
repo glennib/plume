@@ -440,12 +440,21 @@ pub enum SeriesLabelSetting {
     },
     /// `SeriesLabelStyle::background_style`, drawn filled as plotters does.
     BackgroundStyle(Color),
+    /// `SeriesLabelStyle::margin`, px of padding inside the box.
+    Margin(u32),
+    /// `SeriesLabelStyle::legend_area_size`, px width of the glyph column.
+    LegendAreaSize(u32),
+    /// `SeriesLabelStyle::label_font`.
+    LabelFont(Font),
 }
 
 impl SeriesLabelSetting {
     /// The font the setting names, if it takes one.
     pub fn font(&self) -> Option<&Font> {
-        None
+        match self {
+            SeriesLabelSetting::LabelFont(f) => Some(f),
+            _ => None,
+        }
     }
 }
 
