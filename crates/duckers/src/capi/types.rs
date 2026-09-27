@@ -152,14 +152,61 @@ impl TypeId {
     pub const DOUBLE: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE);
     pub const DECIMAL: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL);
     pub const DATE: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_DATE);
+    pub const TIME: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIME);
+    pub const TIME_NS: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIME_NS);
+    pub const TIMESTAMP_S: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_SEC);
+    pub const TIMESTAMP_MS: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_MS);
     pub const TIMESTAMP: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP);
+    pub const TIMESTAMP_NS: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_NS);
     pub const TIMESTAMP_TZ: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ);
+    pub const TIMESTAMP_TZ_NS: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ_NS);
     pub const VARCHAR: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
     pub const BLOB: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_BLOB);
+    pub const INTERVAL: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL);
     pub const LIST: Self = Self(sys::DUCKDB_V2_LOGICAL_TYPE_ID_LIST);
 
+    /// Whether values of this type read as a number through
+    /// [`InputVector::f64`](super::vector::InputVector::f64): every integer width, `FLOAT`,
+    /// `DOUBLE` and `DECIMAL`.
+    pub fn is_numeric(self) -> bool {
+        self.is_integer() || matches!(self, Self::FLOAT | Self::DOUBLE | Self::DECIMAL)
+    }
+
+    /// Whether this is an integer type of any width, signed or not, `HUGEINT` included.
+    pub fn is_integer(self) -> bool {
+        self.is_plain_integer() || matches!(self, Self::HUGEINT | Self::UHUGEINT)
+    }
+
+    /// Whether this is an integer type that fits `i64` or `u64` (`TINYINT` .. `UBIGINT`).
+    pub fn is_plain_integer(self) -> bool {
+        matches!(
+            self,
+            Self::TINYINT
+                | Self::SMALLINT
+                | Self::INTEGER
+                | Self::BIGINT
+                | Self::UTINYINT
+                | Self::USMALLINT
+                | Self::UINTEGER
+                | Self::UBIGINT
+        )
+    }
+
+    /// Whether this is `TIMESTAMP`, `TIMESTAMPTZ` or one of the `TIMESTAMP_*` precisions.
+    pub fn is_timestamp(self) -> bool {
+        matches!(
+            self,
+            Self::TIMESTAMP
+                | Self::TIMESTAMP_S
+                | Self::TIMESTAMP_MS
+                | Self::TIMESTAMP_NS
+                | Self::TIMESTAMP_TZ
+                | Self::TIMESTAMP_TZ_NS
+        )
+    }
+
     /// Whether values of this type read as a plain number through
-    /// [`InputVector::f64`](super::vector::InputVector::f64).
+    /// [`InputVector::f64`](super::vector::InputVector::f64) with a single primitive load.
     pub fn is_plain_numeric(self) -> bool {
         matches!(
             self,
@@ -242,6 +289,30 @@ impl LogicalType {
         }
         buf.truncate(len as usize);
         String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// Value parameter `index` of the type: `DECIMAL`'s width and scale, a `LIST`'s element
+    /// type, ... (see `logical_type_get_param`).
+    pub fn param(&self, index: usize) -> Result<Value> {
+        let mut name = sys::duckdb_v2_identifier_t::default();
+        let mut out = ptr::null_mut();
+        check(|err| unsafe {
+            ffi!(duckdb_v2_logical_type_get_param(
+                self.0,
+                index as sys::idx_t,
+                &mut name,
+                &mut out,
+                err
+            ))
+        })?;
+        Ok(Value(out))
+    }
+
+    /// The width and scale of a `DECIMAL` type.
+    pub fn decimal_width_scale(&self) -> Result<(u8, u8)> {
+        let width = self.param(0)?.as_i64()?;
+        let scale = self.param(1)?.as_i64()?;
+        Ok((width as u8, scale as u8))
     }
 
     /// Deep equality, which tells a custom type from its base type.

@@ -6,7 +6,7 @@ use std::ptr;
 use duckers_sys::{self as sys, ffi};
 
 use super::error::{Error, Result, check};
-use super::types::{LogicalType, TypeId};
+use super::types::{LogicalType, TypeId, Value};
 
 /// A read-only view of an input vector in DuckDB's unified format: data, optional validity mask
 /// and optional selection vector.
@@ -16,9 +16,13 @@ use super::types::{LogicalType, TypeId};
 /// selection vector; compressed and sequence vectors (`range()` produces the latter) are flattened
 /// first, since the view rejects them.
 pub struct InputVector<'a> {
+    handle: sys::duckdb_v2_vector_handle,
     view: sys::duckdb_v2_vector_view,
     rows: usize,
+    ty: LogicalType,
     type_id: TypeId,
+    /// `(width, scale)` of a `DECIMAL` vector.
+    decimal: Option<(u8, u8)>,
     _chunk: PhantomData<&'a ()>,
 }
 
@@ -41,13 +45,27 @@ impl InputVector<'_> {
         let mut ty = ptr::null_mut();
         check(|err| unsafe { ffi!(duckdb_v2_vector_get_logical_type(handle, &mut ty, err)) })?;
         // SAFETY: get_logical_type returns an owned handle.
-        let type_id = unsafe { LogicalType::from_raw(ty) }.id();
+        let ty = unsafe { LogicalType::from_raw(ty) };
+        let type_id = ty.id();
+        let decimal = if type_id == TypeId::DECIMAL {
+            Some(ty.decimal_width_scale()?)
+        } else {
+            None
+        };
         Ok(Self {
+            handle,
             view,
             rows,
+            ty,
             type_id,
+            decimal,
             _chunk: PhantomData,
         })
+    }
+
+    /// The vector's logical type.
+    pub fn logical_type(&self) -> &LogicalType {
+        &self.ty
     }
 
     pub fn rows(&self) -> usize {
@@ -128,12 +146,17 @@ impl InputVector<'_> {
             .map_err(|e| Error::invalid_input(format!("invalid UTF-8 in VARCHAR: {e}")))
     }
 
-    /// The value at `row` of a plain numeric vector (integers of any width, `FLOAT`, `DOUBLE`),
-    /// converted to `f64`. Other types (`DECIMAL`, `HUGEINT`, ...) are an error.
+    /// The value at `row` of a numeric vector (integers of any width, `FLOAT`, `DOUBLE`,
+    /// `DECIMAL`), converted to `f64`. Other types are an error.
     pub fn f64(&self, row: usize) -> Result<f64> {
+        if let Some((_, scale)) = self.decimal {
+            return Ok(self.decimal_unscaled(row)? as f64 / 10f64.powi(i32::from(scale)));
+        }
         // SAFETY: each arm reads the physical type the type id implies.
         unsafe {
             Ok(match self.type_id {
+                TypeId::HUGEINT => self.hugeint(row) as f64,
+                TypeId::UHUGEINT => self.uhugeint(row) as f64,
                 TypeId::TINYINT => self.get::<i8>(row) as f64,
                 TypeId::SMALLINT => self.get::<i16>(row) as f64,
                 TypeId::INTEGER => self.get::<i32>(row) as f64,
@@ -151,6 +174,113 @@ impl InputVector<'_> {
                 }
             })
         }
+    }
+
+    /// The unscaled integer of a `DECIMAL` vector at `row`: the stored value, whose physical type
+    /// follows from the width (`i16` up to 4 digits, `i32` up to 9, `i64` up to 18, `i128` up
+    /// to 38).
+    pub fn decimal_unscaled(&self, row: usize) -> Result<i128> {
+        let Some((width, _)) = self.decimal else {
+            return Err(Error::internal(format!(
+                "decimal_unscaled() on a vector of type id {:?}",
+                self.type_id
+            )));
+        };
+        // SAFETY: the arm matches the storage tier the C API documents for the width.
+        unsafe {
+            Ok(match width {
+                0..=4 => i128::from(self.get::<i16>(row)),
+                5..=9 => i128::from(self.get::<i32>(row)),
+                10..=18 => i128::from(self.get::<i64>(row)),
+                _ => self.hugeint(row),
+            })
+        }
+    }
+
+    /// The scale of a `DECIMAL` vector.
+    pub fn decimal_scale(&self) -> Option<u8> {
+        self.decimal.map(|(_, scale)| scale)
+    }
+
+    /// # Safety
+    ///
+    /// The vector's physical type must be `hugeint_t`.
+    unsafe fn hugeint(&self, row: usize) -> i128 {
+        // SAFETY: guaranteed by the caller.
+        let h = unsafe { self.get::<sys::duckdb_v2_hugeint_t>(row) };
+        (i128::from(h.upper) << 64) | i128::from(h.lower)
+    }
+
+    /// # Safety
+    ///
+    /// The vector's physical type must be `uhugeint_t`.
+    unsafe fn uhugeint(&self, row: usize) -> u128 {
+        // SAFETY: guaranteed by the caller.
+        let h = unsafe { self.get::<sys::duckdb_v2_uhugeint_t>(row) };
+        (u128::from(h.upper) << 64) | u128::from(h.lower)
+    }
+
+    /// The value at `row` of an integer vector of any width as `i128`. `UHUGEINT` values above
+    /// `i128::MAX` are an error.
+    pub fn i128(&self, row: usize) -> Result<i128> {
+        // SAFETY: each arm reads the physical type the type id implies.
+        unsafe {
+            Ok(match self.type_id {
+                TypeId::HUGEINT => self.hugeint(row),
+                TypeId::UHUGEINT => i128::try_from(self.uhugeint(row))
+                    .map_err(|_| Error::invalid_input("UHUGEINT value out of HUGEINT range"))?,
+                TypeId::UBIGINT => i128::from(self.get::<u64>(row)),
+                _ => i128::from(self.i64(row)?),
+            })
+        }
+    }
+
+    /// The cell at `row` as an owned value, for any type and representation. Slow: one
+    /// allocation per call.
+    pub fn value(&self, row: usize) -> Result<Value> {
+        let mut out = ptr::null_mut();
+        check(|err| unsafe {
+            ffi!(duckdb_v2_vector_get_value(
+                self.handle,
+                row as sys::idx_t,
+                &mut out,
+                err
+            ))
+        })?;
+        // SAFETY: vector_get_value returns an owned value.
+        Ok(unsafe { Value::from_raw(out) })
+    }
+
+    /// The element range of a `LIST` vector at `row`, as offsets into [`list_child`].
+    ///
+    /// [`list_child`]: Self::list_child
+    pub fn list_entry(&self, row: usize) -> Result<std::ops::Range<usize>> {
+        if self.type_id != TypeId::LIST {
+            return Err(Error::internal(format!(
+                "list_entry() on a vector of type id {:?}",
+                self.type_id
+            )));
+        }
+        // SAFETY: LIST vectors store `duckdb_v2_list_entry` elements.
+        let entry = unsafe { self.get::<sys::duckdb_v2_list_entry>(row) };
+        let start = entry.offset as usize;
+        Ok(start..start + entry.length as usize)
+    }
+
+    /// The element vector of a `LIST` vector, holding the elements of every row.
+    pub fn list_child(&self) -> Result<InputVector<'_>> {
+        if self.type_id != TypeId::LIST {
+            return Err(Error::internal(format!(
+                "list_child() on a vector of type id {:?}",
+                self.type_id
+            )));
+        }
+        let mut child = ptr::null_mut();
+        check(|err| unsafe { ffi!(duckdb_v2_vector_get_child(self.handle, 0, &mut child, err)) })?;
+        let mut size: sys::idx_t = 0;
+        check(|err| unsafe { ffi!(duckdb_v2_vector_get_size(child, &mut size, err)) })?;
+        // SAFETY: the child lives as long as the parent's chunk, and holds `size` elements.
+        unsafe { InputVector::from_raw(child, size as usize) }
     }
 
     /// The value at `row` of an integer vector as `i64`.
@@ -300,6 +430,30 @@ impl OutputVector<'_> {
 
     pub fn set_str(&mut self, row: usize, s: &str) -> Result<()> {
         self.set_bytes(row, s.as_bytes())
+    }
+
+    /// Writes a list of byte strings into a `LIST` result vector whose elements are `VARCHAR`,
+    /// `BLOB` or a custom type over `BLOB`: the items are appended to the element vector, and
+    /// `row` points at them.
+    pub fn set_list_bytes<B: AsRef<[u8]>>(&mut self, row: usize, items: &[B]) -> Result<()> {
+        let mut child = ptr::null_mut();
+        check(|err| unsafe { ffi!(duckdb_v2_vector_get_child(self.handle, 0, &mut child, err)) })?;
+        let mut offset: sys::idx_t = 0;
+        check(|err| unsafe { ffi!(duckdb_v2_vector_get_size(child, &mut offset, err)) })?;
+        let length = items.len() as sys::idx_t;
+        check(|err| unsafe { ffi!(duckdb_v2_vector_set_size(child, offset + length, err)) })?;
+        {
+            // SAFETY: the element vector belongs to this result vector, and the reservation above
+            // covers rows `offset..offset + length`.
+            let mut elements = unsafe { OutputVector::from_raw(child)? };
+            for (i, item) in items.iter().enumerate() {
+                elements.set_bytes(offset as usize + i, item.as_ref())?;
+            }
+        }
+        let entry = sys::duckdb_v2_list_entry { offset, length };
+        // SAFETY: LIST vectors store `duckdb_v2_list_entry` elements.
+        unsafe { self.set(row, entry) };
+        Ok(())
     }
 }
 
