@@ -124,6 +124,72 @@ FROM range(2) r(i)
 ----
 stroke_width: 2
 
+# marker picks the PointSeries element, case-insensitively.
+query T
+SELECT list_transform(['circle', 'Cross', 'TRIANGLE', 'pixel'],
+    lambda m: __duckers_debug(point_series(1, 1).marker(m)).regexp_extract('marker: [A-Za-z]+'))
+----
+['marker: Circle', 'marker: Cross', 'marker: Triangle', 'marker: Pixel']
+
+# margin and baseline set Histogram::margin and Histogram::baseline, on both orientations.
+query TT
+SELECT __duckers_debug(histogram_vertical('a', 1).margin(0).baseline(-2.5)).regexp_extract('kind: [^)]*\)'),
+       __duckers_debug(histogram_horizontal('a', 1).margin(12).baseline(1)).regexp_extract('kind: [^)]*\)')
+----
+kind: Histogram(HistogramOptions { margin: 0, baseline: -2.5 })	kind: HistogramHorizontal(HistogramOptions { margin: 12, baseline: 1.0 })
+
+# margin is a method on SERIES and CHART; the first argument picks the overload.
+query TT
+SELECT typeof(histogram_vertical('a', 1).margin(2)), typeof(chart().margin(2))
+----
+SERIES	CHART
+
+statement error
+SELECT point_series(1, 1).marker('star')
+----
+Invalid Input Error: marker: unknown PointSeries marker 'star': expected 'circle' (Circle), 'cross' (Cross), 'triangle' (TriangleMarker) or 'pixel' (Pixel)
+
+statement error
+SELECT line_series(1, 1).marker('cross')
+----
+Invalid Input Error: marker does not apply to line_series values: it is the element type of PointSeries::new and applies to point_series
+
+statement error
+SELECT point_series(1, 1).margin(3)
+----
+Invalid Input Error: margin does not apply to point_series values: it is Histogram::margin and applies to histogram_vertical and histogram_horizontal
+
+statement error
+SELECT line_series(1, 1).baseline(3)
+----
+Invalid Input Error: baseline does not apply to line_series values: it is Histogram::baseline and applies to histogram_vertical and histogram_horizontal
+
+statement error
+SELECT histogram_vertical(1, 1).margin(-1)
+----
+Invalid Input Error: margin must be between 0 and 8192 px, got -1
+
+statement error
+SELECT histogram_vertical(1, 1).baseline('inf'::DOUBLE)
+----
+Invalid Input Error: baseline must be finite, got inf
+
+statement error
+SELECT point_series(1, 1).marker(1)
+----
+Binder Error
+
+statement error
+SELECT histogram_vertical(1, 1).baseline('x')
+----
+Conversion Error
+
+query TTTT
+SELECT (NULL::SERIES).marker('cross') IS NULL, point_series(1, 1).marker(NULL) IS NULL,
+       histogram_vertical(1, 1).margin(NULL) IS NULL, histogram_vertical(1, 1).baseline(NULL) IS NULL
+----
+true	true	true	true
+
 # Series methods apply to each element of a keyed result through list_transform.
 query T
 SELECT list_transform(line_series(i, i, key := i % 2), lambda s, n: s.stroke_width(2).style('palette99:' || n))::VARCHAR

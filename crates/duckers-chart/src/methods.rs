@@ -8,8 +8,8 @@ use crate::color::Color;
 use crate::error::{Error, Result};
 use crate::spec::{
     Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, DrawOp, Font, FontStyle, LabelPosition,
-    Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle,
-    SeriesLabels, Sides,
+    Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind, SeriesLabelSetting,
+    SeriesLabelStyle, SeriesLabels, Sides,
 };
 
 /// The largest pixel size any size argument accepts, the same as the largest image side.
@@ -130,6 +130,81 @@ impl Series {
                 &self,
             )),
         }
+    }
+
+    /// `marker(name)`: the element type of `PointSeries::new` (`Circle`, `Cross`,
+    /// `TriangleMarker`, `Pixel`).
+    pub fn marker(mut self, name: &str) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::Point(options) => {
+                options.marker = Marker::parse(name)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "marker",
+                "the element type of PointSeries::new and applies to point_series",
+                &self,
+            )),
+        }
+    }
+
+    /// `Histogram::margin`: px left free on each side of a bar.
+    pub fn margin(mut self, margin: i64) -> Result<Series> {
+        match &mut self.kind {
+            SeriesKind::Histogram(options) | SeriesKind::HistogramHorizontal(options) => {
+                options.margin = px("margin", margin)?;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "margin",
+                "Histogram::margin and applies to histogram_vertical and histogram_horizontal",
+                &self,
+            )),
+        }
+    }
+
+    /// `Histogram::baseline`: where the bars start, in the units of the value axis.
+    pub fn baseline(mut self, baseline: f64) -> Result<Series> {
+        if !baseline.is_finite() {
+            return Err(Error::invalid(format!(
+                "baseline must be finite, got {baseline}"
+            )));
+        }
+        match &mut self.kind {
+            SeriesKind::Histogram(options) | SeriesKind::HistogramHorizontal(options) => {
+                options.baseline = baseline;
+                Ok(self)
+            }
+            _ => Err(not_applicable(
+                "baseline",
+                "Histogram::baseline and applies to histogram_vertical and histogram_horizontal",
+                &self,
+            )),
+        }
+    }
+}
+
+impl Marker {
+    pub(crate) const NAMED: [(&'static str, Marker); 4] = [
+        ("circle", Marker::Circle),
+        ("cross", Marker::Cross),
+        ("triangle", Marker::Triangle),
+        ("pixel", Marker::Pixel),
+    ];
+
+    /// A marker name, case-insensitive.
+    pub fn parse(name: &str) -> Result<Marker> {
+        let key = name.trim().to_ascii_lowercase();
+        Marker::NAMED
+            .iter()
+            .find(|(n, _)| *n == key)
+            .map(|(_, m)| *m)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "unknown PointSeries marker '{name}': expected 'circle' (Circle), \
+                     'cross' (Cross), 'triangle' (TriangleMarker) or 'pixel' (Pixel)"
+                ))
+            })
     }
 }
 
@@ -661,6 +736,64 @@ mod tests {
             .y_range(RangeValue::Number(0.0), RangeValue::Number(1.0))
             .unwrap_err();
         assert!(err.message().contains("category y axis"), "{err}");
+    }
+
+    #[test]
+    fn markers_margins_and_baselines() {
+        let point = Series {
+            kind: SeriesKind::Point(crate::spec::PointOptions {
+                size: 3,
+                marker: Marker::Circle,
+            }),
+            ..line(Column::Numeric(vec![]))
+        };
+        for (name, marker) in [
+            ("Cross", Marker::Cross),
+            (" triangle", Marker::Triangle),
+            ("PIXEL", Marker::Pixel),
+            ("circle", Marker::Circle),
+        ] {
+            let s = point.clone().marker(name).unwrap();
+            assert!(matches!(s.kind, SeriesKind::Point(o) if o.marker == marker));
+        }
+        let err = point.clone().marker("star").unwrap_err();
+        assert!(
+            err.message()
+                .starts_with("unknown PointSeries marker 'star': expected 'circle'"),
+            "{err}"
+        );
+        let err = line(Column::Numeric(vec![])).marker("cross").unwrap_err();
+        assert_eq!(
+            err.message(),
+            "marker does not apply to line_series values: it is the element type of \
+             PointSeries::new and applies to point_series"
+        );
+
+        let h = histogram(Column::Integer(vec![1]))
+            .margin(0)
+            .unwrap()
+            .baseline(-2.5)
+            .unwrap();
+        assert_eq!(
+            h.kind,
+            SeriesKind::Histogram(HistogramOptions {
+                margin: 0,
+                baseline: -2.5
+            })
+        );
+        assert!(histogram(Column::Integer(vec![1])).margin(-1).is_err());
+        assert!(
+            histogram(Column::Integer(vec![1]))
+                .baseline(f64::NAN)
+                .is_err()
+        );
+        let err = point.clone().margin(3).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "margin does not apply to point_series values: it is Histogram::margin and applies \
+             to histogram_vertical and histogram_horizontal"
+        );
+        assert!(point.baseline(1.0).is_err());
     }
 
     #[test]

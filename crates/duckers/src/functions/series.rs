@@ -242,5 +242,31 @@ fn register_methods(ext: &Extension<'_>, t: &Types) -> Result<()> {
         })
         .param("series", &t.series)
         .param("px", &t.bigint),
+    )?;
+    ext.register_scalar(
+        scalar("marker", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.marker(a.str(1)?))?.encode())
+        })
+        .param("series", &t.series)
+        .param("name", &t.varchar),
+    )?;
+    // `margin` is also a method on CHART and SERIES_LABELS; DuckDB picks the overload by the
+    // type of the first argument.
+    ext.register_scalar(
+        scalar("margin", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.margin(a.i64(1)?))?.encode())
+        })
+        .param("series", &t.series)
+        .param("px", &t.bigint),
+    )?;
+    ext.register_scalar(
+        scalar("baseline", &t.series, |a| {
+            let s: Series = a.value(0)?;
+            Ok(a.check(s.baseline(a.f64(1)?))?.encode())
+        })
+        .param("series", &t.series)
+        .param("value", &t.double),
     )
 }
