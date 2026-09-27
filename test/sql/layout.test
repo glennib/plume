@@ -1,0 +1,307 @@
+# name: test/sql/layout.test
+# description: Layout: split_evenly, titled, pie and the methods on a pie CHART
+# group: [duckers]
+
+require duckers
+
+statement ok
+CREATE TABLE articles AS
+SELECT * FROM (VALUES ('sport', 412), ('culture', 158), ('news', 530), ('economy', 201), ('opinion', 97)) s(section, n)
+
+statement ok
+CREATE MACRO has_text(svg, t) AS svg LIKE '%' || chr(10) || t || chr(10) || '%'
+
+# split_evenly(charts, rows, cols): DrawingArea::split_evenly, the cells filled row-major. A NULL
+# element is a blank cell, and so are the cells past the last chart.
+query T
+SELECT split_evenly([chart(), NULL, chart()], 2, 2)::VARCHAR
+----
+CHART(grid 2x2, 2 charts)
+
+query T
+SELECT typeof(split_evenly([chart()], 1, 1))
+----
+CHART
+
+query T
+SELECT __duckers_debug(split_evenly([NULL], 1, 2)).regexp_extract('Grid \{ rows: 1, cols: 2, cells: \[None\]')
+----
+Grid { rows: 1, cols: 2, cells: [None]
+
+query T
+SELECT split_evenly([], 3, 1)::VARCHAR
+----
+CHART(grid 3x1, 0 charts)
+
+statement error
+SELECT split_evenly([chart(), chart(), chart()], 1, 2)
+----
+Invalid Input Error: split_evenly: 3 charts do not fit a 1x2 grid of 2 cells
+
+statement error
+SELECT split_evenly([chart()], 0, 1)
+----
+Invalid Input Error: split_evenly: rows must be between 1 and 64, got 0
+
+statement error
+SELECT split_evenly([chart()], 1, 65)
+----
+Invalid Input Error: split_evenly: cols must be between 1 and 64, got 65
+
+query T
+SELECT split_evenly([chart()], 64, 64)::VARCHAR
+----
+CHART(grid 64x64, 1 chart)
+
+statement error
+SELECT split_evenly(['a'], 1, 1)
+----
+Binder Error: No function matches the given name and argument types 'split_evenly(VARCHAR[]
+
+# NULL in, NULL out.
+query TTT
+SELECT split_evenly(NULL, 1, 1) IS NULL, split_evenly([chart()], NULL, 1) IS NULL,
+       split_evenly([chart()], 1, NULL) IS NULL
+----
+true	true	true
+
+# Grids nest: a cell may be a grid or a titled chart.
+query T
+SELECT split_evenly([chart(), split_evenly([chart(), chart()], 2, 1), chart().titled('t')], 1, 3)::VARCHAR
+----
+CHART(grid 1x3, 3 charts)
+
+# One chart per group, and a grid of them.
+query T
+SELECT split_evenly(list(c), 1, 2)::VARCHAR
+FROM (SELECT g, chart().draw_series(line_series(i, i)) AS c FROM range(4) t(i), (VALUES (1), (2)) v(g) GROUP BY g)
+----
+CHART(grid 1x2, 2 charts)
+
+# titled(chart, text [, size | font]): DrawingArea::titled, 20 px sans-serif unless given.
+query T
+SELECT chart().titled('Overview')::VARCHAR
+----
+CHART(titled 'Overview', empty)
+
+query T
+SELECT split_evenly([chart(), chart(), chart()], 2, 2).titled('Overview')::VARCHAR
+----
+CHART(titled 'Overview', grid 2x2, 3 charts)
+
+query TTT
+SELECT __duckers_debug(chart().titled('a')).regexp_extract('size: [0-9]+'),
+       __duckers_debug(chart().titled('a', 30)).regexp_extract('size: [0-9]+'),
+       __duckers_debug(chart().titled('a', font('serif', 12, 'bold'))).regexp_extract('family: "[a-z-]*", size: [0-9]+, style: [A-Za-z]+')
+----
+size: 20	size: 30	family: "serif", size: 12, style: Bold
+
+# The title strip takes the inner chart's fill until root_fill changes it.
+query TT
+SELECT __duckers_debug(chart().root_fill('grey').titled('a')).regexp_extract('^Titled \{[^}]*\}[^}]*\}'),
+       __duckers_debug(chart().titled('a').root_fill('red')).regexp_extract('^Titled \{[^}]*\}[^}]*\}')
+----
+Titled { text: "a", font: Font { family: "sans-serif", size: 20, style: Normal, color: None }, fill: Color { r: 158, g: 158, b: 158, a: 1.0 }	Titled { text: "a", font: Font { family: "sans-serif", size: 20, style: Normal, color: None }, fill: Color { r: 255, g: 0, b: 0, a: 1.0 }
+
+statement error
+SELECT chart().titled('a', 0)
+----
+Invalid Input Error: titled: font size must be at least 1 px
+
+query TT
+SELECT (NULL::CHART).titled('a') IS NULL, chart().titled(NULL) IS NULL
+----
+true	true
+
+# The builder methods are errors on a grid, titled or pie root, naming the method and the root.
+statement error
+SELECT split_evenly([chart()], 1, 1).draw_series(line_series(1, 1))
+----
+Invalid Input Error: draw_series applies to a cartesian chart (ChartBuilder and ChartContext), and this CHART is a grid 1x1 (split_evenly)
+
+statement error
+SELECT chart().titled('t').margin(3)
+----
+Invalid Input Error: margin applies to a cartesian chart (ChartBuilder and ChartContext), and this CHART is a titled chart (titled)
+
+foreach method margin(1) margin_top(1) x_label_area_size(1) set_all_label_area_size(1) x_range(0,1) y_range(0,1) x_log_scale() y_monthly() configure_mesh() configure_series_labels() set_secondary_coord() secondary_y_range(0,1) draw_secondary_series(line_series(1,1)) configure_secondary_axes()
+
+statement error
+SELECT split_evenly([chart()], 2, 2).${method}
+----
+applies to a cartesian chart (ChartBuilder and ChartContext), and this CHART is a grid 2x2 (split_evenly)
+
+endloop
+
+# caption points at titled.
+statement error
+SELECT split_evenly([chart()], 1, 1).caption('x')
+----
+Invalid Input Error: caption applies to a cartesian chart (ChartBuilder::caption), and this CHART is a grid 1x1 (split_evenly), which is not drawn through a ChartBuilder; use titled(chart, text) for a title above it
+
+# root_fill, titled and split_evenly work on every root.
+query TTT
+SELECT split_evenly([chart()], 1, 1).root_fill('red')::VARCHAR,
+       split_evenly([chart()], 1, 1).titled('t').root_fill('red')::VARCHAR,
+       split_evenly([split_evenly([chart()], 1, 1).titled('t')], 1, 1)::VARCHAR
+----
+CHART(grid 1x1, 1 chart)	CHART(titled 't', grid 1x1, 1 chart)	CHART(grid 1x1, 1 chart)
+
+# Rendering: every cell is drawn in its own area, with its own caption.
+query TTT
+SELECT has_text(g, 'left'), has_text(g, 'right'), has_text(g, 'Both')
+FROM (SELECT split_evenly([chart().caption('left'), chart().caption('right')], 1, 2).titled('Both').to_svg() AS g)
+----
+true	true	true
+
+# pie(size, label): one slice per row, in label order unless order_by := says otherwise.
+query T
+SELECT pie(n, section)::VARCHAR FROM articles
+----
+CHART(pie, 5 slices)
+
+query T
+SELECT __duckers_debug(pie(n, section)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]')
+FROM articles
+----
+Pie { sizes: [158.0, 201.0, 530.0, 97.0, 412.0], labels: ["culture", "economy", "news", "opinion", "sport"]
+
+query T
+SELECT __duckers_debug(pie(n, section, order_by := -n)).regexp_extract('labels: [^]]*\]')
+FROM articles
+----
+labels: ["news", "sport", "economy", "culture", "opinion"]
+
+# Ties on the label are broken by size; labels sort as their type does and show as ::VARCHAR.
+query TT
+SELECT __duckers_debug(pie(n, l)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]'),
+       __duckers_debug(pie(n, l::INTEGER)).regexp_extract('labels: [^]]*\]')
+FROM (VALUES (3, '10'), (1, '9'), (2, '10')) t(n, l)
+----
+Pie { sizes: [2.0, 3.0, 1.0], labels: ["10", "10", "9"]	labels: ["9", "10", "10"]
+
+# Rows with a NULL, NaN, infinite, zero or negative size are skipped; a NULL label is empty.
+query TT
+SELECT pie(n, s)::VARCHAR, __duckers_debug(pie(n, s)).regexp_extract('labels: [^]]*\]')
+FROM (VALUES (1, 'a'), (NULL, 'b'), ('nan'::DOUBLE, 'c'), ('inf'::DOUBLE, 'd'), (0, 'e'), (-1, 'f'), (2, NULL)) t(n, s)
+----
+CHART(pie, 2 slices)	labels: ["a", ""]
+
+query T
+SELECT pie(n, s)::VARCHAR FROM (SELECT 1 AS n, 'a' AS s WHERE false)
+----
+CHART(pie, 0 slices)
+
+# One pie per group.
+query II
+SELECT g, pie(i + 1, i)::VARCHAR = 'CHART(pie, 3 slices)' FROM range(6) t(i), (VALUES (1), (2)) v(g)
+WHERE i % 2 = g - 1 GROUP BY g ORDER BY g
+----
+1	true
+2	true
+
+statement error
+SELECT pie(section, n) FROM articles
+----
+Binder Error: pie: size must be a number, got VARCHAR
+
+statement error
+SELECT pie(n, section, key := section) FROM articles
+----
+Binder Error
+
+# The methods of plotters' Pie, and the radius argument of Pie::new.
+query T
+SELECT __duckers_debug(pie(n, section).start_angle(-90).label_style(14).percentages(font('serif', 10))
+         .label_offset(-5).radius(100)).regexp_extract('settings: .*')
+FROM articles
+----
+settings: [StartAngle(-90.0), LabelStyle(Font { family: "sans-serif", size: 14, style: Normal, color: None }), Percentages(Font { family: "serif", size: 10, style: Normal, color: None }), LabelOffset(-5), Radius(100)] }
+
+statement error
+SELECT pie(n, section).radius(0) FROM articles
+----
+Invalid Input Error: radius must be at least 1 px
+
+statement error
+SELECT pie(n, section).start_angle('inf'::DOUBLE) FROM articles
+----
+Invalid Input Error: start_angle must be a finite number of degrees, got inf
+
+statement error
+SELECT pie(n, section).label_offset(10000) FROM articles
+----
+Invalid Input Error: label_offset must be between -8192 and 8192 px, got 10000
+
+# The pie methods are errors on other roots, and the builder methods on a pie.
+foreach method start_angle(90) label_style(10) percentages(10) label_offset(3) radius(50)
+
+statement error
+SELECT chart().${method}
+----
+applies to a pie (plotters' Pie, made by the pie aggregate), and this CHART is a cartesian chart (chart())
+
+endloop
+
+statement error
+SELECT pie(n, section).caption('Share') FROM articles
+----
+Invalid Input Error: caption applies to a cartesian chart (ChartBuilder::caption), and this CHART is a pie (the pie aggregate), which is not drawn through a ChartBuilder; use titled(chart, text) for a title above it
+
+statement error
+SELECT pie(n, section).draw_series(line_series(1, 1)) FROM articles
+----
+Invalid Input Error: draw_series applies to a cartesian chart (ChartBuilder and ChartContext), and this CHART is a pie (the pie aggregate)
+
+# label_style is also a MESH method; the first argument picks the overload.
+query T
+SELECT chart().configure_mesh().label_style(10)::VARCHAR
+----
+MESH(label_style FONT(sans-serif, 10)) of CHART(empty)
+
+query T
+SELECT pie(n, section).root_fill('grey').titled('Share')::VARCHAR FROM articles
+----
+CHART(titled 'Share', pie, 5 slices)
+
+# Rendering: the labels, and the percentages with percentages(...).
+query TTT
+SELECT has_text(p.to_svg(), 'news'), has_text(p.to_svg(), '37.9%'), has_text(p.percentages(10).to_svg(), '37.9%')
+FROM (SELECT pie(n, section) AS p FROM articles)
+----
+true	false	true
+
+# show() and COPY take every root. With max_show at 0 show() returns the chart unchanged.
+statement ok
+SELECT duckers_set('max_show', 0)
+
+query TT
+SELECT g.show()::VARCHAR, p.show()::VARCHAR
+FROM (SELECT split_evenly([chart(), NULL], 1, 2) AS g, (SELECT pie(n, section) FROM articles) AS p)
+----
+CHART(grid 1x2, 1 chart)	CHART(pie, 5 slices)
+
+statement ok
+SELECT duckers_set('max_show', 10)
+
+statement ok
+COPY (SELECT split_evenly([chart().caption('a'), NULL, (SELECT pie(n, section) FROM articles)], 2, 2).titled('Grid'))
+TO '__WORKING_DIRECTORY__/build/test-sql/layout_grid.png' (FORMAT png, WIDTH 400, HEIGHT 300)
+
+query T
+SELECT content = (SELECT split_evenly([chart().caption('a'), NULL, (SELECT pie(n, section) FROM articles)], 2, 2)
+                           .titled('Grid').to_png(400, 300))
+FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/layout_grid.png')
+----
+true
+
+statement ok
+COPY (SELECT pie(n, section).percentages(10) FROM articles)
+TO '__WORKING_DIRECTORY__/build/test-sql/layout_pie.svg' (FORMAT svg)
+
+# read_text names the file with the OS separator, so only the file name is compared.
+query TT
+SELECT parse_filename(filename), content = (SELECT pie(n, section).percentages(10).to_svg() FROM articles)
+FROM read_text('__WORKING_DIRECTORY__/build/test-sql/layout_pie.svg')
+----
+layout_pie.svg	true

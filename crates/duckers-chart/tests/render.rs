@@ -1,14 +1,15 @@
 //! Render tests: the plan's worked examples that M2 covers, built with the calls the SQL layer
 //! makes, plus the axis kinds and edge cases, and M4's styling (mesh, legend, log scales,
-//! horizontal histograms, markers, builder sizes) and M5's series kinds, stepped histograms and
-//! monthly and yearly axes, as `test/svg/` renders them from SQL.
+//! horizontal histograms, markers, builder sizes), M5's series kinds, stepped histograms and
+//! monthly and yearly axes, and M6's secondary axes, grids, titles and pies, as `test/svg/`
+//! renders them from SQL.
 //!
 //! Set `DUCKERS_CHART_PNG_DIR` to also write every chart as a PNG into that directory.
 
 use duckers_chart::spec::MeshSetting;
 use duckers_chart::{
-    Accumulator, Chart, Font, Key, RangeValue, Root, Series, SeriesAggregate, SeriesBinding,
-    SortKey, SqlType, Value, XValue, mix, to_png, to_rgb, to_svg,
+    Accumulator, Chart, Font, Key, PieAccumulator, RangeValue, Root, Series, SeriesAggregate,
+    SeriesBinding, SortKey, SqlType, Value, XValue, mix, to_png, to_rgb, to_svg,
 };
 
 /// One row of an aggregate call.
@@ -895,6 +896,219 @@ fn yearly() -> Chart {
         .unwrap()
 }
 
+/// The monthly climate of Bergen: (month number, name, °C, mm).
+const CLIMATE: [(i64, &str, f64, f64); 12] = [
+    (1, "Jan", 2.1, 250.0),
+    (2, "Feb", 2.2, 191.0),
+    (3, "Mar", 3.9, 211.0),
+    (4, "Apr", 6.9, 150.0),
+    (5, "May", 10.8, 118.0),
+    (6, "Jun", 13.8, 127.0),
+    (7, "Jul", 15.2, 162.0),
+    (8, "Aug", 15.1, 238.0),
+    (9, "Sep", 12.1, 293.0),
+    (10, "Oct", 8.4, 288.0),
+    (11, "Nov", 4.9, 283.0),
+    (12, "Dec", 2.7, 274.0),
+];
+
+/// `test/svg/dual_axis.sql`: bars on the secondary y axis, a line on the primary one.
+fn dual_axis() -> Chart {
+    let rows = |value: fn(&(i64, &str, f64, f64)) -> f64| {
+        CLIMATE
+            .iter()
+            .map(|c| Row {
+                order_by: Some(SortKey::Int(c.0.into())),
+                ..row(XValue::Category(c.1.into()), value(c))
+            })
+            .collect()
+    };
+    let rain = one(SeriesAggregate::Histogram, SqlType::Varchar, rows(|c| c.3))
+        .style(&mix("blue", 0.4).unwrap(), None)
+        .unwrap()
+        .label("precipitation");
+    let temp = one(SeriesAggregate::LineSeries, SqlType::Varchar, rows(|c| c.2))
+        .style("red", Some(2))
+        .unwrap()
+        .point_size(3)
+        .unwrap()
+        .label("temperature");
+    Chart::new()
+        .caption("Bergen climate", Some(24))
+        .unwrap()
+        .y_range(RangeValue::Number(0.0), RangeValue::Number(16.0))
+        .unwrap()
+        .configure_mesh()
+        .y_desc("°C")
+        .draw()
+        .configure_secondary_axes()
+        .y_desc("mm")
+        .y_label_formatter("{:.0f}")
+        .unwrap()
+        .draw()
+        .draw_secondary_series(rain)
+        .unwrap()
+        .draw_series(temp)
+        .unwrap()
+        .configure_series_labels()
+        .position("upper_left")
+        .unwrap()
+        .background_style("white")
+        .unwrap()
+        .border_style("black", None)
+        .unwrap()
+        .draw()
+}
+
+/// Squares on the primary axes, roots on secondary axes with another x range, both with the
+/// default axes and the one legend.
+fn secondary_defaults() -> Chart {
+    let squares = (0..10)
+        .map(|i| row(XValue::Integer(i), (i * i) as f64))
+        .collect();
+    let roots = (0..10)
+        .map(|i| row(XValue::Integer(i * 2), (i as f64).sqrt()))
+        .collect();
+    Chart::new()
+        .draw_series(one(SeriesAggregate::LineSeries, SqlType::Integer, squares).label("squares"))
+        .unwrap()
+        .draw_secondary_series(
+            one(SeriesAggregate::LineSeries, SqlType::Integer, roots).label("roots"),
+        )
+        .unwrap()
+}
+
+/// `SELECT pie(n, section, order_by := ...) FROM articles`.
+fn articles_pie(order_by_size: bool) -> duckers_chart::spec::Pie {
+    let mut acc = PieAccumulator::new();
+    for (section, n) in [
+        ("sport", 412.0),
+        ("culture", 158.0),
+        ("news", 530.0),
+        ("economy", 201.0),
+        ("opinion", 97.0),
+    ] {
+        let order = order_by_size.then_some(SortKey::Float(-n));
+        acc.push(
+            Some(n),
+            SortKey::Text(section.into()),
+            Some(section.into()),
+            order,
+        );
+    }
+    acc.finish().into_pie("pie").unwrap()
+}
+
+/// `test/svg/pie.sql`.
+fn pie() -> Root {
+    let pie = articles_pie(true)
+        .start_angle(-90.0)
+        .unwrap()
+        .label_style(Font::sans_serif(14).unwrap())
+        .percentages(
+            Font::new("sans-serif", 12, None)
+                .unwrap()
+                .color("white")
+                .unwrap(),
+        );
+    Root::Pie(pie)
+}
+
+/// `test/svg/titled.sql`.
+fn titled() -> Root {
+    let rows = weather(0)
+        .into_iter()
+        .map(|(d, t)| row(XValue::Date(d), t))
+        .collect();
+    let area = one(SeriesAggregate::AreaSeries, SqlType::Date, rows)
+        .style(&mix("teal", 0.4).unwrap(), None)
+        .unwrap()
+        .border_style("teal", Some(2))
+        .unwrap();
+    let font = Font::new("serif", 24, Some("bold"))
+        .unwrap()
+        .color("#333333")
+        .unwrap();
+    Root::from(Chart::new().draw_series(area).unwrap())
+        .titled_font("Oslo, first 60 days of 2024", font)
+}
+
+/// `test/svg/grid.sql`: a 2x2 grid of titled charts with a blank cell, under a title.
+fn grid() -> Root {
+    let temperature = Root::from(cities().configure_mesh().x_labels(4).unwrap().draw());
+    let share = Root::Pie(
+        articles_pie(false)
+            .label_style(Font::sans_serif(11).unwrap())
+            .percentages(Font::sans_serif(10).unwrap()),
+    );
+    // The SQL draws the articles bars without their caption.
+    let mut bars = articles();
+    bars.caption = None;
+    Root::split_evenly(
+        vec![
+            Some(temperature.titled("Temperature", None).unwrap()),
+            Some(Root::from(bars).titled("Articles", None).unwrap()),
+            Some(share.titled("Share", None).unwrap()),
+        ],
+        2,
+        2,
+    )
+    .unwrap()
+    .fill("grey_100")
+    .unwrap()
+    .titled("Overview", Some(28))
+    .unwrap()
+}
+
+/// A nested grid: a chart beside a 2x1 grid of two charts.
+fn grid_nested() -> Root {
+    let city = |i: usize, name: &str, color: &str| {
+        let rows = weather(i)
+            .into_iter()
+            .map(|(d, t)| row(XValue::Date(d), t))
+            .collect();
+        let line = one(SeriesAggregate::LineSeries, SqlType::Date, rows)
+            .style(color, None)
+            .unwrap();
+        Some(Root::from(
+            Chart::new()
+                .caption(name, Some(16))
+                .unwrap()
+                .configure_mesh()
+                .x_labels(4)
+                .unwrap()
+                .draw()
+                .draw_series(line)
+                .unwrap(),
+        ))
+    };
+    let right = Root::split_evenly(
+        vec![city(0, "Oslo", "red"), city(2, "Tromsø", "blue")],
+        2,
+        1,
+    )
+    .unwrap();
+    Root::split_evenly(
+        vec![
+            Some(Root::from(
+                Chart::new()
+                    .caption("All cities", Some(16))
+                    .unwrap()
+                    .configure_mesh()
+                    .x_labels(4)
+                    .unwrap()
+                    .draw()
+                    .draw_series_list(cities().series().cloned())
+                    .unwrap(),
+            )),
+            Some(right),
+        ],
+        1,
+        2,
+    )
+    .unwrap()
+}
+
 /// All charts, with the size they are rendered at.
 fn charts() -> Vec<(&'static str, Root, (u32, u32))> {
     let charts: Vec<(&'static str, Chart, (u32, u32))> = vec![
@@ -926,10 +1140,23 @@ fn charts() -> Vec<(&'static str, Root, (u32, u32))> {
         ("monthly_bands", monthly_bands(), (640, 400)),
         ("yearly", yearly(), (800, 400)),
     ];
-    charts
+    let mut roots: Vec<(&'static str, Root, (u32, u32))> = charts
         .into_iter()
         .map(|(name, chart, size)| (name, chart.into(), size))
-        .collect()
+        .collect();
+    roots.extend([
+        ("dual_axis", dual_axis().into(), (640, 480)),
+        (
+            "secondary_defaults",
+            secondary_defaults().into(),
+            (640, 480),
+        ),
+        ("pie", pie(), (640, 480)),
+        ("titled", titled(), (640, 480)),
+        ("grid", grid(), (800, 600)),
+        ("grid_nested", grid_nested(), (800, 480)),
+    ]);
+    roots
 }
 
 #[test]
@@ -1112,6 +1339,103 @@ mod snapshots {
     snapshot!(monthly);
     snapshot!(monthly_bands);
     snapshot!(yearly);
+    snapshot!(dual_axis);
+    snapshot!(secondary_defaults);
+    snapshot!(pie);
+    snapshot!(titled);
+    snapshot!(grid);
+    snapshot!(grid_nested);
+}
+
+#[test]
+fn secondary_axes_share_the_legend_and_the_palette() {
+    let svg = to_svg(&secondary_defaults().into(), 640, 480).unwrap();
+    for text in ["\nsquares\n", "\nroots\n", "\n18.0\n", "\n3.0\n"] {
+        assert!(svg.contains(text), "missing {text:?}");
+    }
+    // Palette99 colours 0 and 1, in draw order across both coordinate systems.
+    assert!(svg.contains("stroke=\"#E6194B\""));
+    assert!(svg.contains("stroke=\"#3CB44B\""));
+}
+
+#[test]
+fn secondary_x_axis_must_match_the_primary_kind_at_render() {
+    // A primary x range of dates with numeric secondary series is refused when drawn.
+    let line = one(
+        SeriesAggregate::LineSeries,
+        SqlType::Float,
+        vec![row(XValue::Number(1.0), 1.0), row(XValue::Number(2.0), 2.0)],
+    );
+    let err = Chart::new()
+        .draw_secondary_series(line)
+        .unwrap()
+        .x_range(RangeValue::Date(0), RangeValue::Date(3))
+        .unwrap_err();
+    assert!(
+        err.message().contains("secondary x axis is numeric"),
+        "{err}"
+    );
+}
+
+/// The RGB pixel at `(x, y)` of a `width`-wide buffer.
+fn pixel(rgb: &[u8], width: u32, (x, y): (u32, u32)) -> [u8; 3] {
+    let i = ((y * width + x) * 3) as usize;
+    [rgb[i], rgb[i + 1], rgb[i + 2]]
+}
+
+#[test]
+fn blank_cells_show_the_grid_fill() {
+    let grid = Root::split_evenly(vec![Some(Chart::new().into()), None], 1, 2)
+        .unwrap()
+        .fill("red")
+        .unwrap();
+    let rgb = to_rgb(&grid, 200, 100).unwrap();
+    // The chart's own fill is white; the blank right cell is the grid's red.
+    assert_eq!(pixel(&rgb, 200, (5, 5)), [255, 255, 255]);
+    assert_eq!(pixel(&rgb, 200, (150, 50)), [255, 0, 0]);
+}
+
+#[test]
+fn titled_draws_the_title_above_the_chart() {
+    let svg = to_svg(&titled(), 640, 480).unwrap();
+    assert!(svg.contains("Oslo, first 60 days of 2024"));
+    assert!(svg.contains("font-family=\"serif\""));
+    // The title strip shows the chart's white fill, not the bitmap's black.
+    let rgb = to_rgb(&titled(), 100, 100).unwrap();
+    assert_eq!(pixel(&rgb, 100, (1, 1)), [255, 255, 255]);
+}
+
+#[test]
+fn pie_labels_stay_inside_the_area() {
+    // With the fitted radius every label's text box lies within the image, for several sizes.
+    for (w, h) in [(640, 480), (300, 300), (200, 120)] {
+        let svg = to_svg(&pie(), w, h).unwrap();
+        for line in svg.lines().filter(|l| l.starts_with("<text")) {
+            let attr = |name: &str| -> i32 {
+                let start = line.find(&format!(" {name}=\"")).unwrap() + name.len() + 3;
+                line[start..].split('"').next().unwrap().parse().unwrap()
+            };
+            let (x, y) = (attr("x"), attr("y"));
+            assert!(
+                x >= 0 && x <= w as i32 && y >= 0 && y <= h as i32,
+                "{w}x{h}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pie_percentages_and_order() {
+    let svg = to_svg(&pie(), 640, 480).unwrap();
+    for text in ["\n37.9%\n", "\n6.9%\n", "\nnews\n", "\nopinion\n"] {
+        assert!(svg.contains(text), "missing {text:?}");
+    }
+    // Slices in order_by order: news, sport, economy, culture, opinion.
+    let at = |t: &str| svg.find(&format!("\n{t}\n")).unwrap();
+    assert!(at("news") < at("sport") && at("sport") < at("economy"));
+    // An empty pie draws only its fill.
+    let empty = PieAccumulator::new().finish();
+    assert!(!to_svg(&empty, 100, 100).unwrap().contains("<polygon"));
 }
 
 #[test]

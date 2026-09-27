@@ -1,0 +1,211 @@
+# name: test/sql/secondary.test
+# description: Secondary axes: set_secondary_coord, secondary_*_range, draw_secondary_series, configure_secondary_axes
+# group: [duckers]
+
+require duckers
+
+# set_secondary_coord() marks the chart as dual-coordinate; the ranges come from the secondary
+# series unless secondary_x_range/secondary_y_range set them.
+query T
+SELECT chart().set_secondary_coord()::VARCHAR
+----
+CHART(empty, secondary coord)
+
+query T
+SELECT __duckers_debug(chart().set_secondary_coord()).regexp_extract('secondary: [^,]*, [^}]*\}[^}]*\}')
+----
+secondary: Some(SecondaryCoord { x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }
+
+# Calling it again keeps the ranges set so far.
+query T
+SELECT __duckers_debug(chart().secondary_y_range(0, 100).set_secondary_coord()).regexp_extract('y_axis: AxisSpec \{ range: Some\([^)]*\)\)', 0)
+----
+y_axis: AxisSpec { range: Some(Numeric(0.0, 100.0))
+
+# draw_secondary_series implies set_secondary_coord(), and the summary counts both kinds.
+query T
+SELECT chart().draw_series(line_series(i, i * i)).draw_secondary_series(line_series(i, sqrt(i)))::VARCHAR
+FROM range(10) t(i)
+----
+CHART(line, 1 series + 1 secondary, 20 points)
+
+query T
+SELECT chart().draw_secondary_series(histogram_vertical(i::VARCHAR, i, key := i % 2))::VARCHAR
+FROM range(4) t(i)
+----
+CHART(histogram, 0 series + 2 secondary, 4 points)
+
+query T
+SELECT __duckers_debug(chart().draw_secondary_series(line_series(1, 2))).regexp_extract('ops: \[[A-Za-z]*')
+----
+ops: [SecondarySeries
+
+# NULL in, NULL out; a NULL element of a list draws nothing.
+query TT
+SELECT (NULL::CHART).draw_secondary_series(line_series(1, 1)) IS NULL,
+       chart().draw_secondary_series([NULL, line_series(1, 1)])::VARCHAR
+----
+true	CHART(line, 0 series + 1 secondary, 1 point)
+
+# The secondary x axis has the primary's kind: plotters' dual-coordinate charts share the x data.
+statement error
+SELECT chart().draw_series(line_series(i, i)).draw_secondary_series(line_series(DATE '2024-01-01' + i::INT, i))
+FROM range(3) t(i)
+----
+Invalid Input Error: draw_secondary_series: the secondary x axis must be the same kind as the primary x axis, since plotters' dual-coordinate charts share the x data: line_series has date x values and the primary x axis is numeric
+
+statement error
+SELECT chart().draw_secondary_series(line_series(DATE '2024-01-01' + i::INT, i)).draw_series(line_series(i, i))
+FROM range(3) t(i)
+----
+Invalid Input Error: draw_series: cannot draw line_series with numeric x values on a chart whose secondary x axis is date: plotters' dual-coordinate charts share the x data, so both x axes have one kind
+
+statement error
+SELECT chart().x_range(0, 10).draw_secondary_series(line_series(DATE '2024-01-01' + i::INT, i))
+FROM range(3) t(i)
+----
+Invalid Input Error: draw_secondary_series: the secondary x axis must be the same kind as the primary x axis, since plotters' dual-coordinate charts share the x data: line_series has date x values and the primary x axis is numeric
+
+# The secondary y axis may be any kind, and the secondary series agree on it among themselves.
+query T
+SELECT chart().draw_series(line_series(i, i)).draw_secondary_series(histogram_horizontal(i, 1))::VARCHAR
+FROM range(3) t(i)
+----
+CHART(line+horizontal histogram, 1 series + 1 secondary, 6 points)
+
+statement error
+SELECT chart().draw_secondary_series(line_series(i, i)).draw_secondary_series(histogram_horizontal(i, 1))
+FROM range(3) t(i)
+----
+Invalid Input Error: draw_secondary_series: cannot draw histogram_horizontal with integer bucket y values on a chart whose secondary y axis is numeric
+
+# secondary_x_range and secondary_y_range are checked like x_range and y_range.
+statement error
+SELECT chart().secondary_y_range(1, 1)
+----
+Invalid Input Error: secondary_y_range needs lo <> hi: plotters cannot map a range whose start equals its end (lo > hi reverses the axis)
+
+statement error
+SELECT chart().secondary_y_range(1, DATE '2024-01-01')
+----
+Invalid Input Error: secondary_y_range bounds must have the same type, got numeric and date
+
+statement error
+SELECT chart().secondary_x_range('a', 'b')
+----
+Binder Error: secondary_x_range: lo must be a number, DATE or TIMESTAMP, got VARCHAR
+
+statement error
+SELECT chart().draw_series(line_series(i, i)).secondary_x_range(DATE '2024-01-01', DATE '2024-02-01')
+FROM range(3) t(i)
+----
+Invalid Input Error: secondary_x_range bounds are date but the primary x axis is numeric
+
+statement error
+SELECT chart().draw_secondary_series(line_series(i, i)).secondary_y_range(DATE '2024-01-01', DATE '2024-02-01')
+FROM range(3) t(i)
+----
+Invalid Input Error: secondary_y_range bounds are date but the secondary y axis is numeric
+
+statement error
+SELECT chart().secondary_y_range(0, 1).draw_secondary_series(histogram_horizontal('a', 1))
+----
+Invalid Input Error: draw_secondary_series: secondary_y_range does not apply to the category secondary y axis: its categories are the data's
+
+# configure_secondary_axes() returns a MESH flagged as secondary; draw() returns the chart.
+query TT
+SELECT typeof(chart().configure_secondary_axes()), chart().configure_secondary_axes().y_desc('mm').y_labels(5)::VARCHAR
+----
+MESH	MESH(secondary; y_desc 'mm', y_labels 5) of CHART(empty, secondary coord)
+
+query T
+SELECT __duckers_debug(chart().configure_secondary_axes().y_desc('mm').draw()).regexp_extract('ops: .*')
+----
+ops: [SecondaryAxes(MeshStyle { settings: [YDesc("mm")] })] }
+
+# Every SecondaryMeshStyle setter is accepted on it.
+query T
+SELECT chart().configure_secondary_axes()
+    .axis_style('black', 2).x_label_offset(1).y_label_offset(-1).x_labels(3).y_labels(4)
+    .x_label_formatter('{:.1f}').y_label_formatter('{} mm').axis_desc_style(font('serif', 10))
+    .x_desc('x2').y_desc('y2').label_style(9).set_all_tick_mark_size(3).set_tick_mark_size('right', -2)
+    .draw()::VARCHAR
+----
+CHART(empty, secondary coord)
+
+# The MeshStyle setters SecondaryMeshStyle lacks are errors naming it.
+foreach method light_line_style('grey') bold_line_style('grey') disable_x_mesh() disable_y_mesh() disable_mesh() disable_x_axis() disable_y_axis() disable_axes() x_label_style(10) y_label_style(10) max_light_lines(2) x_max_light_lines(2) y_max_light_lines(2)
+
+statement error
+SELECT chart().configure_secondary_axes().${method}
+----
+does not apply to a secondary MESH: configure_secondary_axes() is plotters' SecondaryMeshStyle, which draws no mesh lines and has only axis_style
+
+endloop
+
+# The primary MESH still has them.
+query T
+SELECT chart().configure_mesh().disable_mesh().draw()::VARCHAR
+----
+CHART(empty)
+
+# Rendering: the default secondary axes, drawn after the primary mesh, label the right (and,
+# when the secondary x range differs, the top) label area, 40 px unless the chain sets it.
+statement ok
+CREATE MACRO has_text(svg, t) AS svg LIKE '%' || chr(10) || t || chr(10) || '%'
+
+query TTT
+SELECT has_text(c.to_svg(), '18.0'), has_text(c.to_svg(), '1500.0'), has_text(c.to_svg(), '9.0')
+FROM (SELECT chart().draw_series(line_series(i, i * i))
+             .draw_secondary_series(line_series(i * 2, 1000 + 100 * i)) AS c
+      FROM range(10) t(i))
+----
+true	true	true
+
+# With the same x range the top label area stays empty: only the bottom axis labels 9.0.
+query T
+SELECT length(regexp_extract_all(c.to_svg(), chr(10) || '9.0' || chr(10)))
+FROM (SELECT chart().draw_series(line_series(i, i * i))
+             .draw_secondary_series(line_series(i, sqrt(i))) AS c
+      FROM range(10) t(i))
+----
+1
+
+# A label area the chain sets stays as set: with the right area at 0 the secondary y labels
+# have nowhere to go.
+query T
+SELECT has_text(c.to_svg(), '1500.0')
+FROM (SELECT chart().right_y_label_area_size(0).draw_series(line_series(i, i * i))
+             .draw_secondary_series(line_series(i, 1000 + 100 * i)) AS c
+      FROM range(10) t(i))
+----
+false
+
+# Labelled secondary series are in the one legend, coloured on from the primary ones.
+query TT
+SELECT has_text(c.to_svg(), 'squares'), has_text(c.to_svg(), 'roots')
+FROM (SELECT chart().draw_series(line_series(i, i * i).label('squares'))
+             .draw_secondary_series(line_series(i, sqrt(i)).label('roots')) AS c
+      FROM range(10) t(i))
+----
+true	true
+
+query T
+SELECT c.to_svg() LIKE '%stroke="#3CB44B"%'
+FROM (SELECT chart().draw_series(line_series(i, i * i))
+             .draw_secondary_series(line_series(i, sqrt(i))) AS c
+      FROM range(10) t(i))
+----
+true
+
+# A secondary axis description is drawn.
+query T
+SELECT has_text(chart().draw_secondary_series(line_series(1, 2)).configure_secondary_axes().y_desc('millimetres').draw().to_svg(), 'millimetres')
+----
+true
+
+# The secondary label formatter is checked against the secondary axis kind when the chart renders.
+statement error
+SELECT chart().draw_secondary_series(line_series(1, 2)).configure_secondary_axes().y_label_formatter('%Y').draw().to_svg()
+----
+Invalid Input Error: to_svg: y_label_formatter: a strftime pattern does not apply to the numeric secondary y axis; use a format() template such as '{:.1f}'
