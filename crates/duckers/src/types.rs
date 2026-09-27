@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use duckers_chart::{Chart, Font, Mesh, Series, SeriesLabels, Value};
+use duckers_chart::{Font, Mesh, Root, Series, SeriesLabels, Value};
 
 use crate::capi::{Error, Extension, LogicalType, Result, TypeId};
 
@@ -31,7 +31,7 @@ impl ValueKind {
     /// The SQL type name.
     pub fn sql_name(self) -> &'static str {
         match self {
-            ValueKind::Chart => Chart::TYPE_NAME,
+            ValueKind::Chart => Root::TYPE_NAME,
             ValueKind::Mesh => Mesh::TYPE_NAME,
             ValueKind::SeriesLabels => SeriesLabels::TYPE_NAME,
             ValueKind::Series => Series::TYPE_NAME,
@@ -43,7 +43,7 @@ impl ValueKind {
     /// `value::VARCHAR` returns and what the DuckDB CLI shows for the value in every output mode.
     pub fn summary(self, bytes: &[u8]) -> duckers_chart::Result<String> {
         Ok(match self {
-            ValueKind::Chart => Chart::decode(bytes)?.summary(),
+            ValueKind::Chart => Root::decode(bytes)?.summary(),
             ValueKind::Mesh => Mesh::decode(bytes)?.summary(),
             ValueKind::SeriesLabels => SeriesLabels::decode(bytes)?.summary(),
             ValueKind::Series => Series::decode(bytes)?.summary(),
@@ -78,6 +78,8 @@ pub struct Types {
     /// `SERIES[]`, what a series aggregate called with `key :=` returns.
     pub series_list: LogicalType,
     pub font: LogicalType,
+    /// `CHART[]`, what `split_evenly` takes.
+    pub chart_list: LogicalType,
 }
 
 impl Types {
@@ -139,6 +141,7 @@ pub fn register(ext: &Extension<'_>) -> Result<Types> {
         timestamp: ctx.type_from_id(TypeId::TIMESTAMP)?,
         timestamp_tz: ctx.type_from_id(TypeId::TIMESTAMP_TZ)?,
         series_list: ctx.type_from_text("SERIES[]")?,
+        chart_list: ctx.type_from_text("CHART[]")?,
         varchar,
         blob,
         chart,

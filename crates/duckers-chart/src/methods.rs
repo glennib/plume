@@ -9,8 +9,9 @@ use crate::error::{Error, Result};
 use crate::label_format::LabelFormat;
 use crate::spec::{
     Axis, AxisKind, AxisRange, AxisSpec, Caption, Chart, Column, DrawOp, Font, FontStyle,
-    LabelPosition, LineStyle, Marker, Mesh, MeshSetting, MeshStyle, Scale, Series, SeriesKind,
-    SeriesLabelSetting, SeriesLabelStyle, SeriesLabels, Sides, TickPosition,
+    LabelAreas, LabelPosition, LineStyle, Marker, Mesh, MeshSetting, MeshStyle, Scale,
+    SecondaryCoord, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle, SeriesLabels, Sides,
+    TickPosition,
 };
 
 /// The largest pixel size any size argument accepts, the same as the largest image side.
@@ -46,6 +47,38 @@ impl AxisRange {
             AxisRange::Numeric(..) => "numeric",
             AxisRange::Date(..) => "date",
             AxisRange::Timestamp(..) => "timestamp",
+        }
+    }
+}
+
+/// How an axis is named in messages and in the methods that set it: `x`, `x_range`, or
+/// `secondary x`, `secondary_x_range`.
+#[derive(Clone, Copy)]
+struct AxisNames {
+    axis: Axis,
+    secondary: bool,
+}
+
+impl AxisNames {
+    fn new(axis: Axis, secondary: bool) -> AxisNames {
+        AxisNames { axis, secondary }
+    }
+
+    /// `x` or `secondary x`, as in "the secondary x axis".
+    fn label(self) -> String {
+        if self.secondary {
+            format!("secondary {}", self.axis.name())
+        } else {
+            self.axis.name().to_string()
+        }
+    }
+
+    /// `x_range` or `secondary_x_range`.
+    fn range(self) -> String {
+        if self.secondary {
+            format!("secondary_{}_range", self.axis.name())
+        } else {
+            format!("{}_range", self.axis.name())
         }
     }
 }
@@ -414,22 +447,27 @@ impl Default for Chart {
                 left: 10,
                 right: 10,
             },
-            label_area: Sides {
-                top: 0,
+            label_area: LabelAreas {
+                top: None,
                 bottom: 30,
                 left: 40,
-                right: 0,
+                right: None,
             },
-            x_axis: AxisSpec {
-                range: None,
-                scale: Scale::Linear,
-            },
-            y_axis: AxisSpec {
-                range: None,
-                scale: Scale::Linear,
-            },
+            x_axis: AxisSpec::default(),
+            y_axis: AxisSpec::default(),
+            secondary: None,
             fill: Color::WHITE,
             ops: Vec::new(),
+        }
+    }
+}
+
+impl Default for AxisSpec {
+    /// The data extent, linear.
+    fn default() -> Self {
+        AxisSpec {
+            range: None,
+            scale: Scale::Linear,
         }
     }
 }
@@ -511,24 +549,24 @@ impl Chart {
 
     /// `top_x_label_area_size(px)`: `ChartBuilder::top_x_label_area_size`.
     pub fn top_x_label_area_size(mut self, size: i64) -> Result<Chart> {
-        self.label_area.top = px("top_x_label_area_size", size)?;
+        self.label_area.top = Some(px("top_x_label_area_size", size)?);
         Ok(self)
     }
 
     /// `right_y_label_area_size(px)`: `ChartBuilder::right_y_label_area_size`.
     pub fn right_y_label_area_size(mut self, size: i64) -> Result<Chart> {
-        self.label_area.right = px("right_y_label_area_size", size)?;
+        self.label_area.right = Some(px("right_y_label_area_size", size)?);
         Ok(self)
     }
 
     /// `set_all_label_area_size(px)`: `ChartBuilder::set_all_label_area_size`, all four.
     pub fn set_all_label_area_size(mut self, size: i64) -> Result<Chart> {
         let s = px("set_all_label_area_size", size)?;
-        self.label_area = Sides {
-            top: s,
+        self.label_area = LabelAreas {
+            top: Some(s),
             bottom: s,
             left: s,
-            right: s,
+            right: Some(s),
         };
         Ok(self)
     }
@@ -615,6 +653,11 @@ impl Chart {
         let range = axis_range(&what, lo, hi)?;
         if let Some(kind) = self.kind_on(axis) {
             check_range_fits(&what, axis.name(), range, kind)?;
+        } else if axis == Axis::X
+            && let Some(kind) = self.secondary_kind_on(Axis::X)
+        {
+            // The primary x axis has the secondary's kind.
+            check_range_fits(&what, "secondary x", range, kind)?;
         }
         let kind = self.kind_on(axis).unwrap_or(range.kind());
         let scale = self.axis(axis).scale;
@@ -646,6 +689,90 @@ impl Chart {
         Mesh {
             chart: self,
             style: MeshStyle::default(),
+            secondary: false,
+        }
+    }
+
+    /// `set_secondary_coord()`: `ChartContext::set_secondary_coord(x, y)`, with the ranges
+    /// from `secondary_x_range`/`secondary_y_range` or the secondary series. Calling it again
+    /// keeps the secondary ranges set so far.
+    pub fn set_secondary_coord(mut self) -> Chart {
+        if self.secondary.is_none() {
+            self.secondary = Some(SecondaryCoord {
+                x_axis: AxisSpec::default(),
+                y_axis: AxisSpec::default(),
+            });
+        }
+        self
+    }
+
+    /// The secondary axis settings of `axis`; `None` before `set_secondary_coord`.
+    pub fn secondary_axis(&self, axis: Axis) -> Option<&AxisSpec> {
+        self.secondary.as_ref().map(|s| match axis {
+            Axis::X => &s.x_axis,
+            Axis::Y => &s.y_axis,
+        })
+    }
+
+    /// `secondary_x_range(lo, hi)`: the x range argument of `set_secondary_coord`. It implies
+    /// `set_secondary_coord()`.
+    pub fn secondary_x_range(self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        self.secondary_range(Axis::X, lo, hi)
+    }
+
+    /// `secondary_y_range(lo, hi)`: the y range argument of `set_secondary_coord`.
+    pub fn secondary_y_range(self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        self.secondary_range(Axis::Y, lo, hi)
+    }
+
+    fn secondary_range(self, axis: Axis, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
+        let names = AxisNames::new(axis, true);
+        let what = names.range();
+        let range = axis_range(&what, lo, hi)?;
+        if let Some(kind) = self.secondary_kind_on(axis) {
+            check_range_fits(&what, &names.label(), range, kind)?;
+        } else if axis == Axis::X
+            && let Some(kind) = self.kind_on(Axis::X)
+        {
+            // The secondary x axis has the primary's kind.
+            check_range_fits(&what, "primary x", range, kind)?;
+        }
+        let mut chart = self.set_secondary_coord();
+        if let Some(secondary) = &mut chart.secondary {
+            match axis {
+                Axis::X => secondary.x_axis.range = Some(range),
+                Axis::Y => secondary.y_axis.range = Some(range),
+            }
+        }
+        Ok(chart)
+    }
+
+    /// `draw_secondary_series(series)`: `DualCoordChartContext::draw_secondary_series`. It
+    /// implies `set_secondary_coord()`.
+    pub fn draw_secondary_series(self, series: Series) -> Result<Chart> {
+        let mut chart = self.set_secondary_coord();
+        chart.check_secondary_series(&series)?;
+        chart.ops.push(DrawOp::SecondarySeries(series));
+        Ok(chart)
+    }
+
+    /// `draw_secondary_series(series[])`: one call per element, in list order.
+    pub fn draw_secondary_series_list(
+        self,
+        series: impl IntoIterator<Item = Series>,
+    ) -> Result<Chart> {
+        series
+            .into_iter()
+            .try_fold(self.set_secondary_coord(), Chart::draw_secondary_series)
+    }
+
+    /// `configure_secondary_axes()`: a `SecondaryMeshStyle`, which draws no mesh lines. It
+    /// implies `set_secondary_coord()`.
+    pub fn configure_secondary_axes(self) -> Mesh {
+        Mesh {
+            chart: self.set_secondary_coord(),
+            style: MeshStyle::default(),
+            secondary: true,
         }
     }
 
@@ -658,56 +785,112 @@ impl Chart {
     }
 
     fn check_series(&self, series: &Series) -> Result<()> {
-        if let (Some(options), Some(axis)) = (series.kind.histogram(), series.bucket_axis()) {
-            let name = series.kind.aggregate_name();
-            match (series.kind_on(axis), options.step) {
-                (AxisKind::Numeric, None) => {
-                    return Err(Error::invalid(format!(
-                        "draw_series: {name} has numeric buckets, which need .step(s) to bin \
-                         them into bands, as plotters' (lo..hi).step(s).into_segmented() does: \
-                         {name}(x, value).step(10)"
-                    )));
-                }
-                (_, Some(step)) => {
-                    let other = self
-                        .series()
-                        .filter(|s| s.bucket_axis() == Some(axis))
-                        .find_map(|s| s.kind.histogram()?.step.filter(|s| *s != step));
-                    if let Some(other) = other {
-                        return Err(Error::invalid(format!(
-                            "draw_series: cannot draw {name} with step {step} on a chart whose \
-                             {} axis has bands of step {other}",
-                            axis.name()
-                        )));
-                    }
-                }
-                _ => {}
-            }
-        }
-        for axis in [Axis::X, Axis::Y] {
-            let (name, new) = (axis.name(), series.kind_on(axis));
-            if let Some(kind) = self.kind_on(axis)
-                && kind != new
-            {
-                return Err(Error::invalid(format!(
-                    "draw_series: cannot draw {} with {new} {name} values on a chart whose {name} \
-                     axis is {kind}",
-                    series.kind.aggregate_name()
-                )));
-            }
-        }
-        for axis in [Axis::X, Axis::Y] {
-            if let Some(range) = self.axis(axis).range {
-                let what = format!("draw_series: {}_range", axis.name());
-                check_range_fits(&what, axis.name(), range, series.kind_on(axis))?;
-            }
-            let scale = self.axis(axis).scale;
-            let what = format!("draw_series: {}", scale.method(axis));
-            check_scale_fits(&what, axis, scale, series.kind_on(axis))?;
-            check_scale_fits_series(&what, axis, scale, series)?;
+        let drawn: Vec<&Series> = self.series().collect();
+        let specs = [&self.x_axis, &self.y_axis];
+        check_series_on("draw_series", &drawn, specs, false, series)?;
+        let new = series.x_kind();
+        if let Some(kind) = self.secondary_kind_on(Axis::X)
+            && kind != new
+        {
+            return Err(Error::invalid(format!(
+                "draw_series: cannot draw {} with {new} x values on a chart whose secondary x \
+                 axis is {kind}: plotters' dual-coordinate charts share the x data, so both x \
+                 axes have one kind",
+                series.kind.aggregate_name()
+            )));
         }
         Ok(())
     }
+
+    fn check_secondary_series(&self, series: &Series) -> Result<()> {
+        let what = "draw_secondary_series";
+        let new = series.x_kind();
+        let primary = self
+            .kind_on(Axis::X)
+            .or(self.x_axis.range.map(AxisRange::kind));
+        if let Some(kind) = primary
+            && kind != new
+        {
+            return Err(Error::invalid(format!(
+                "{what}: the secondary x axis must be the same kind as the primary x axis, \
+                 since plotters' dual-coordinate charts share the x data: {} has {new} x values \
+                 and the primary x axis is {kind}",
+                series.kind.aggregate_name()
+            )));
+        }
+        let drawn: Vec<&Series> = self.secondary_series().collect();
+        let default = AxisSpec::default();
+        let specs = [
+            self.secondary_axis(Axis::X).unwrap_or(&default),
+            self.secondary_axis(Axis::Y).unwrap_or(&default),
+        ];
+        check_series_on(what, &drawn, specs, true, series)
+    }
+}
+
+/// Checks a series about to be drawn by `what` on one coordinate system: against the series
+/// already drawn on it (`drawn`) and its axis settings (`specs`, x then y).
+fn check_series_on(
+    what: &str,
+    drawn: &[&Series],
+    specs: [&AxisSpec; 2],
+    secondary: bool,
+    series: &Series,
+) -> Result<()> {
+    if let (Some(options), Some(axis)) = (series.kind.histogram(), series.bucket_axis()) {
+        let name = series.kind.aggregate_name();
+        match (series.kind_on(axis), options.step) {
+            (AxisKind::Numeric, None) => {
+                return Err(Error::invalid(format!(
+                    "{what}: {name} has numeric buckets, which need .step(s) to bin them into \
+                     bands, as plotters' (lo..hi).step(s).into_segmented() does: \
+                     {name}(x, value).step(10)"
+                )));
+            }
+            (_, Some(step)) => {
+                let other = drawn
+                    .iter()
+                    .filter(|s| s.bucket_axis() == Some(axis))
+                    .find_map(|s| s.kind.histogram()?.step.filter(|s| *s != step));
+                if let Some(other) = other {
+                    return Err(Error::invalid(format!(
+                        "{what}: cannot draw {name} with step {step} on a chart whose {} axis \
+                         has bands of step {other}",
+                        AxisNames::new(axis, secondary).label()
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    for axis in [Axis::X, Axis::Y] {
+        let (label, new) = (
+            AxisNames::new(axis, secondary).label(),
+            series.kind_on(axis),
+        );
+        let name = axis.name();
+        if let Some(kind) = drawn.first().map(|s| s.kind_on(axis))
+            && kind != new
+        {
+            return Err(Error::invalid(format!(
+                "{what}: cannot draw {} with {new} {name} values on a chart whose {label} axis \
+                 is {kind}",
+                series.kind.aggregate_name()
+            )));
+        }
+    }
+    for (axis, spec) in [(Axis::X, specs[0]), (Axis::Y, specs[1])] {
+        let names = AxisNames::new(axis, secondary);
+        if let Some(range) = spec.range {
+            let what = format!("{what}: {}", names.range());
+            check_range_fits(&what, &names.label(), range, series.kind_on(axis))?;
+        }
+        let scale = spec.scale;
+        let what = format!("{what}: {}", scale.method(axis));
+        check_scale_fits(&what, axis, scale, series.kind_on(axis))?;
+        check_scale_fits_series(&what, axis, scale, series)?;
+    }
+    Ok(())
 }
 
 /// Checks that a scale suits the kind of its axis: a log scale needs a numeric axis, monthly
@@ -831,105 +1014,118 @@ impl Mesh {
         self
     }
 
-    /// Appends a setter call.
-    pub fn set(mut self, setting: MeshSetting) -> Mesh {
+    /// Appends a setter call. On a secondary `MESH` (`configure_secondary_axes()`), only the
+    /// setters `SecondaryMeshStyle` has are accepted.
+    pub fn set(mut self, setting: MeshSetting) -> Result<Mesh> {
+        if self.secondary && !setting.on_secondary_mesh() {
+            return Err(Error::invalid(format!(
+                "{} does not apply to a secondary MESH: configure_secondary_axes() is plotters' \
+                 SecondaryMeshStyle, which draws no mesh lines and has only axis_style, \
+                 x_label_offset, y_label_offset, x_labels, y_labels, x_label_formatter, \
+                 y_label_formatter, axis_desc_style, x_desc, y_desc, label_style, \
+                 set_all_tick_mark_size, set_tick_mark_size and draw",
+                setting.method()
+            )));
+        }
         self.style.settings.push(setting);
-        self
+        Ok(self)
     }
 
-    /// `MeshStyle::axis_desc_style`.
-    pub fn axis_desc_style(self, font: Font) -> Mesh {
-        self.set(MeshSetting::AxisDescStyle(font))
+    /// `MeshStyle::axis_desc_style`; `SecondaryMeshStyle` has it too.
+    pub fn axis_desc_style(mut self, font: Font) -> Mesh {
+        self.style.settings.push(MeshSetting::AxisDescStyle(font));
+        self
     }
 
     /// `MeshStyle::x_labels`: at most this many labels and bold lines on the x axis.
     pub fn x_labels(self, n: i64) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::XLabels(count("x_labels", n, MAX_LABELS)?)))
+        self.set(MeshSetting::XLabels(count("x_labels", n, MAX_LABELS)?))
     }
 
     /// `MeshStyle::y_labels`.
     pub fn y_labels(self, n: i64) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::YLabels(count("y_labels", n, MAX_LABELS)?)))
+        self.set(MeshSetting::YLabels(count("y_labels", n, MAX_LABELS)?))
     }
 
     /// `MeshStyle::x_label_formatter`, with a `format()` template or a strftime pattern in
     /// place of the closure.
     pub fn x_label_formatter(self, format: &str) -> Result<Mesh> {
         LabelFormat::parse("x_label_formatter", format)?;
-        Ok(self.set(MeshSetting::XLabelFormatter(format.to_string())))
+        self.set(MeshSetting::XLabelFormatter(format.to_string()))
     }
 
     /// `MeshStyle::y_label_formatter`.
     pub fn y_label_formatter(self, format: &str) -> Result<Mesh> {
         LabelFormat::parse("y_label_formatter", format)?;
-        Ok(self.set(MeshSetting::YLabelFormatter(format.to_string())))
+        self.set(MeshSetting::YLabelFormatter(format.to_string()))
     }
 
-    /// `MeshStyle::label_style`: both axes' labels.
-    pub fn label_style(self, font: Font) -> Mesh {
-        self.set(MeshSetting::LabelStyle(font))
+    /// `MeshStyle::label_style`: both axes' labels; `SecondaryMeshStyle` has it too.
+    pub fn label_style(mut self, font: Font) -> Mesh {
+        self.style.settings.push(MeshSetting::LabelStyle(font));
+        self
     }
 
     /// `MeshStyle::x_label_style`.
-    pub fn x_label_style(self, font: Font) -> Mesh {
+    pub fn x_label_style(self, font: Font) -> Result<Mesh> {
         self.set(MeshSetting::XLabelStyle(font))
     }
 
     /// `MeshStyle::y_label_style`.
-    pub fn y_label_style(self, font: Font) -> Mesh {
+    pub fn y_label_style(self, font: Font) -> Result<Mesh> {
         self.set(MeshSetting::YLabelStyle(font))
     }
 
     /// `MeshStyle::x_label_offset`: px along the axis; may be negative.
     pub fn x_label_offset(self, offset: i64) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::XLabelOffset(signed_px(
+        self.set(MeshSetting::XLabelOffset(signed_px(
             "x_label_offset",
             offset,
-        )?)))
+        )?))
     }
 
     /// `MeshStyle::y_label_offset`.
     pub fn y_label_offset(self, offset: i64) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::YLabelOffset(signed_px(
+        self.set(MeshSetting::YLabelOffset(signed_px(
             "y_label_offset",
             offset,
-        )?)))
+        )?))
     }
 
     /// `MeshStyle::x_max_light_lines`: light lines per bold interval on the x axis.
     pub fn x_max_light_lines(self, n: i64) -> Result<Mesh> {
         let n = count("x_max_light_lines", n, MAX_LIGHT_LINES)?;
-        Ok(self.set(MeshSetting::XMaxLightLines(n)))
+        self.set(MeshSetting::XMaxLightLines(n))
     }
 
     /// `MeshStyle::y_max_light_lines`.
     pub fn y_max_light_lines(self, n: i64) -> Result<Mesh> {
         let n = count("y_max_light_lines", n, MAX_LIGHT_LINES)?;
-        Ok(self.set(MeshSetting::YMaxLightLines(n)))
+        self.set(MeshSetting::YMaxLightLines(n))
     }
 
     /// `MeshStyle::max_light_lines`: both axes.
     pub fn max_light_lines(self, n: i64) -> Result<Mesh> {
         let n = count("max_light_lines", n, MAX_LIGHT_LINES)?;
-        Ok(self.set(MeshSetting::MaxLightLines(n)))
+        self.set(MeshSetting::MaxLightLines(n))
     }
 
     /// `MeshStyle::light_line_style(color [, stroke_width])`.
     pub fn light_line_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::LightLineStyle(line_style(
+        self.set(MeshSetting::LightLineStyle(line_style(
             color,
             stroke_width,
-        )?)))
+        )?))
     }
 
     /// `MeshStyle::bold_line_style(color [, stroke_width])`.
     pub fn bold_line_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::BoldLineStyle(line_style(color, stroke_width)?)))
+        self.set(MeshSetting::BoldLineStyle(line_style(color, stroke_width)?))
     }
 
     /// `MeshStyle::axis_style(color [, stroke_width])`: the axis lines and tick marks.
     pub fn axis_style(self, color: &str, stroke_width: Option<i64>) -> Result<Mesh> {
-        Ok(self.set(MeshSetting::AxisStyle(line_style(color, stroke_width)?)))
+        self.set(MeshSetting::AxisStyle(line_style(color, stroke_width)?))
     }
 
     /// `MeshStyle::set_tick_mark_size(position, px)`; `position` is `'top'`, `'bottom'`,
@@ -947,20 +1143,79 @@ impl Mesh {
                 ))
             })?;
         let size = signed_px("set_tick_mark_size", size)?;
-        Ok(self.set(MeshSetting::SetTickMarkSize(position, size)))
+        self.set(MeshSetting::SetTickMarkSize(position, size))
     }
 
     /// `MeshStyle::set_all_tick_mark_size(px)`.
     pub fn set_all_tick_mark_size(self, size: i64) -> Result<Mesh> {
         let size = signed_px("set_all_tick_mark_size", size)?;
-        Ok(self.set(MeshSetting::SetAllTickMarkSize(size)))
+        self.set(MeshSetting::SetAllTickMarkSize(size))
     }
 
-    /// `MeshStyle::draw`: draws the mesh at this point of the chain and returns the chart.
+    /// `MeshStyle::draw` (or `SecondaryMeshStyle::draw`): draws the mesh at this point of the
+    /// chain and returns the chart.
     pub fn draw(self) -> Chart {
         let mut chart = self.chart;
-        chart.ops.push(DrawOp::Mesh(self.style));
+        chart.ops.push(if self.secondary {
+            DrawOp::SecondaryAxes(self.style)
+        } else {
+            DrawOp::Mesh(self.style)
+        });
         chart
+    }
+}
+
+impl MeshSetting {
+    /// The SQL method that makes the setting.
+    pub fn method(&self) -> &'static str {
+        match self {
+            MeshSetting::XDesc(_) => "x_desc",
+            MeshSetting::YDesc(_) => "y_desc",
+            MeshSetting::AxisDescStyle(_) => "axis_desc_style",
+            MeshSetting::XLabels(_) => "x_labels",
+            MeshSetting::YLabels(_) => "y_labels",
+            MeshSetting::XLabelFormatter(_) => "x_label_formatter",
+            MeshSetting::YLabelFormatter(_) => "y_label_formatter",
+            MeshSetting::LabelStyle(_) => "label_style",
+            MeshSetting::XLabelStyle(_) => "x_label_style",
+            MeshSetting::YLabelStyle(_) => "y_label_style",
+            MeshSetting::XLabelOffset(_) => "x_label_offset",
+            MeshSetting::YLabelOffset(_) => "y_label_offset",
+            MeshSetting::XMaxLightLines(_) => "x_max_light_lines",
+            MeshSetting::YMaxLightLines(_) => "y_max_light_lines",
+            MeshSetting::MaxLightLines(_) => "max_light_lines",
+            MeshSetting::LightLineStyle(_) => "light_line_style",
+            MeshSetting::BoldLineStyle(_) => "bold_line_style",
+            MeshSetting::AxisStyle(_) => "axis_style",
+            MeshSetting::DisableXMesh => "disable_x_mesh",
+            MeshSetting::DisableYMesh => "disable_y_mesh",
+            MeshSetting::DisableMesh => "disable_mesh",
+            MeshSetting::DisableXAxis => "disable_x_axis",
+            MeshSetting::DisableYAxis => "disable_y_axis",
+            MeshSetting::DisableAxes => "disable_axes",
+            MeshSetting::SetTickMarkSize(..) => "set_tick_mark_size",
+            MeshSetting::SetAllTickMarkSize(_) => "set_all_tick_mark_size",
+        }
+    }
+
+    /// Whether plotters' `SecondaryMeshStyle` has the setter.
+    pub fn on_secondary_mesh(&self) -> bool {
+        matches!(
+            self,
+            MeshSetting::XDesc(_)
+                | MeshSetting::YDesc(_)
+                | MeshSetting::AxisDescStyle(_)
+                | MeshSetting::XLabels(_)
+                | MeshSetting::YLabels(_)
+                | MeshSetting::XLabelFormatter(_)
+                | MeshSetting::YLabelFormatter(_)
+                | MeshSetting::LabelStyle(_)
+                | MeshSetting::XLabelOffset(_)
+                | MeshSetting::YLabelOffset(_)
+                | MeshSetting::AxisStyle(_)
+                | MeshSetting::SetTickMarkSize(..)
+                | MeshSetting::SetAllTickMarkSize(_)
+        )
     }
 }
 
@@ -1450,31 +1705,31 @@ mod tests {
         );
         assert_eq!(
             chart.label_area,
-            Sides {
-                top: 5,
+            LabelAreas {
+                top: Some(5),
                 bottom: 30,
                 left: 40,
-                right: 6
+                right: Some(6)
             }
         );
         let all = chart.clone().set_all_label_area_size(7).unwrap();
         assert_eq!(
             all.label_area,
-            Sides {
-                top: 7,
+            LabelAreas {
+                top: Some(7),
                 bottom: 7,
                 left: 7,
-                right: 7
+                right: Some(7)
             }
         );
         let lb = chart.set_left_and_bottom_label_area_size(8).unwrap();
         assert_eq!(
             lb.label_area,
-            Sides {
-                top: 5,
+            LabelAreas {
+                top: Some(5),
                 bottom: 8,
                 left: 8,
-                right: 6
+                right: Some(6)
             }
         );
         let err = Chart::new().right_y_label_area_size(-1).unwrap_err();
@@ -1568,6 +1823,7 @@ mod tests {
             .set_tick_mark_size("Left", -5)
             .unwrap()
             .set(MeshSetting::DisableXMesh)
+            .unwrap()
             .label_style(Font::sans_serif(10).unwrap());
         assert_eq!(
             mesh.style.settings,

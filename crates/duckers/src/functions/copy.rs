@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use duckers_chart::{Chart, Value, image_size, to_png, to_svg};
+use duckers_chart::{Root, Value, image_size, to_png, to_svg};
 
 use super::args::chart_error;
 use crate::capi::{CopyBind, CopyChunk, CopyTo, Error, Extension, LogicalType, Result, TypeId};
@@ -46,7 +46,7 @@ impl Format {
         format!("FORMAT {}", self.name())
     }
 
-    fn render(self, chart: &Chart, width: u32, height: u32) -> duckers_chart::Result<Vec<u8>> {
+    fn render(self, chart: &Root, width: u32, height: u32) -> duckers_chart::Result<Vec<u8>> {
         match self {
             Format::Png => to_png(chart, width, height),
             Format::Svg => to_svg(chart, width, height).map(String::into_bytes),
@@ -198,7 +198,7 @@ impl CopyTo for ChartCopy {
             }
             Some(Some(bytes)) => bytes,
         };
-        let chart = Chart::decode(&bytes).map_err(|e| chart_error(&label, e))?;
+        let chart = Root::decode(&bytes).map_err(|e| chart_error(&label, e))?;
         let image = self
             .format
             .render(&chart, options.width, options.height)

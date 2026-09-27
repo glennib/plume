@@ -4,18 +4,18 @@
 //! then the postcard encoding of the spec.
 
 use crate::error::{Error, Result};
-use crate::spec::{Chart, Font, Mesh, Series, SeriesLabels};
+use crate::spec::{Font, Mesh, Root, Series, SeriesLabels};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 /// The format version this build writes and the only one it reads.
-pub const FORMAT_VERSION: u16 = 3;
+pub const FORMAT_VERSION: u16 = 4;
 
 const HEADER_LEN: usize = 6;
 
 /// The magics of all duckers value types, to name the type of a BLOB that is not the expected one.
 const TYPES: [(&[u8; 4], &str); 5] = [
-    (Chart::MAGIC, Chart::TYPE_NAME),
+    (Root::MAGIC, Root::TYPE_NAME),
     (Series::MAGIC, Series::TYPE_NAME),
     (Mesh::MAGIC, Mesh::TYPE_NAME),
     (SeriesLabels::MAGIC, SeriesLabels::TYPE_NAME),
@@ -69,7 +69,7 @@ pub trait Value: Serialize + DeserializeOwned {
     }
 }
 
-impl Value for Chart {
+impl Value for Root {
     const TYPE_NAME: &'static str = "CHART";
     const MAGIC: &'static [u8; 4] = b"DKch";
 }
@@ -98,6 +98,7 @@ impl Value for Font {
 mod tests {
     use super::*;
     use crate::accumulate::{Accumulator, SeriesAggregate, SeriesBinding, SqlType, XValue};
+    use crate::spec::Chart;
 
     fn sample_chart() -> Chart {
         let binding = SeriesBinding::new(SeriesAggregate::LineSeries, SqlType::Float).unwrap();
@@ -126,7 +127,13 @@ mod tests {
     #[test]
     fn round_trips() {
         let chart = sample_chart();
-        assert_eq!(Chart::decode(&chart.encode()).unwrap(), chart);
+        let root = Root::from(chart.clone());
+        assert_eq!(Root::decode(&root.encode()).unwrap(), root);
+        let grid = Root::split_evenly(vec![Some(root.clone()), None], 1, 2)
+            .unwrap()
+            .titled("t", None)
+            .unwrap();
+        assert_eq!(Root::decode(&grid.encode()).unwrap(), grid);
         let mesh = chart.clone().configure_mesh().y_desc("y");
         assert_eq!(Mesh::decode(&mesh.encode()).unwrap(), mesh);
         let labels = chart.clone().configure_series_labels();
@@ -139,13 +146,14 @@ mod tests {
 
     #[test]
     fn encoding_is_deterministic() {
-        assert_eq!(sample_chart().encode(), sample_chart().encode());
+        let root = || Root::from(sample_chart());
+        assert_eq!(root().encode(), root().encode());
     }
 
     #[test]
     fn rejects_foreign_blobs() {
         for bytes in [&b""[..], b"hello", b"DKch", b"DKxx\x01\x00"] {
-            let err = Chart::decode(bytes).unwrap_err();
+            let err = Root::decode(bytes).unwrap_err();
             assert_eq!(err.message(), "not a duckers CHART value");
         }
     }
@@ -153,7 +161,7 @@ mod tests {
     #[test]
     fn names_the_other_type() {
         let series = sample_chart().series().next().unwrap().encode();
-        let err = Chart::decode(&series).unwrap_err();
+        let err = Root::decode(&series).unwrap_err();
         assert_eq!(
             err.message(),
             "not a duckers CHART value: the BLOB holds a SERIES value"
@@ -162,24 +170,24 @@ mod tests {
 
     #[test]
     fn rejects_other_versions() {
-        let mut bytes = sample_chart().encode();
-        bytes[4..6].copy_from_slice(&7u16.to_le_bytes());
-        let err = Chart::decode(&bytes).unwrap_err();
+        let mut bytes = Root::from(sample_chart()).encode();
+        bytes[4..6].copy_from_slice(&3u16.to_le_bytes());
+        let err = Root::decode(&bytes).unwrap_err();
         assert_eq!(
             err.message(),
-            "CHART format version 7 not supported by this duckers (it reads version 3)"
+            "CHART format version 3 not supported by this duckers (it reads version 4)"
         );
         assert_eq!(err.kind(), crate::ErrorKind::Decode);
     }
 
     #[test]
     fn rejects_corrupt_payloads() {
-        let bytes = sample_chart().encode();
-        let err = Chart::decode(&bytes[..bytes.len() - 3]).unwrap_err();
+        let bytes = Root::from(sample_chart()).encode();
+        let err = Root::decode(&bytes[..bytes.len() - 3]).unwrap_err();
         assert!(err.message().starts_with("corrupt CHART value"), "{err}");
         let mut longer = bytes.clone();
         longer.push(0);
-        let err = Chart::decode(&longer).unwrap_err();
+        let err = Root::decode(&longer).unwrap_err();
         assert_eq!(err.message(), "corrupt CHART value: 1 trailing bytes");
     }
 }

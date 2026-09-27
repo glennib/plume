@@ -1,7 +1,7 @@
 //! One-line summaries, the `VARCHAR` casts of the SQL values.
 
 use crate::spec::{
-    Chart, Column, Font, FontStyle, LabelPosition, LineStyle, Mesh, MeshSetting, Series,
+    Chart, Column, Font, FontStyle, LabelPosition, LineStyle, Mesh, MeshSetting, Root, Series,
     SeriesKind, SeriesLabelSetting, SeriesLabels, bin,
 };
 use std::collections::BTreeSet;
@@ -55,32 +55,79 @@ impl Series {
     }
 }
 
+impl Root {
+    /// `CHART(line, 2 series, 240 points)`, `CHART(grid 2x2, 3 charts)`,
+    /// `CHART(titled 'Overview', grid 2x2, 3 charts)`, `CHART(pie, 5 slices)`.
+    pub fn summary(&self) -> String {
+        format!("CHART({})", self.summary_parts().join(", "))
+    }
+
+    fn summary_parts(&self) -> Vec<String> {
+        match self {
+            Root::Cartesian(chart) => chart.summary_parts(),
+            Root::Grid(g) => {
+                let charts = g.cells.iter().flatten().count();
+                vec![
+                    format!("grid {}x{}", g.rows, g.cols),
+                    plural(charts, "chart", "charts"),
+                ]
+            }
+            Root::Titled(t) => {
+                let mut parts = vec![format!("titled {}", quote(&t.text))];
+                parts.extend(t.inner.summary_parts());
+                parts
+            }
+            Root::Pie(p) => vec!["pie".into(), plural(p.sizes.len(), "slice", "slices")],
+        }
+    }
+}
+
 impl Chart {
     /// `CHART(line, 2 series, 240 points)`, `CHART(line+point, 2 series, 20 points, caption
-    /// 'x')`, `CHART(empty)`.
+    /// 'x')`, `CHART(line+histogram, 1 series + 1 secondary, 24 points)`, `CHART(empty)`.
     pub fn summary(&self) -> String {
+        format!("CHART({})", self.summary_parts().join(", "))
+    }
+
+    fn summary_parts(&self) -> Vec<String> {
         let mut kinds: Vec<&str> = Vec::new();
-        let mut count = 0;
-        let mut points = 0;
-        for series in self.series() {
+        let (mut count, mut secondary, mut points) = (0, 0, 0);
+        for op in &self.ops {
+            let series = match op {
+                crate::spec::DrawOp::Series(s) => {
+                    count += 1;
+                    s
+                }
+                crate::spec::DrawOp::SecondarySeries(s) => {
+                    secondary += 1;
+                    s
+                }
+                _ => continue,
+            };
             if !kinds.contains(&series.kind.name()) {
                 kinds.push(series.kind.name());
             }
-            count += 1;
             points += series.len();
         }
         let mut parts = Vec::new();
-        if count == 0 {
+        if count + secondary == 0 {
             parts.push("empty".to_string());
         } else {
             parts.push(kinds.join("+"));
-            parts.push(plural(count, "series", "series"));
+            let mut counted = plural(count, "series", "series");
+            if secondary > 0 {
+                counted.push_str(&format!(" + {secondary} secondary"));
+            }
+            parts.push(counted);
             parts.push(plural(points, "point", "points"));
+        }
+        if self.secondary.is_some() && secondary == 0 {
+            parts.push("secondary coord".into());
         }
         if let Some(caption) = &self.caption {
             parts.push(format!("caption {}", quote(&caption.text)));
         }
-        format!("CHART({})", parts.join(", "))
+        parts
     }
 }
 
@@ -122,7 +169,13 @@ impl Mesh {
                 MeshSetting::SetAllTickMarkSize(px) => format!("set_all_tick_mark_size {px}px"),
             })
             .collect();
-        format!("MESH({}) of {}", settings.join(", "), self.chart.summary())
+        let settings = settings.join(", ");
+        if self.secondary {
+            let sep = if settings.is_empty() { "" } else { "; " };
+            format!("MESH(secondary{sep}{settings}) of {}", self.chart.summary())
+        } else {
+            format!("MESH({settings}) of {}", self.chart.summary())
+        }
     }
 }
 
@@ -306,7 +359,8 @@ mod tests {
             .unwrap()
             .set_tick_mark_size("bottom", -3)
             .unwrap()
-            .set(crate::spec::MeshSetting::DisableAxes);
+            .set(crate::spec::MeshSetting::DisableAxes)
+            .unwrap();
         assert_eq!(
             styled.summary(),
             "MESH(x_label_formatter '{:.1f} °C', label_style FONT(serif, 10), bold_line_style \

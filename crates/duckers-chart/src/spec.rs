@@ -346,23 +346,144 @@ impl FontStyle {
     }
 }
 
-/// A `CHART` value: the `ChartBuilder` settings, the root fill, and the drawing calls made on
+/// A `CHART` value: what is drawn on the root `DrawingArea`. A chart made by `chart()` is a
+/// cartesian chart; `split_evenly`, `titled` and `pie` make the other roots.
+///
+/// The cartesian variant is the largest; roots are decoded one per call (and one per grid
+/// cell), so boxing it would buy nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub enum Root {
+    /// `ChartBuilder::on(&root)` and the calls on its `ChartContext`.
+    Cartesian(Chart),
+    /// `root.split_evenly((rows, cols))`, one root per cell.
+    Grid(Grid),
+    /// `root.titled(text, style)`, with a root drawn below the title.
+    Titled(Titled),
+    /// A `Pie` element drawn on the root.
+    Pie(Pie),
+}
+
+/// `DrawingArea::split_evenly((rows, cols))`: the cells in row-major order, `None` for a blank
+/// one. There are at most `rows * cols` cells; missing ones at the end are blank.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Grid {
+    pub rows: u32,
+    pub cols: u32,
+    pub cells: Vec<Option<Root>>,
+    /// `root.fill(...)` of the whole area, which blank cells show.
+    pub fill: Color,
+}
+
+/// `DrawingArea::titled(text, style)`: the title across the top, `inner` in the area below.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Titled {
+    pub text: String,
+    pub font: Font,
+    /// `root.fill(...)` of the whole area, under the title.
+    pub fill: Color,
+    pub inner: Box<Root>,
+}
+
+/// A `Pie`: one slice per row of the `pie` aggregate, in slice order.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Pie {
+    /// The `sizes` argument of `Pie::new`, all positive and finite.
+    pub sizes: Vec<f64>,
+    /// The `labels` argument of `Pie::new`, one per size.
+    pub labels: Vec<String>,
+    /// `root.fill(...)`.
+    pub fill: Color,
+    /// The setter calls on the `Pie` and its `radius`, in chain order.
+    pub settings: Vec<PieSetting>,
+}
+
+/// One `Pie` setter call, or the `radius` argument of `Pie::new`. Further settings are appended
+/// as new variants.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum PieSetting {
+    /// `Pie::start_angle`, degrees clockwise from the positive x axis.
+    StartAngle(f64),
+    /// `Pie::label_style`.
+    LabelStyle(Font),
+    /// `Pie::percentages`: draw each slice's percentage in this style.
+    Percentages(Font),
+    /// `Pie::label_offset`, px from the rim; may be negative.
+    LabelOffset(i32),
+    /// The `radius` argument of `Pie::new`, px.
+    Radius(u32),
+}
+
+impl PieSetting {
+    /// The font the setting names, if it takes one.
+    pub fn font(&self) -> Option<&Font> {
+        match self {
+            PieSetting::LabelStyle(f) | PieSetting::Percentages(f) => Some(f),
+            _ => None,
+        }
+    }
+}
+
+/// The derived `Debug` of a cartesian root is its chart's, so `__duckers_debug` shows the
+/// builder settings of a `chart()` value directly.
+impl fmt::Debug for Root {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Root::Cartesian(chart) => chart.fmt(f),
+            Root::Grid(grid) => grid.fmt(f),
+            Root::Titled(titled) => titled.fmt(f),
+            Root::Pie(pie) => pie.fmt(f),
+        }
+    }
+}
+
+impl From<Chart> for Root {
+    fn from(chart: Chart) -> Root {
+        Root::Cartesian(chart)
+    }
+}
+
+/// A cartesian chart: the `ChartBuilder` settings, the root fill, and the drawing calls made on
 /// the `ChartContext`, in chain order.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Chart {
     pub caption: Option<Caption>,
     /// `ChartBuilder::margin*`.
     pub margin: Sides,
-    /// `ChartBuilder::*_label_area_size`: `bottom` is `x_label_area_size`, `left` is
-    /// `y_label_area_size`, `top` is `top_x_label_area_size`, `right` is
-    /// `right_y_label_area_size`.
-    pub label_area: Sides,
+    /// `ChartBuilder::*_label_area_size`.
+    pub label_area: LabelAreas,
     pub x_axis: AxisSpec,
     pub y_axis: AxisSpec,
+    /// `ChartContext::set_secondary_coord`: `None` for a chart with one coordinate system.
+    pub secondary: Option<SecondaryCoord>,
     /// `root.fill(...)`.
     pub fill: Color,
     /// Draw order is chain order.
     pub ops: Vec<DrawOp>,
+}
+
+/// The label area sizes of `ChartBuilder`, px. The top and right areas are `None` until the
+/// chain sets them: their default depends on whether the chart has secondary axes, which a
+/// later call may add.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelAreas {
+    /// `top_x_label_area_size`: 0 by default, 40 when the secondary x axis differs from the
+    /// primary one.
+    pub top: Option<u32>,
+    /// `x_label_area_size`.
+    pub bottom: u32,
+    /// `y_label_area_size`.
+    pub left: u32,
+    /// `right_y_label_area_size`: 0 by default, 40 on a chart with secondary axes.
+    pub right: Option<u32>,
+}
+
+/// The secondary coordinate system of `set_secondary_coord(x, y)`: what the range arguments
+/// get beyond what the secondary series imply. Its scales are linear.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SecondaryCoord {
+    pub x_axis: AxisSpec,
+    pub y_axis: AxisSpec,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -447,6 +568,10 @@ pub enum DrawOp {
     Series(Series),
     /// `configure_series_labels()...draw()`.
     SeriesLabels(SeriesLabelStyle),
+    /// `draw_secondary_series(...)`.
+    SecondarySeries(Series),
+    /// `configure_secondary_axes()...draw()`: the setters of `SecondaryMeshStyle`.
+    SecondaryAxes(MeshStyle),
 }
 
 /// The settings of a `MeshStyle`, as the list of setter calls in chain order.
@@ -607,6 +732,9 @@ impl LabelPosition {
 pub struct Mesh {
     pub chart: Chart,
     pub style: MeshStyle,
+    /// Taken by `configure_secondary_axes()`: a `SecondaryMeshStyle`, which has a subset of
+    /// the setters.
+    pub secondary: bool,
 }
 
 /// A `SERIES_LABELS` value: the legend settings so far and the chart they were taken from.
@@ -623,6 +751,19 @@ impl Chart {
             DrawOp::Series(s) => Some(s),
             _ => None,
         })
+    }
+
+    /// The series drawn on the secondary coordinate system so far, in draw order.
+    pub fn secondary_series(&self) -> impl Iterator<Item = &Series> {
+        self.ops.iter().filter_map(|op| match op {
+            DrawOp::SecondarySeries(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// The kind of the secondary `axis` set by the secondary series drawn so far, if any.
+    pub fn secondary_kind_on(&self, axis: Axis) -> Option<AxisKind> {
+        self.secondary_series().next().map(|s| s.kind_on(axis))
     }
 
     /// The x-axis kind set by the series drawn so far, if any.

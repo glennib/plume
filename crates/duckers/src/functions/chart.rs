@@ -3,7 +3,8 @@
 
 use duckers_chart::spec::MeshSetting;
 use duckers_chart::{
-    Chart, Font, Mesh, Series, SeriesLabels, Value, image_size, mix, to_png, to_svg,
+    Chart, Font, Mesh, RangeValue, Root, Series, SeriesLabels, Value, image_size, mix, to_png,
+    to_svg,
 };
 
 use super::args::{Args, check_range_bound, scalar};
@@ -57,25 +58,24 @@ type ChartPx = fn(Chart, i64) -> duckers_chart::Result<Chart>;
 /// A method on `CHART` that takes one `BIGINT` px argument and returns the chart.
 fn chart_px(t: &Types, name: &'static str, f: ChartPx) -> ScalarFunction {
     scalar(name, &t.chart, move |a| {
-        let chart: Chart = a.value(0)?;
-        Ok(a.check(f(chart, a.i64(1)?))?.encode())
+        let chart = a.chart(0)?;
+        Ok(Root::from(a.check(f(chart, a.i64(1)?))?).encode())
     })
     .param("chart", &t.chart)
     .param("px", &t.bigint)
 }
 
-/// `x_range(lo, hi)` or `y_range(lo, hi)`. The bounds are `ANY`, so every numeric, date and
-/// timestamp type binds; bind checks them and the method checks them against the axis.
-fn range(t: &Types, name: &'static str, x: bool) -> ScalarFunction {
+/// A range method of `CHART`, taking two bounds.
+type ChartRange = fn(Chart, RangeValue, RangeValue) -> duckers_chart::Result<Chart>;
+
+/// `x_range(lo, hi)`, `y_range(lo, hi)` and the secondary ones. The bounds are `ANY`, so every
+/// numeric, date and timestamp type binds; bind checks them and the method checks them against
+/// the axis.
+fn range(t: &Types, name: &'static str, f: ChartRange) -> ScalarFunction {
     scalar(name, &t.chart, move |a| {
-        let chart: Chart = a.value(0)?;
+        let chart = a.chart(0)?;
         let (lo, hi) = (a.range_bound(1)?, a.range_bound(2)?);
-        let chart = if x {
-            chart.x_range(lo, hi)
-        } else {
-            chart.y_range(lo, hi)
-        };
-        Ok(a.check(chart)?.encode())
+        Ok(Root::from(a.check(f(chart, lo, hi))?).encode())
     })
     .param("chart", &t.chart)
     .param("lo", &t.any)
@@ -88,19 +88,21 @@ fn range(t: &Types, name: &'static str, x: bool) -> ScalarFunction {
 }
 
 fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
-    ext.register_scalar(scalar("chart", &t.chart, |_| Ok(Chart::new().encode())))?;
+    ext.register_scalar(scalar("chart", &t.chart, |_| {
+        Ok(Root::from(Chart::new()).encode())
+    }))?;
     ext.register_scalar(
         scalar("caption", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
-            Ok(a.check(chart.caption(a.str(1)?, None))?.encode())
+            let chart = a.chart(0)?;
+            Ok(Root::from(a.check(chart.caption(a.str(1)?, None))?).encode())
         })
         .param("chart", &t.chart)
         .param("text", &t.varchar),
     )?;
     ext.register_scalar(
         scalar("caption", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
-            Ok(a.check(chart.caption(a.str(1)?, Some(a.i64(2)?)))?.encode())
+            let chart = a.chart(0)?;
+            Ok(Root::from(a.check(chart.caption(a.str(1)?, Some(a.i64(2)?)))?).encode())
         })
         .param("chart", &t.chart)
         .param("text", &t.varchar)
@@ -108,9 +110,9 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )?;
     ext.register_scalar(
         scalar("caption", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart = a.chart(0)?;
             let font: Font = a.value(2)?;
-            Ok(chart.caption_font(a.str(1)?, font).encode())
+            Ok(Root::from(chart.caption_font(a.str(1)?, font)).encode())
         })
         .param("chart", &t.chart)
         .param("text", &t.varchar)
@@ -135,8 +137,8 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     for (name, f) in sizes {
         ext.register_scalar(chart_px(t, name, f))?;
     }
-    ext.register_scalar(range(t, "x_range", true))?;
-    ext.register_scalar(range(t, "y_range", false))?;
+    ext.register_scalar(range(t, "x_range", Chart::x_range))?;
+    ext.register_scalar(range(t, "y_range", Chart::y_range))?;
     for (name, f) in [
         (
             "x_log_scale",
@@ -146,15 +148,15 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     ] {
         ext.register_scalar(
             scalar(name, &t.chart, move |a| {
-                let chart: Chart = a.value(0)?;
-                Ok(a.check(f(chart, None))?.encode())
+                let chart = a.chart(0)?;
+                Ok(Root::from(a.check(f(chart, None))?).encode())
             })
             .param("chart", &t.chart),
         )?;
         ext.register_scalar(
             scalar(name, &t.chart, move |a| {
-                let chart: Chart = a.value(0)?;
-                Ok(a.check(f(chart, Some(a.f64(1)?)))?.encode())
+                let chart = a.chart(0)?;
+                Ok(Root::from(a.check(f(chart, Some(a.f64(1)?)))?).encode())
             })
             .param("chart", &t.chart)
             .param("base", &t.double),
@@ -170,8 +172,8 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     for (name, f) in scales {
         ext.register_scalar(
             scalar(name, &t.chart, move |a| {
-                let chart: Chart = a.value(0)?;
-                Ok(a.check(f(chart))?.encode())
+                let chart = a.chart(0)?;
+                Ok(Root::from(a.check(f(chart))?).encode())
             })
             .param("chart", &t.chart),
         )?;
@@ -180,7 +182,7 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     // name, so the plotters receiver qualifies the name.
     ext.register_scalar(
         scalar("root_fill", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart: Root = a.value(0)?;
             Ok(a.check(chart.fill(a.str(1)?))?.encode())
         })
         .param("chart", &t.chart)
@@ -188,49 +190,94 @@ fn register_builder(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )?;
     ext.register_scalar(
         scalar("draw_series", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart = a.chart(0)?;
             let series: Series = a.value(1)?;
-            Ok(a.check(chart.draw_series(series))?.encode())
+            Ok(Root::from(a.check(chart.draw_series(series))?).encode())
         })
         .param("chart", &t.chart)
         .param("series", &t.series),
     )?;
     ext.register_scalar(
         scalar("draw_series", &t.chart, |a| {
-            let chart: Chart = a.value(0)?;
-            let list = a.arg(1);
-            let elements = list.list_child()?;
-            let mut series = Vec::new();
-            // NULL elements draw nothing.
-            for i in list.list_entry(a.row())? {
-                if elements.is_valid(i) {
-                    series.push(a.check(Series::decode(elements.bytes(i)?))?);
-                }
-            }
-            Ok(a.check(chart.draw_series_list(series))?.encode())
+            let chart = a.chart(0)?;
+            let series = series_list(a, 1)?;
+            Ok(Root::from(a.check(chart.draw_series_list(series))?).encode())
         })
         .param("chart", &t.chart)
         .param("series", &t.series_list),
     )?;
+    register_secondary(ext, t)?;
     ext.register_scalar(
         scalar("configure_mesh", &t.mesh, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart = a.chart(0)?;
             Ok(chart.configure_mesh().encode())
         })
         .param("chart", &t.chart),
     )?;
     ext.register_scalar(
         scalar("configure_series_labels", &t.series_labels, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart = a.chart(0)?;
             Ok(chart.configure_series_labels().encode())
         })
         .param("chart", &t.chart),
     )
 }
 
+/// `set_secondary_coord`, `secondary_x_range`, `secondary_y_range`, `draw_secondary_series`
+/// and `configure_secondary_axes`.
+fn register_secondary(ext: &Extension<'_>, t: &Types) -> Result<()> {
+    ext.register_scalar(
+        scalar("set_secondary_coord", &t.chart, |a| {
+            let chart = a.chart(0)?;
+            Ok(Root::from(chart.set_secondary_coord()).encode())
+        })
+        .param("chart", &t.chart),
+    )?;
+    ext.register_scalar(range(t, "secondary_x_range", Chart::secondary_x_range))?;
+    ext.register_scalar(range(t, "secondary_y_range", Chart::secondary_y_range))?;
+    ext.register_scalar(
+        scalar("draw_secondary_series", &t.chart, |a| {
+            let chart = a.chart(0)?;
+            let series: Series = a.value(1)?;
+            Ok(Root::from(a.check(chart.draw_secondary_series(series))?).encode())
+        })
+        .param("chart", &t.chart)
+        .param("series", &t.series),
+    )?;
+    ext.register_scalar(
+        scalar("draw_secondary_series", &t.chart, |a| {
+            let chart = a.chart(0)?;
+            let series = series_list(a, 1)?;
+            Ok(Root::from(a.check(chart.draw_secondary_series_list(series))?).encode())
+        })
+        .param("chart", &t.chart)
+        .param("series", &t.series_list),
+    )?;
+    ext.register_scalar(
+        scalar("configure_secondary_axes", &t.mesh, |a| {
+            let chart = a.chart(0)?;
+            Ok(chart.configure_secondary_axes().encode())
+        })
+        .param("chart", &t.chart),
+    )
+}
+
+/// The `SERIES` of a `SERIES[]` argument, in list order; `NULL` elements draw nothing.
+fn series_list(a: &Args<'_, '_>, index: usize) -> Result<Vec<Series>> {
+    let list = a.arg(index);
+    let elements = list.list_child()?;
+    let mut series = Vec::new();
+    for i in list.list_entry(a.row())? {
+        if elements.is_valid(i) {
+            series.push(a.check(Series::decode(elements.bytes(i)?))?);
+        }
+    }
+    Ok(series)
+}
+
 /// A method on a duckers value that returns a value of the same type: `receiver` is the SQL
 /// name of the first parameter, `params` the rest.
-fn method<T: Value + 'static>(
+pub(super) fn method<T: Value + 'static>(
     ty: &LogicalType,
     receiver: &str,
     name: &'static str,
@@ -250,18 +297,18 @@ fn method<T: Value + 'static>(
 
 /// A text-style method (`IntoTextStyle`), registered twice: with a `BIGINT` size, which is
 /// sans-serif of that size, and with a `FONT`.
-fn text_style_methods<T: Value + 'static>(
+pub(super) fn text_style_methods<T: Value + 'static>(
     ext: &Extension<'_>,
     t: &Types,
     ty: &LogicalType,
     receiver: &str,
     name: &'static str,
-    f: fn(T, Font) -> T,
+    f: fn(T, Font) -> duckers_chart::Result<T>,
 ) -> Result<()> {
     let sized = scalar(name, ty, move |a| {
         let value: T = a.value(0)?;
         let font = a.check(Font::sans_serif(a.i64(1)?))?;
-        Ok(f(value, font).encode())
+        Ok(a.check(f(value, font))?.encode())
     })
     .param(receiver, ty)
     .param("size", &t.bigint);
@@ -269,7 +316,7 @@ fn text_style_methods<T: Value + 'static>(
     let font = scalar(name, ty, move |a| {
         let value: T = a.value(0)?;
         let font: Font = a.value(1)?;
-        Ok(f(value, font).encode())
+        Ok(a.check(f(value, font))?.encode())
     })
     .param(receiver, ty)
     .param("font", &t.font);
@@ -292,10 +339,10 @@ fn register_mesh(ext: &Extension<'_>, t: &Types) -> Result<()> {
         a.check(m.y_label_formatter(a.str(1)?))
     }))?;
 
-    type TextStyleMethod = fn(Mesh, Font) -> Mesh;
+    type TextStyleMethod = fn(Mesh, Font) -> duckers_chart::Result<Mesh>;
     let text_styles: [(&'static str, TextStyleMethod); 4] = [
-        ("axis_desc_style", Mesh::axis_desc_style),
-        ("label_style", Mesh::label_style),
+        ("axis_desc_style", |m, f| Ok(m.axis_desc_style(f))),
+        ("label_style", |m, f| Ok(m.label_style(f))),
         ("x_label_style", Mesh::x_label_style),
         ("y_label_style", Mesh::y_label_style),
     ];
@@ -368,7 +415,7 @@ fn register_mesh(ext: &Extension<'_>, t: &Types) -> Result<()> {
         ext.register_scalar(
             scalar(name, &t.mesh, move |a| {
                 let m: Mesh = a.value(0)?;
-                Ok(m.set(setting.clone()).encode())
+                Ok(a.check(m.set(setting.clone()))?.encode())
             })
             .param("mesh", &t.mesh),
         )?;
@@ -377,7 +424,7 @@ fn register_mesh(ext: &Extension<'_>, t: &Types) -> Result<()> {
     ext.register_scalar(
         scalar("draw", &t.chart, |a| {
             let mesh: Mesh = a.value(0)?;
-            Ok(mesh.draw().encode())
+            Ok(Root::from(mesh.draw()).encode())
         })
         .param("mesh", &t.mesh),
     )
@@ -432,12 +479,12 @@ fn register_series_labels(ext: &Extension<'_>, t: &Types) -> Result<()> {
         &t.series_labels,
         "series_labels",
         "label_font",
-        SeriesLabels::label_font,
+        |l: SeriesLabels, f| Ok(l.label_font(f)),
     )?;
     ext.register_scalar(
         scalar("draw", &t.chart, |a| {
             let labels: SeriesLabels = a.value(0)?;
-            Ok(labels.draw().encode())
+            Ok(Root::from(labels.draw()).encode())
         })
         .param("series_labels", &t.series_labels),
     )
@@ -446,7 +493,7 @@ fn register_series_labels(ext: &Extension<'_>, t: &Types) -> Result<()> {
 fn register_output(ext: &Extension<'_>, t: &Types) -> Result<()> {
     ext.register_scalar(
         scalar("to_svg", &t.varchar, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart: Root = a.value(0)?;
             let (w, h) = a.check(image_size(None, None))?;
             a.check(to_svg(&chart, w, h))
         })
@@ -454,7 +501,7 @@ fn register_output(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )?;
     ext.register_scalar(
         scalar("to_svg", &t.varchar, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart: Root = a.value(0)?;
             let (w, h) = a.check(image_size(Some(a.i64(1)?), Some(a.i64(2)?)))?;
             a.check(to_svg(&chart, w, h))
         })
@@ -464,7 +511,7 @@ fn register_output(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )?;
     ext.register_scalar(
         scalar("to_png", &t.blob, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart: Root = a.value(0)?;
             let (w, h) = a.check(image_size(None, None))?;
             a.check(to_png(&chart, w, h))
         })
@@ -472,7 +519,7 @@ fn register_output(ext: &Extension<'_>, t: &Types) -> Result<()> {
     )?;
     ext.register_scalar(
         scalar("to_png", &t.blob, |a| {
-            let chart: Chart = a.value(0)?;
+            let chart: Root = a.value(0)?;
             let (w, h) = a.check(image_size(Some(a.i64(1)?), Some(a.i64(2)?)))?;
             a.check(to_png(&chart, w, h))
         })

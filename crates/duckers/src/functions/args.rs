@@ -1,6 +1,6 @@
 //! Reading SQL arguments into `duckers-chart` values, and reporting its errors as SQL errors.
 
-use duckers_chart::{ErrorKind, RangeValue, SortKey, SqlType, Value, XValue};
+use duckers_chart::{Chart, ErrorKind, RangeValue, Root, SortKey, SqlType, Value, XValue};
 
 use crate::capi::{
     Bind, Error, InputVector, LogicalType, Result, ScalarFunction, ScalarInput, TypeId, WriteCell,
@@ -45,6 +45,13 @@ impl Args<'_, '_> {
     /// Argument `index` decoded as a duckers value.
     pub fn value<T: Value>(&self, index: usize) -> Result<T> {
         self.check(T::decode(self.arg(index).bytes(self.row)?))
+    }
+
+    /// Argument `index`, a `CHART`, as the cartesian chart a `ChartBuilder` or `ChartContext`
+    /// method works on: an error naming this function for a grid, titled or pie root.
+    pub fn chart(&self, index: usize) -> Result<Chart> {
+        let root: Root = self.value(index)?;
+        self.check(root.cartesian(self.name))
     }
 
     pub fn str(&self, index: usize) -> Result<&str> {

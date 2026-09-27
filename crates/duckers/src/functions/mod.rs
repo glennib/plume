@@ -4,6 +4,7 @@ mod args;
 mod chart;
 mod copy;
 mod internal;
+mod layout;
 mod series;
 mod show;
 
@@ -21,6 +22,7 @@ pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
     ))?;
     series::register(ext, types)?;
     chart::register(ext, types)?;
+    layout::register(ext, types)?;
     show::register(ext, types)?;
     copy::register(ext, types)?;
     internal::register(ext, types)

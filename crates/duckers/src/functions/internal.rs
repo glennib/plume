@@ -1,7 +1,7 @@
 //! Internal functions for tests, prefixed `__duckers_`. They are not part of the user API and may
 //! change or disappear in any release.
 
-use duckers_chart::{Chart, Font, Mesh, Series, SeriesLabels, Value};
+use duckers_chart::{Font, Mesh, Root, Series, SeriesLabels, Value};
 
 use crate::capi::{
     Aggregate, AggregateFunction, AggregateInput, Bind, Error, Extension, LogicalType,
@@ -21,7 +21,7 @@ fn debug<T: Value + std::fmt::Debug>(ty: &LogicalType, types: &Types) -> ScalarF
 }
 
 pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
-    ext.register_scalar(debug::<Chart>(&types.chart, types))?;
+    ext.register_scalar(debug::<Root>(&types.chart, types))?;
     ext.register_scalar(debug::<Series>(&types.series, types))?;
     ext.register_scalar(debug::<Mesh>(&types.mesh, types))?;
     ext.register_scalar(debug::<SeriesLabels>(&types.series_labels, types))?;

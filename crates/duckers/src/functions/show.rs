@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use duckers_chart::{Chart, Value, image_size, to_rgb};
+use duckers_chart::{Root, Value, image_size, to_rgb};
 use duckers_view::{Image, ShowError, ShowOptions, Viewer, settings};
 
 use super::args::{chart_error, scalar};
@@ -133,7 +133,7 @@ fn exec(input: &ScalarInput<'_>, out: &mut OutputVector<'_>) -> Result<()> {
             continue;
         }
         let bytes = chart.bytes(row)?;
-        let decoded = Chart::decode(bytes).map_err(|e| chart_error("show", e))?;
+        let decoded = Root::decode(bytes).map_err(|e| chart_error("show", e))?;
 
         // The named arguments are checked on every row, shown or not, so that a bad value does
         // not depend on the cap. A NULL named argument means its default.

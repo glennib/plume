@@ -12,7 +12,9 @@
 
 use crate::error::{Error, Result};
 use crate::methods::check_scale_fits;
-use crate::spec::{Axis, AxisKind, AxisRange, Chart, Column, Scale, Series, SeriesKind, bin};
+use crate::spec::{
+    Axis, AxisKind, AxisRange, AxisSpec, Chart, Column, Scale, Series, SeriesKind, bin,
+};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta, Utc};
 use plotters::coord::combinators::{IntoLogRange, LogCoord};
 use plotters::coord::ranged1d::{KeyPointHint, NoDefaultFormatting, Ranged, ValueFormatter};
@@ -87,6 +89,37 @@ impl AxisCoord {
         match self {
             AxisCoord::Band(b) => b.band(column, i),
             _ => None,
+        }
+    }
+}
+
+impl AxisCoord {
+    /// Whether two axes map and label alike: the same kind, range and bands.
+    pub(crate) fn same_as(&self, other: &AxisCoord) -> bool {
+        let same_range = || self.range() == other.range();
+        match (self, other) {
+            (AxisCoord::Linear(_), AxisCoord::Linear(_))
+            | (AxisCoord::Timestamp(_), AxisCoord::Timestamp(_)) => same_range(),
+            (AxisCoord::Date(a), AxisCoord::Date(b)) => same_range() && a.keys == b.keys,
+            (AxisCoord::Log(a), AxisCoord::Log(b)) => (a.lo, a.hi, a.base) == (b.lo, b.hi, b.base),
+            (AxisCoord::Band(a), AxisCoord::Band(b)) => {
+                a.n == b.n
+                    && a.reversed == b.reversed
+                    && match (&a.labels, &b.labels) {
+                        (BandLabels::Integer(x), BandLabels::Integer(y)) => x == y,
+                        (BandLabels::Date(x, k), BandLabels::Date(y, l)) => x == y && k == l,
+                        (BandLabels::Category(x, _), BandLabels::Category(y, _)) => x == y,
+                        (
+                            BandLabels::Step { first, step },
+                            BandLabels::Step {
+                                first: f2,
+                                step: s2,
+                            },
+                        ) => first == f2 && step == s2,
+                        _ => false,
+                    }
+            }
+            _ => false,
         }
     }
 }
@@ -523,8 +556,19 @@ fn numbers_on(series: &[&Series], axis: Axis) -> Vec<f64> {
 /// Resolves `axis` of the chart: its kind from the series (or the range bounds), its range
 /// from `x_range`/`y_range` or the data, and bands where histograms put buckets on it.
 pub(crate) fn coord(chart: &Chart, series: &[&Series], axis: Axis) -> Result<AxisCoord> {
-    let name = axis.name();
-    let range = chart.axis(axis).range;
+    coord_of(chart.axis(axis), series, axis, axis.name())
+}
+
+/// Resolves an axis from its settings and the series drawn on it; `name` is how messages name
+/// it (`x`, `secondary_y`), as in `{name}_range`. A secondary coordinate is resolved from its
+/// own settings and the secondary series.
+pub(crate) fn coord_of(
+    spec: &AxisSpec,
+    series: &[&Series],
+    axis: Axis,
+    name: &str,
+) -> Result<AxisCoord> {
+    let range = spec.range;
     let kind = series
         .first()
         .map(|s| s.kind_on(axis))
@@ -538,7 +582,7 @@ pub(crate) fn coord(chart: &Chart, series: &[&Series], axis: Axis) -> Result<Axi
         ))
     };
     let beyond = || out_of_range(&format!("the {name} range"));
-    let scale = chart.axis(axis).scale;
+    let scale = spec.scale;
     check_scale_fits(&format!("{name}_log_scale"), axis, scale, kind)?;
 
     Ok(match kind {

@@ -8,13 +8,13 @@ require duckers
 query T
 SELECT __duckers_debug(chart())
 ----
-Chart { caption: None, margin: Sides { top: 10, bottom: 10, left: 10, right: 10 }, label_area: Sides { top: 0, bottom: 30, left: 40, right: 0 }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, fill: Color { r: 255, g: 255, b: 255, a: 1.0 }, ops: [] }
+Chart { caption: None, margin: Sides { top: 10, bottom: 10, left: 10, right: 10 }, label_area: LabelAreas { top: None, bottom: 30, left: 40, right: None }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, secondary: None, fill: Color { r: 255, g: 255, b: 255, a: 1.0 }, ops: [] }
 
 # The builder methods.
 query T
 SELECT __duckers_debug(chart().caption('Oslo').margin(4).x_label_area_size(50).y_label_area_size(60).root_fill('grey_100'))
 ----
-Chart { caption: Some(Caption { text: "Oslo", font: Font { family: "sans-serif", size: 30, style: Normal, color: None } }), margin: Sides { top: 4, bottom: 4, left: 4, right: 4 }, label_area: Sides { top: 0, bottom: 50, left: 60, right: 0 }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, fill: Color { r: 245, g: 245, b: 245, a: 1.0 }, ops: [] }
+Chart { caption: Some(Caption { text: "Oslo", font: Font { family: "sans-serif", size: 30, style: Normal, color: None } }), margin: Sides { top: 4, bottom: 4, left: 4, right: 4 }, label_area: LabelAreas { top: None, bottom: 50, left: 60, right: None }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, secondary: None, fill: Color { r: 245, g: 245, b: 245, a: 1.0 }, ops: [] }
 
 query T
 SELECT __duckers_debug(chart().caption('Oslo', 20)).regexp_extract('size: [0-9]+')
@@ -24,15 +24,15 @@ size: 20
 # Every ChartBuilder size: margins per side and the four label areas.
 query T
 SELECT __duckers_debug(chart().margin_top(1).margin_bottom(2).margin_left(3).margin_right(4)
-    .top_x_label_area_size(5).right_y_label_area_size(6)).regexp_extract('margin: .*right: [0-9]+ \}')
+    .top_x_label_area_size(5).right_y_label_area_size(6)).regexp_extract('margin: .*right: Some\([0-9]+\) \}')
 ----
-margin: Sides { top: 1, bottom: 2, left: 3, right: 4 }, label_area: Sides { top: 5, bottom: 30, left: 40, right: 6 }
+margin: Sides { top: 1, bottom: 2, left: 3, right: 4 }, label_area: LabelAreas { top: Some(5), bottom: 30, left: 40, right: Some(6) }
 
 query TT
 SELECT __duckers_debug(chart().set_all_label_area_size(7)).regexp_extract('label_area: [^}]*\}'),
        __duckers_debug(chart().top_x_label_area_size(5).set_left_and_bottom_label_area_size(8)).regexp_extract('label_area: [^}]*\}')
 ----
-label_area: Sides { top: 7, bottom: 7, left: 7, right: 7 }	label_area: Sides { top: 5, bottom: 8, left: 8, right: 0 }
+label_area: LabelAreas { top: Some(7), bottom: 7, left: 7, right: Some(7) }	label_area: LabelAreas { top: Some(5), bottom: 8, left: 8, right: None }
 
 # x_log_scale and y_log_scale: plotters' log_scale(), base 10 unless given.
 query T

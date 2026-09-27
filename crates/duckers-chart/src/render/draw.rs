@@ -1,4 +1,5 @@
-//! Replaying a chart's calls on a plotters `ChartContext`.
+//! Replaying a chart's calls on a plotters `ChartContext`, or on a `DualCoordChartContext` for
+//! a chart with secondary axes.
 
 use super::axis::{self, AxisCoord, LabelValue, bucket_sums};
 use crate::color::Color;
@@ -8,13 +9,19 @@ use crate::spec::{
     Axis, AxisKind, Chart, DrawOp, Font, FontStyle, LabelPosition, LineStyle, Marker, MeshSetting,
     MeshStyle, Series, SeriesKind, SeriesLabelSetting, SeriesLabelStyle, TickPosition,
 };
-use plotters::chart::SeriesAnno;
+use plotters::chart::{DualCoordChartContext, SeriesAnno};
 use plotters::coord::Shift;
 use plotters::coord::ranged1d::ValueFormatter;
 use plotters::data::Quartiles;
-use plotters::element::{DashedPathElement, Drawable, PointCollection};
+use plotters::drawing::DrawingAreaErrorKind;
+use plotters::element::{BackendCoordOnly, DashedPathElement, Drawable, PointCollection};
 use plotters::prelude::*;
 use plotters_backend::{BackendCoord, DrawingErrorKind};
+use std::borrow::Borrow;
+
+/// The label area size duckers gives the right y axis (and the top x axis, when it differs
+/// from the bottom one) of a chart with secondary axes, unless the chain sets it.
+const SECONDARY_LABEL_AREA: u32 = 40;
 
 /// The px width of a legend glyph, inside plotters' default 30 px glyph column.
 const GLYPH_WIDTH: i32 = 20;
@@ -34,35 +41,121 @@ static DEFAULT_LABELS: SeriesLabelStyle = SeriesLabelStyle {
 /// A drawing call after duckers' defaults are filled in.
 enum Op<'a> {
     Mesh(&'a MeshStyle),
-    /// A series and its index among the chart's series, which picks its default colour.
+    /// A series and its index among the chart's series (primary and secondary, in draw
+    /// order), which picks its default colour.
     Series(&'a Series, usize),
     SeriesLabels(&'a SeriesLabelStyle),
+    SecondarySeries(&'a Series, usize),
+    SecondaryAxes(&'a MeshStyle),
 }
 
-/// The chart's calls, plus a default mesh first if the chain never drew one, and a default
-/// legend last if a series has a label and the chain never drew one.
+/// The chart's calls, plus a default mesh first if the chain never drew one, default secondary
+/// axes right after the first mesh if the chart has secondary axes and the chain never drew
+/// them, and a default legend last if a series has a label and the chain never drew one.
 fn resolve(chart: &Chart) -> Vec<Op<'_>> {
     let mut index = 0;
+    let mut next = || {
+        index += 1;
+        index - 1
+    };
     let mut ops: Vec<Op> = chart
         .ops
         .iter()
         .map(|op| match op {
             DrawOp::Mesh(m) => Op::Mesh(m),
-            DrawOp::Series(s) => {
-                index += 1;
-                Op::Series(s, index - 1)
-            }
+            DrawOp::Series(s) => Op::Series(s, next()),
             DrawOp::SeriesLabels(l) => Op::SeriesLabels(l),
+            DrawOp::SecondarySeries(s) => Op::SecondarySeries(s, next()),
+            DrawOp::SecondaryAxes(m) => Op::SecondaryAxes(m),
         })
         .collect();
     if !ops.iter().any(|op| matches!(op, Op::Mesh(_))) {
         ops.insert(0, Op::Mesh(&DEFAULT_MESH));
     }
-    let labelled = chart.series().any(|s| s.label.is_some());
+    if chart.secondary.is_some() && !ops.iter().any(|op| matches!(op, Op::SecondaryAxes(_))) {
+        let mesh = ops
+            .iter()
+            .position(|op| matches!(op, Op::Mesh(_)))
+            .expect("a mesh is drawn");
+        ops.insert(mesh + 1, Op::SecondaryAxes(&DEFAULT_MESH));
+    }
+    let labelled = chart
+        .series()
+        .chain(chart.secondary_series())
+        .any(|s| s.label.is_some());
     if labelled && !ops.iter().any(|op| matches!(op, Op::SeriesLabels(_))) {
         ops.push(Op::SeriesLabels(&DEFAULT_LABELS));
     }
     ops
+}
+
+/// The coordinate type of every chart.
+type Coord = Cartesian2d<AxisCoord, AxisCoord>;
+
+/// The chart context: one coordinate system, or two after `set_secondary_coord`.
+/// One lives on the stack per render, so the size of the larger variant does not matter.
+#[allow(clippy::large_enum_variant)]
+enum Context<'a, DB: DrawingBackend> {
+    Single(ChartContext<'a, DB, Coord>),
+    Dual(DualCoordChartContext<'a, DB, Coord, Coord>),
+}
+
+impl<'a, DB: DrawingBackend> Context<'a, DB> {
+    /// The primary chart context, which a `DualCoordChartContext` derefs to.
+    fn primary(&mut self) -> &mut ChartContext<'a, DB, Coord> {
+        match self {
+            Context::Single(ctx) => ctx,
+            Context::Dual(ctx) => ctx,
+        }
+    }
+}
+
+/// Where a series is drawn: `ChartContext::draw_series` on the primary coordinates, or
+/// `DualCoordChartContext::draw_secondary_series`. Both return the annotation of the primary
+/// context, so every series is in the one legend.
+trait Target<'a, DB: DrawingBackend> {
+    fn draw<E, R, S>(
+        &mut self,
+        series: S,
+    ) -> std::result::Result<&mut SeriesAnno<'a, DB>, DrawingAreaErrorKind<DB::ErrorType>>
+    where
+        for<'b> &'b E: PointCollection<'b, (f64, f64)>,
+        E: Drawable<DB>,
+        R: Borrow<E>,
+        S: IntoIterator<Item = R>;
+}
+
+impl<'a, DB: DrawingBackend> Target<'a, DB> for ChartContext<'a, DB, Coord> {
+    fn draw<E, R, S>(
+        &mut self,
+        series: S,
+    ) -> std::result::Result<&mut SeriesAnno<'a, DB>, DrawingAreaErrorKind<DB::ErrorType>>
+    where
+        for<'b> &'b E: PointCollection<'b, (f64, f64)>,
+        E: Drawable<DB>,
+        R: Borrow<E>,
+        S: IntoIterator<Item = R>,
+    {
+        self.draw_series::<BackendCoordOnly, E, R, S>(series)
+    }
+}
+
+/// The secondary coordinates of a `DualCoordChartContext`.
+struct Secondary<'c, 'a, DB: DrawingBackend>(&'c mut DualCoordChartContext<'a, DB, Coord, Coord>);
+
+impl<'a, DB: DrawingBackend> Target<'a, DB> for Secondary<'_, 'a, DB> {
+    fn draw<E, R, S>(
+        &mut self,
+        series: S,
+    ) -> std::result::Result<&mut SeriesAnno<'a, DB>, DrawingAreaErrorKind<DB::ErrorType>>
+    where
+        for<'b> &'b E: PointCollection<'b, (f64, f64)>,
+        E: Drawable<DB>,
+        R: Borrow<E>,
+        S: IntoIterator<Item = R>,
+    {
+        self.0.draw_secondary_series(series)
+    }
 }
 
 fn plotters_error(e: impl std::fmt::Display) -> Error {
@@ -78,7 +171,7 @@ pub(crate) fn font_style(style: FontStyle) -> plotters::style::FontStyle {
     }
 }
 
-fn text_style(font: &Font) -> TextStyle<'_> {
+pub(crate) fn text_style(font: &Font) -> TextStyle<'_> {
     let desc = FontDesc::new(
         FontFamily::from(font.family.as_str()),
         f64::from(font.size),
@@ -111,10 +204,42 @@ pub(crate) fn draw<DB: DrawingBackend>(root: &DrawingArea<DB, Shift>, chart: &Ch
     axis::check_kinds(&series)?;
     let x = axis::coord(chart, &series, Axis::X)?;
     let y = axis::coord(chart, &series, Axis::Y)?;
+    let secondary = match &chart.secondary {
+        None => None,
+        Some(spec) => Some(secondary_coords(chart, spec, &series, &x)?),
+    };
     root.fill(&chart.fill.to_plotters())
         .map_err(plotters_error)?;
     let ops = resolve(chart);
-    draw_on(root, chart, &ops, x, y)
+    draw_on(root, chart, &ops, x, y, secondary)
+}
+
+/// The secondary x and y axes: from `secondary_x_range`/`secondary_y_range` and the secondary
+/// series, with the primary x axis standing in for a secondary x axis that neither sets.
+fn secondary_coords(
+    chart: &Chart,
+    spec: &crate::spec::SecondaryCoord,
+    primary: &[&Series],
+    x: &AxisCoord,
+) -> Result<(AxisCoord, AxisCoord)> {
+    let series: Vec<&Series> = chart.secondary_series().collect();
+    axis::check_kinds(&series)?;
+    let x2 = if series.is_empty() && spec.x_axis.range.is_none() {
+        x.clone()
+    } else {
+        axis::coord_of(&spec.x_axis, &series, Axis::X, "secondary_x")?
+    };
+    let primary_known = !primary.is_empty() || chart.x_axis.range.is_some();
+    if primary_known && x2.kind() != x.kind() {
+        return Err(Error::invalid(format!(
+            "the secondary x axis is {} but the primary x axis is {}: plotters' \
+             dual-coordinate charts share the x data, so both x axes have one kind",
+            x2.kind(),
+            x.kind()
+        )));
+    }
+    let y2 = axis::coord_of(&spec.y_axis, &series, Axis::Y, "secondary_y")?;
+    Ok((x2, y2))
 }
 
 fn draw_on<DB: DrawingBackend>(
@@ -123,30 +248,63 @@ fn draw_on<DB: DrawingBackend>(
     ops: &[Op<'_>],
     x: AxisCoord,
     y: AxisCoord,
+    secondary: Option<(AxisCoord, AxisCoord)>,
 ) -> Result<()> {
+    let areas = chart.label_area;
+    let top_default = match &secondary {
+        Some((x2, _)) if !x2.same_as(&x) => SECONDARY_LABEL_AREA,
+        _ => 0,
+    };
+    let right_default = if secondary.is_some() {
+        SECONDARY_LABEL_AREA
+    } else {
+        0
+    };
     let mut builder = ChartBuilder::on(root);
     builder
         .margin_top(chart.margin.top)
         .margin_bottom(chart.margin.bottom)
         .margin_left(chart.margin.left)
         .margin_right(chart.margin.right)
-        .set_label_area_size(LabelAreaPosition::Top, chart.label_area.top)
-        .set_label_area_size(LabelAreaPosition::Bottom, chart.label_area.bottom)
-        .set_label_area_size(LabelAreaPosition::Left, chart.label_area.left)
-        .set_label_area_size(LabelAreaPosition::Right, chart.label_area.right);
+        .set_label_area_size(LabelAreaPosition::Top, areas.top.unwrap_or(top_default))
+        .set_label_area_size(LabelAreaPosition::Bottom, areas.bottom)
+        .set_label_area_size(LabelAreaPosition::Left, areas.left)
+        .set_label_area_size(
+            LabelAreaPosition::Right,
+            areas.right.unwrap_or(right_default),
+        );
     if let Some(caption) = &chart.caption {
         builder.caption(&caption.text, text_style(&caption.font));
     }
-    let mut ctx = builder
+    let ctx = builder
         .build_cartesian_2d(x.clone(), y.clone())
         .map_err(plotters_error)?;
+    let (mut ctx, (x2, y2)) = match secondary {
+        Some((x2, y2)) => (
+            Context::Dual(ctx.set_secondary_coord(x2.clone(), y2.clone())),
+            (x2, y2),
+        ),
+        None => (Context::Single(ctx), (x.clone(), y.clone())),
+    };
 
     for op in ops {
         match op {
-            Op::Mesh(style) => draw_mesh(&mut ctx, style, &x, &y)?,
-            Op::Series(series, index) => draw_series(&mut ctx, series, *index, &x, &y)?,
+            Op::Mesh(style) => draw_mesh(ctx.primary(), style, &x, &y)?,
+            Op::Series(series, index) => draw_series(ctx.primary(), series, *index, &x, &y)?,
+            Op::SecondarySeries(series, index) => {
+                let Context::Dual(dual) = &mut ctx else {
+                    unreachable!("secondary series are only drawn on a dual-coordinate chart");
+                };
+                draw_series(&mut Secondary(dual), series, *index, &x2, &y2)?;
+            }
+            Op::SecondaryAxes(style) => {
+                let Context::Dual(dual) = &mut ctx else {
+                    unreachable!("secondary axes are only drawn on a dual-coordinate chart");
+                };
+                draw_secondary_axes(dual, style, &x2, &y2)?;
+            }
             Op::SeriesLabels(style) => {
-                let mut labels = ctx.configure_series_labels();
+                let mut labels = ctx.primary().configure_series_labels();
                 for setting in &style.settings {
                     match setting {
                         SeriesLabelSetting::Position(p) => labels.position(label_position(*p)),
@@ -238,27 +396,81 @@ fn tick_position(p: TickPosition) -> LabelAreaPosition {
     }
 }
 
-/// `configure_mesh()`, the setter calls in chain order, then `draw()`.
-fn draw_mesh<'a, DB: DrawingBackend + 'a>(
-    ctx: &mut ChartContext<'a, DB, Cartesian2d<AxisCoord, AxisCoord>>,
+/// The label formatters of a mesh style for axes `x` and `y` (named `x_name`, `y_name` in
+/// messages): the last `x_label_formatter` and `y_label_formatter` call, since a later call
+/// replaces an earlier one in plotters.
+fn formatters(
     style: &MeshStyle,
     x: &AxisCoord,
     y: &AxisCoord,
-) -> Result<()> {
-    // A later formatter call replaces an earlier one, as in plotters, so only the last counts.
+    names: [&str; 2],
+) -> Result<(Option<Formatter>, Option<Formatter>)> {
     let last = |f: fn(&MeshSetting) -> Option<&String>| style.settings.iter().rev().find_map(f);
     let format_x = last(|s| match s {
         MeshSetting::XLabelFormatter(f) => Some(f),
         _ => None,
     })
-    .map(|f| formatter("x_label_formatter", f, x, "x"))
+    .map(|f| formatter("x_label_formatter", f, x, names[0]))
     .transpose()?;
     let format_y = last(|s| match s {
         MeshSetting::YLabelFormatter(f) => Some(f),
         _ => None,
     })
-    .map(|f| formatter("y_label_formatter", f, y, "y"))
+    .map(|f| formatter("y_label_formatter", f, y, names[1]))
     .transpose()?;
+    Ok((format_x, format_y))
+}
+
+/// `configure_secondary_axes()`, the `SecondaryMeshStyle` setter calls in chain order, then
+/// `draw()`. The methods only a `MeshStyle` has are refused when they are called.
+fn draw_secondary_axes<DB: DrawingBackend>(
+    ctx: &mut DualCoordChartContext<'_, DB, Coord, Coord>,
+    style: &MeshStyle,
+    x: &AxisCoord,
+    y: &AxisCoord,
+) -> Result<()> {
+    let (format_x, format_y) = formatters(style, x, y, ["secondary x", "secondary y"])?;
+    let mut mesh = ctx.configure_secondary_axes();
+    for setting in &style.settings {
+        match setting {
+            MeshSetting::XDesc(text) => mesh.x_desc(text.as_str()),
+            MeshSetting::YDesc(text) => mesh.y_desc(text.as_str()),
+            MeshSetting::AxisDescStyle(f) => mesh.axis_desc_style(text_style(f)),
+            MeshSetting::XLabels(n) => mesh.x_labels(*n as usize),
+            MeshSetting::YLabels(n) => mesh.y_labels(*n as usize),
+            MeshSetting::XLabelFormatter(_) | MeshSetting::YLabelFormatter(_) => &mut mesh,
+            MeshSetting::LabelStyle(f) => mesh.label_style(text_style(f)),
+            MeshSetting::XLabelOffset(px) => mesh.x_label_offset(*px),
+            MeshSetting::YLabelOffset(px) => mesh.y_label_offset(*px),
+            MeshSetting::AxisStyle(l) => mesh.axis_style(line_style(l)),
+            MeshSetting::SetTickMarkSize(p, px) => mesh.set_tick_mark_size(tick_position(*p), *px),
+            MeshSetting::SetAllTickMarkSize(px) => mesh.set_all_tick_mark_size(*px),
+            other => {
+                return Err(Error::invalid(format!(
+                    "{} does not apply to a secondary MESH: plotters' SecondaryMeshStyle has no \
+                     such setter",
+                    other.method()
+                )));
+            }
+        };
+    }
+    if let Some(f) = &format_x {
+        mesh.x_label_formatter(f.as_ref());
+    }
+    if let Some(f) = &format_y {
+        mesh.y_label_formatter(f.as_ref());
+    }
+    mesh.draw().map_err(plotters_error)
+}
+
+/// `configure_mesh()`, the setter calls in chain order, then `draw()`.
+fn draw_mesh<'a, DB: DrawingBackend + 'a>(
+    ctx: &mut ChartContext<'a, DB, Coord>,
+    style: &MeshStyle,
+    x: &AxisCoord,
+    y: &AxisCoord,
+) -> Result<()> {
+    let (format_x, format_y) = formatters(style, x, y, ["x", "y"])?;
 
     let mut mesh = ctx.configure_mesh();
     for setting in &style.settings {
@@ -300,7 +512,7 @@ fn draw_mesh<'a, DB: DrawingBackend + 'a>(
 }
 
 fn draw_series<'a, DB: DrawingBackend + 'a>(
-    ctx: &mut ChartContext<'a, DB, Cartesian2d<AxisCoord, AxisCoord>>,
+    ctx: &mut impl Target<'a, DB>,
     series: &Series,
     index: usize,
     x: &AxisCoord,
@@ -324,23 +536,21 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
 
     let anno: &mut SeriesAnno<'a, DB> = match &series.kind {
         SeriesKind::Line(options) => {
-            ctx.draw_series(LineSeries::new(points(), style).point_size(options.point_size))
+            ctx.draw(LineSeries::new(points(), style).point_size(options.point_size))
         }
         SeriesKind::Point(options) => {
             let (pts, size) = (points(), options.size);
             match options.marker {
                 Marker::Circle => {
-                    ctx.draw_series(PointSeries::<_, _, Circle<_, _>, _>::new(pts, size, style))
+                    ctx.draw(PointSeries::<_, _, Circle<_, _>, _>::new(pts, size, style))
                 }
                 Marker::Cross => {
-                    ctx.draw_series(PointSeries::<_, _, Cross<_, _>, _>::new(pts, size, style))
+                    ctx.draw(PointSeries::<_, _, Cross<_, _>, _>::new(pts, size, style))
                 }
-                Marker::Triangle => ctx.draw_series(
-                    PointSeries::<_, _, TriangleMarker<_, _>, _>::new(pts, size, style),
-                ),
-                Marker::Pixel => {
-                    ctx.draw_series(PointSeries::<_, _, Pixel<_>, _>::new(pts, size, style))
-                }
+                Marker::Triangle => ctx.draw(PointSeries::<_, _, TriangleMarker<_, _>, _>::new(
+                    pts, size, style,
+                )),
+                Marker::Pixel => ctx.draw(PointSeries::<_, _, Pixel<_>, _>::new(pts, size, style)),
             }
         }
         SeriesKind::Histogram(options) => {
@@ -354,7 +564,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     Some(bar)
                 })
                 .collect();
-            ctx.draw_series(bars)
+            ctx.draw(bars)
         }
         SeriesKind::HistogramHorizontal(options) => {
             let base = x.number(options.baseline);
@@ -367,15 +577,15 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     Some(bar)
                 })
                 .collect();
-            ctx.draw_series(bars)
+            ctx.draw(bars)
         }
         SeriesKind::Area(options) => {
             // The y axis of an area series is numeric, where `number` always places a value.
             let base = y.number(options.baseline).unwrap_or(options.baseline);
             let border = line_style(&options.border_style);
-            ctx.draw_series(AreaSeries::new(points(), base, style).border_style(border))
+            ctx.draw(AreaSeries::new(points(), base, style).border_style(border))
         }
-        SeriesKind::DashedLine(options) => ctx.draw_series(DashedLineSeries::new(
+        SeriesKind::DashedLine(options) => ctx.draw(DashedLineSeries::new(
             points(),
             options.size,
             options.spacing,
@@ -396,7 +606,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     ))
                 })
                 .collect();
-            ctx.draw_series(bars)
+            ctx.draw(bars)
         }
         SeriesKind::ErrorBarHorizontal(options) => {
             let bars: Vec<_> = (0..series.len())
@@ -413,7 +623,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     ))
                 })
                 .collect();
-            ctx.draw_series(bars)
+            ctx.draw(bars)
         }
         SeriesKind::CandleStick(options) => {
             let (gain, loss) = candle_styles(options, style);
@@ -436,7 +646,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     ))
                 })
                 .collect();
-            ctx.draw_series(candles)
+            ctx.draw(candles)
         }
         SeriesKind::BoxplotVertical(options) => {
             let boxes: Vec<_> = (0..series.len())
@@ -451,7 +661,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     Placed::new(inner, points)
                 })
                 .collect();
-            ctx.draw_series(boxes)
+            ctx.draw(boxes)
         }
         SeriesKind::BoxplotHorizontal(options) => {
             let boxes: Vec<_> = (0..series.len())
@@ -466,7 +676,7 @@ fn draw_series<'a, DB: DrawingBackend + 'a>(
                     Placed::new(inner, points)
                 })
                 .collect();
-            ctx.draw_series(boxes)
+            ctx.draw(boxes)
         }
     }
     .map_err(plotters_error)?;

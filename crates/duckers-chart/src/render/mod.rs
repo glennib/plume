@@ -1,4 +1,4 @@
-//! Rendering a [`Chart`] with plotters: `to_svg` is `SVGBackend`, `to_png` and `to_rgb` are
+//! Rendering a `CHART` ([`Root`]) with plotters: `to_svg` is `SVGBackend`, `to_png` and `to_rgb` are
 //! `BitMapBackend`.
 //!
 //! Text is laid out and rasterized with plotters' `ab_glyph` engine and an embedded DejaVu Sans,
@@ -7,9 +7,10 @@
 
 mod axis;
 mod draw;
+mod layout;
 
 use crate::error::{Error, ErrorKind, Result};
-use crate::spec::{Chart, DrawOp, Font};
+use crate::spec::Root;
 use plotters::prelude::*;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -60,29 +61,15 @@ fn check_size(width: u32, height: u32) -> Result<()> {
     }
 }
 
-/// Every `FONT` the chart uses: the caption's, and those of its mesh and legend settings.
-fn fonts(chart: &Chart) -> Vec<&Font> {
-    let mut fonts: Vec<&Font> = chart.caption.iter().map(|c| &c.font).collect();
-    for op in &chart.ops {
-        match op {
-            DrawOp::Mesh(style) => fonts.extend(style.settings.iter().filter_map(|s| s.font())),
-            DrawOp::SeriesLabels(style) => {
-                fonts.extend(style.settings.iter().filter_map(|s| s.font()))
-            }
-            DrawOp::Series(_) => {}
-        }
-    }
-    fonts
-}
-
 /// Registers the embedded font under the generic families and every family the chart names.
 /// `ab_glyph` looks fonts up by exact family name and fails for unregistered ones. The one
 /// embedded face (DejaVu Sans) serves every family and style: plotters falls back to a
 /// family's normal face for bold, italic and oblique.
-fn register_fonts(chart: &Chart) -> Result<()> {
+fn register_fonts(chart: &Root) -> Result<()> {
     static REGISTERED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     let mut registered = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
-    let used = fonts(chart)
+    let used = chart
+        .fonts()
         .into_iter()
         .map(|f| FontFamily::from(f.family.as_str()).as_str().to_string());
     for family in GENERIC_FAMILIES.map(String::from).into_iter().chain(used) {
@@ -97,13 +84,13 @@ fn register_fonts(chart: &Chart) -> Result<()> {
 }
 
 /// `to_svg(chart, width, height)`: the chart as an SVG document.
-pub fn to_svg(chart: &Chart, width: u32, height: u32) -> Result<String> {
+pub fn to_svg(chart: &Root, width: u32, height: u32) -> Result<String> {
     check_size(width, height)?;
     register_fonts(chart)?;
     let mut out = String::new();
     {
         let root = SVGBackend::with_string(&mut out, (width, height)).into_drawing_area();
-        draw::draw(&root, chart)?;
+        layout::draw_root(&root, chart)?;
         root.present().map_err(Error::render)?;
     }
     Ok(out)
@@ -112,7 +99,7 @@ pub fn to_svg(chart: &Chart, width: u32, height: u32) -> Result<String> {
 /// Renders the chart into an RGB buffer of `width * height * 3` bytes, row by row from the top
 /// left, the layout of plotters' `BitMapBackend::with_buffer`. The buffer's previous content is
 /// the background under the chart's fill.
-pub fn render_rgb(chart: &Chart, buffer: &mut [u8], width: u32, height: u32) -> Result<()> {
+pub fn render_rgb(chart: &Root, buffer: &mut [u8], width: u32, height: u32) -> Result<()> {
     check_size(width, height)?;
     let needed = width as usize * height as usize * 3;
     if buffer.len() != needed {
@@ -123,14 +110,14 @@ pub fn render_rgb(chart: &Chart, buffer: &mut [u8], width: u32, height: u32) -> 
     }
     register_fonts(chart)?;
     let root = BitMapBackend::with_buffer(buffer, (width, height)).into_drawing_area();
-    draw::draw(&root, chart)?;
+    layout::draw_root(&root, chart)?;
     root.present().map_err(Error::render)?;
     Ok(())
 }
 
 /// `to_rgb(chart, width, height)`: the chart as RGB bytes, `width * height * 3` of them.
 /// The buffer starts black, as plotters' bitmaps do, so only a transparent fill shows it.
-pub fn to_rgb(chart: &Chart, width: u32, height: u32) -> Result<Vec<u8>> {
+pub fn to_rgb(chart: &Root, width: u32, height: u32) -> Result<Vec<u8>> {
     check_size(width, height)?;
     let mut buffer = vec![0; width as usize * height as usize * 3];
     render_rgb(chart, &mut buffer, width, height)?;
@@ -138,7 +125,7 @@ pub fn to_rgb(chart: &Chart, width: u32, height: u32) -> Result<Vec<u8>> {
 }
 
 /// `to_png(chart, width, height)`: the chart as a PNG file (8-bit RGB).
-pub fn to_png(chart: &Chart, width: u32, height: u32) -> Result<Vec<u8>> {
+pub fn to_png(chart: &Root, width: u32, height: u32) -> Result<Vec<u8>> {
     let rgb = to_rgb(chart, width, height)?;
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, width, height);

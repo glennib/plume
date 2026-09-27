@@ -7,8 +7,8 @@
 
 use duckers_chart::spec::MeshSetting;
 use duckers_chart::{
-    Accumulator, Chart, Font, Key, RangeValue, Series, SeriesAggregate, SeriesBinding, SortKey,
-    SqlType, Value, XValue, mix, to_png, to_rgb, to_svg,
+    Accumulator, Chart, Font, Key, RangeValue, Root, Series, SeriesAggregate, SeriesBinding,
+    SortKey, SqlType, Value, XValue, mix, to_png, to_rgb, to_svg,
 };
 
 /// One row of an aggregate call.
@@ -311,6 +311,7 @@ fn mesh_styled() -> Chart {
         .axis_style("blue_900", Some(2))
         .unwrap()
         .set(MeshSetting::DisableXMesh)
+        .unwrap()
         .set_tick_mark_size("bottom", 8)
         .unwrap()
         .set_tick_mark_size("left", 3)
@@ -895,8 +896,8 @@ fn yearly() -> Chart {
 }
 
 /// All charts, with the size they are rendered at.
-fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
-    vec![
+fn charts() -> Vec<(&'static str, Root, (u32, u32))> {
+    let charts: Vec<(&'static str, Chart, (u32, u32))> = vec![
         ("oslo", oslo(), (800, 600)),
         ("cities", cities(), (640, 480)),
         ("articles", articles(), (640, 480)),
@@ -924,7 +925,11 @@ fn charts() -> Vec<(&'static str, Chart, (u32, u32))> {
         ("monthly", monthly(), (800, 400)),
         ("monthly_bands", monthly_bands(), (640, 400)),
         ("yearly", yearly(), (800, 400)),
-    ]
+    ];
+    charts
+        .into_iter()
+        .map(|(name, chart, size)| (name, chart.into(), size))
+        .collect()
 }
 
 #[test]
@@ -967,14 +972,14 @@ fn rendering_is_deterministic() {
     for (name, chart, (w, h)) in charts() {
         assert_eq!(to_png(&chart, w, h), to_png(&chart, w, h), "{name}");
         assert_eq!(to_svg(&chart, w, h), to_svg(&chart, w, h), "{name}");
-        let decoded = Chart::decode(&chart.encode()).unwrap();
+        let decoded = Root::decode(&chart.encode()).unwrap();
         assert_eq!(to_png(&decoded, w, h), to_png(&chart, w, h), "{name}");
     }
 }
 
 #[test]
 fn rgb_buffer_matches_png_size() {
-    let rgb = to_rgb(&squares(), 320, 200).unwrap();
+    let rgb = to_rgb(&squares().into(), 320, 200).unwrap();
     assert_eq!(rgb.len(), 320 * 200 * 3);
     // The default fill is white, and the top-left corner is inside the margin.
     assert_eq!(&rgb[..3], &[255, 255, 255]);
@@ -982,14 +987,14 @@ fn rgb_buffer_matches_png_size() {
 
 #[test]
 fn transparent_fill_leaves_the_bitmap_black() {
-    let chart = Chart::new().fill("transparent").unwrap();
+    let chart = Chart::new().fill("transparent").unwrap().into();
     let rgb = to_rgb(&chart, 10, 10).unwrap();
     assert_eq!(&rgb[..3], &[0, 0, 0]);
 }
 
 #[test]
 fn size_limits() {
-    let chart = Chart::new();
+    let chart = Chart::new().into();
     assert!(to_png(&chart, 0, 10).is_err());
     assert!(to_svg(&chart, 10, 8193).is_err());
     assert!(to_svg(&chart, 8192, 1).is_ok());
@@ -1003,14 +1008,14 @@ fn size_limits() {
 
 #[test]
 fn svg_content() {
-    let svg = to_svg(&oslo(), 800, 600).unwrap();
+    let svg = to_svg(&oslo().into(), 800, 600).unwrap();
     assert!(svg.starts_with("<svg"));
     for text in ["Oslo temperature", "day", "°C", "temp", "2024-01-01"] {
         assert!(svg.contains(text), "missing {text}");
     }
     // The line is drawn in the style's red, not the palette.
     assert!(svg.contains("stroke=\"#FF0000\""));
-    let svg = to_svg(&articles(), 640, 480).unwrap();
+    let svg = to_svg(&articles().into(), 640, 480).unwrap();
     // Categories in order_by order: news has the largest count.
     let news = svg.find("\nnews\n").unwrap();
     let sport = svg.find("\nsport\n").unwrap();
@@ -1021,7 +1026,7 @@ fn svg_content() {
 #[test]
 fn default_mesh_is_drawn_before_the_first_series() {
     // The mesh's axis line is black; the series is palette colour 0 (#E6194B).
-    let svg = to_svg(&circle(), 640, 480).unwrap();
+    let svg = to_svg(&circle().into(), 640, 480).unwrap();
     let axis = svg.find("stroke=\"#000000\"").unwrap();
     let series = svg.find("stroke=\"#E6194B\"").unwrap();
     assert!(axis < series);
@@ -1039,7 +1044,11 @@ fn automatic_legend_for_labelled_series() {
                 .label("unit circle"),
         )
         .unwrap();
-    assert!(to_svg(&labelled, 640, 480).unwrap().contains("unit circle"));
+    assert!(
+        to_svg(&labelled.into(), 640, 480)
+            .unwrap()
+            .contains("unit circle")
+    );
 }
 
 #[test]
@@ -1051,7 +1060,8 @@ fn mix_is_usable_as_a_style() {
         .clone()
         .style(&mix("blue", 0.5).unwrap(), Some(3))
         .unwrap();
-    let svg = to_svg(&Chart::new().draw_series(series).unwrap(), 200, 200).unwrap();
+    let chart = Chart::new().draw_series(series).unwrap().into();
+    let svg = to_svg(&chart, 200, 200).unwrap();
     assert!(svg.contains("stroke=\"#0000FF\""));
     assert!(svg.contains("opacity=\"0.5\""));
 }
@@ -1106,11 +1116,11 @@ mod snapshots {
 
 #[test]
 fn formatted_labels() {
-    let svg = to_svg(&mesh_styled(), 800, 500).unwrap();
+    let svg = to_svg(&mesh_styled().into(), 800, 500).unwrap();
     for label in ["\nJan 15\n", "\n+5.0 °C\n", "\nFeb 12\n"] {
         assert!(svg.contains(label), "missing {label:?}");
     }
-    let svg = to_svg(&log_scales(), 640, 480).unwrap();
+    let svg = to_svg(&log_scales().into(), 640, 480).unwrap();
     for label in ["\n1\n", "\n1000\n", "\n1e6\n", "\n1e9\n"] {
         assert!(svg.contains(label), "missing {label:?}");
     }
@@ -1121,7 +1131,7 @@ fn formatted_labels() {
 fn horizontal_bars_run_from_the_baseline() {
     // In the band order news is on top, so its bar's rect comes last; each bar starts at the
     // baseline's x and opinion (97) ends left of it.
-    let svg = to_svg(&histogram_horizontal(), 640, 480).unwrap();
+    let svg = to_svg(&histogram_horizontal().into(), 640, 480).unwrap();
     let rects: Vec<(i32, i32)> = svg
         .lines()
         .filter(|l| l.starts_with("<rect") && l.contains("#26A69A"))
@@ -1152,7 +1162,8 @@ fn log_axis_errors_name_the_fix() {
         .y_log_scale(None)
         .unwrap()
         .draw_series(bars)
-        .unwrap();
+        .unwrap()
+        .into();
     let err = to_svg(&chart, 100, 100).unwrap_err();
     assert!(err.message().contains("a positive baseline(v)"), "{err}");
 }
@@ -1167,7 +1178,8 @@ fn every_font_family_renders() {
         .draw()
         .configure_series_labels()
         .label_font(Font::new("Third", 9, None).unwrap())
-        .draw();
+        .draw()
+        .into();
     assert!(to_png(&chart, 200, 200).is_ok());
     assert!(
         to_svg(&chart, 200, 200)
