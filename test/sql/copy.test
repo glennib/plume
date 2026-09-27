@@ -123,10 +123,12 @@ statement ok
 COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png', OVERWRITE)
 
+# read_blob and read_text name the files with the OS separator (backslashes on Windows), so the
+# queries turn them into forward slashes before comparing.
 query TT
-SELECT replace(filename, '__WORKING_DIRECTORY__/build/test-sql/', ''), png_header(content)
+SELECT replace(replace(filename, '\', '/'), replace('__WORKING_DIRECTORY__', '\', '/') || '/build/test-sql/', '') AS f, png_header(content)
 FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/copy_cities/*/*')
-ORDER BY filename
+ORDER BY f
 ----
 copy_cities/city=Bergen/data_0.png	640x480
 copy_cities/city=Oslo/data_0.png	640x480
@@ -144,9 +146,9 @@ COPY (SELECT day.month() AS month, chart().draw_series(line_series(day, temp, ke
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_months' (FORMAT svg, PARTITION_BY month, FILE_EXTENSION 'svg', WIDTH 400, HEIGHT 300, OVERWRITE)
 
 query TT
-SELECT replace(filename, '__WORKING_DIRECTORY__/build/test-sql/', ''), svg_size(content)
+SELECT replace(replace(filename, '\', '/'), replace('__WORKING_DIRECTORY__', '\', '/') || '/build/test-sql/', '') AS f, svg_size(content)
 FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_months/*/*')
-ORDER BY filename
+ORDER BY f
 ----
 copy_months/month=1/data_0.svg	400x300
 copy_months/month=2/data_0.svg	400x300
@@ -160,7 +162,7 @@ COPY (SELECT i % 200 AS k, chart().caption('k=' || k).draw_series(point_series(i
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_many' (FORMAT svg, PARTITION_BY k, FILE_EXTENSION 'svg', WIDTH 64, HEIGHT 48, OVERWRITE)
 
 query II
-SELECT count(*), count(*) FILTER (WHERE contains(content, chr(10) || 'k=' || regexp_extract(filename, 'k=(\d+)/', 1) || chr(10)))
+SELECT count(*), count(*) FILTER (WHERE contains(content, chr(10) || 'k=' || regexp_extract(replace(filename, '\', '/'), 'k=(\d+)/', 1) || chr(10)))
 FROM read_text('__WORKING_DIRECTORY__/build/test-sql/copy_many/*/*.svg')
 ----
 200	200
@@ -234,7 +236,7 @@ Binder Error: FORMAT png writes local files only, and 's3://bucket/chart.png' is
 statement error
 COPY (SELECT chart() FROM range(2)) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
 ----
-<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*/build/test-sql/copy_error\.png'; use PARTITION_BY to write one file per group, or one COPY per chart
+<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*[/\\]build[/\\]test-sql[/\\]copy_error\.png'; use PARTITION_BY to write one file per group, or one COPY per chart
 
 statement error
 COPY (SELECT chart() FROM range(1000000)) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
@@ -244,12 +246,12 @@ Invalid Input Error: FORMAT png: a file holds one chart
 statement error
 COPY (SELECT chart() WHERE false) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.svg' (FORMAT svg)
 ----
-<REGEX>:Invalid Input Error: FORMAT svg: no chart to write to '.*/build/test-sql/copy_error\.svg'
+<REGEX>:Invalid Input Error: FORMAT svg: no chart to write to '.*[/\\]build[/\\]test-sql[/\\]copy_error\.svg'
 
 statement error
 COPY (SELECT NULL::CHART) TO '__WORKING_DIRECTORY__/build/test-sql/copy_error.png' (FORMAT png)
 ----
-<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*/build/test-sql/copy_error\.png' is NULL
+<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*[/\\]build[/\\]test-sql[/\\]copy_error\.png' is NULL
 
 # A bad value in the chart fails when it is rendered.
 statement error
@@ -268,13 +270,13 @@ statement error
 COPY (SELECT i % 2 AS k, chart() FROM range(3) r(i))
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_doubled' (FORMAT png, PARTITION_BY k, FILE_EXTENSION 'png')
 ----
-<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*/build/test-sql/copy_doubled/k=0/data_0\.png'
+<REGEX>:Invalid Input Error: FORMAT png: a file holds one chart, and the query gave more than one row for '.*[/\\]build[/\\]test-sql[/\\]copy_doubled[/\\]k=0[/\\]data_0\.png'
 
 statement error
 COPY (SELECT k, CASE WHEN k = 3 THEN NULL ELSE chart() END FROM range(5) r(k))
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_partial' (FORMAT png, PARTITION_BY k, FILE_EXTENSION 'png')
 ----
-<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*/build/test-sql/copy_partial/k=3/data_0\.png' is NULL
+<REGEX>:Invalid Input Error: FORMAT png: the chart to write to '.*[/\\]build[/\\]test-sql[/\\]copy_partial[/\\]k=3[/\\]data_0\.png' is NULL
 
 query I
 SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_doubled/**') UNION ALL
@@ -288,7 +290,7 @@ statement error
 COPY (SELECT city, chart() FROM weather GROUP BY city)
 TO '__WORKING_DIRECTORY__/build/test-sql/copy_noext' (FORMAT png, PARTITION_BY city)
 ----
-<REGEX>:Invalid Input Error: FORMAT png: the file name '.*/build/test-sql/copy_noext/city=
+<REGEX>:Invalid Input Error: FORMAT png: the file name '.*[/\\]build[/\\]test-sql[/\\]copy_noext[/\\]city=
 
 query I
 SELECT count(*) FROM glob('__WORKING_DIRECTORY__/build/test-sql/copy_noext/**')

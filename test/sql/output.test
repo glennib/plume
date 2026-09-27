@@ -237,8 +237,9 @@ COPY (SELECT city, chart().draw_series(line_series(day, temp)).to_png() AS png
       FROM weather GROUP BY city)
 TO '__WORKING_DIRECTORY__/build/test-sql/charts' (FORMAT blob, PARTITION_BY city, OVERWRITE)
 
+# read_blob names the files with the OS separator (backslashes on Windows).
 query TT
-SELECT regexp_extract(filename, 'city=([^/]*)/', 1) AS city, png_header(content)
+SELECT regexp_extract(replace(filename, '\', '/'), 'city=([^/]*)/', 1) AS city, png_header(content)
 FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/charts/*/*')
 ORDER BY city
 ----
