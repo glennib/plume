@@ -1,1 +1,6 @@
-target/
+/target
+/build
+/.duckdb
+/.venv
+/.rumdl_cache
+__pycache__/

@@ -1,0 +1,13 @@
+[package]
+name = "duckers"
+description = "plotters charts for DuckDB v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+duckers-sys = { path = "../duckers-sys" }

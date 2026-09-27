@@ -1,0 +1,25 @@
+# name: test/sql/spike.test
+# description: M0 spike 1 functions
+# group: [duckers]
+
+require duckers
+
+query T
+SELECT spike_join(7, times := 3)
+----
+7,7,7 (exec args 3, bind args 3)
+
+query T
+SELECT typeof(spike_chart('x'))
+----
+SPIKE_CHART
+
+query T
+SELECT spike_chart('x')::VARCHAR
+----
+SPIKE_CHART(4 bytes)
+
+statement error
+SELECT spike_agg('a', 1)
+----
+Binder Error: spike_agg: x must be numeric, got VARCHAR

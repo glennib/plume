@@ -1,0 +1,10 @@
+duckdb_v2.h and duckdb_extension_v2.h, unmodified, from the DuckDB v2 preview shared-libs tarball:
+
+  version:   v2.0.0-alpha43385 (source id ca15f79c32, branch v2.0-cyanoptera)
+  url:       https://duckdb-staging.duckdb.org/ca15f79c32/v2.0.0-alpha43385/duckdb/duckdb/github_release/duckdb-shared-libs-linux-amd64.tar.gz
+  sha256:    be49239b0409955f938bf71045c02eb9d797d7e3baa4f3bf4ca0f1987956fd43 (tarball)
+  C API:     v2.0.0
+
+The headers are identical to src/include/ in duckdb/duckdb v2.0-cyanoptera at 3f9f0a17 (2026-09-27).
+The function-pointer table layout in duckdb_extension_v2.h must match what the host's get_api
+returns, so update the headers together with the pinned DuckDB build and run `make bindings`.
