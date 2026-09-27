@@ -126,7 +126,7 @@ impl SeriesKind {
         match self {
             SeriesKind::Line(_) => "line_series",
             SeriesKind::Point(_) => "point_series",
-            SeriesKind::Histogram(_) => "histogram",
+            SeriesKind::Histogram(_) => "histogram_vertical",
         }
     }
 }
@@ -301,6 +301,13 @@ pub struct SeriesLabelStyle {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum SeriesLabelSetting {
     Position(LabelPosition),
+    /// `SeriesLabelStyle::border_style`.
+    BorderStyle {
+        color: Color,
+        stroke_width: u32,
+    },
+    /// `SeriesLabelStyle::background_style`, drawn filled as plotters does.
+    BackgroundStyle(Color),
 }
 
 /// `SeriesLabelPosition`.

@@ -8,7 +8,7 @@
 //! - [`methods`](crate::methods): the SQL methods (`caption`, `draw_series`, `style`, ...) as
 //!   functions on the value types.
 //! - [`accumulate`]: the series aggregates' state (`line_series`, `point_series`,
-//!   `histogram`).
+//!   `histogram_vertical`).
 //! - [`color`]: colour strings and `mix`.
 //! - [`render`]: `to_svg`, `to_png`, `to_rgb`.
 //! - Summaries for the `VARCHAR` casts are the `summary()` methods of the value types.

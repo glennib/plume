@@ -85,6 +85,13 @@ impl SeriesLabels {
             .iter()
             .map(|s| match s {
                 SeriesLabelSetting::Position(p) => format!("position {}", position_name(*p)),
+                SeriesLabelSetting::BorderStyle {
+                    color,
+                    stroke_width,
+                } => format!("border_style {color} {stroke_width}px"),
+                SeriesLabelSetting::BackgroundStyle(color) => {
+                    format!("background_style {color}")
+                }
             })
             .collect();
         format!(
@@ -192,6 +199,17 @@ mod tests {
         assert_eq!(
             labels.summary(),
             "SERIES_LABELS(position upper_left, position (3, 4)) of CHART(empty)"
+        );
+        let styled = Chart::new()
+            .configure_series_labels()
+            .border_style("black", None)
+            .unwrap()
+            .background_style("rgba(255, 255, 255, 0.8)")
+            .unwrap();
+        assert_eq!(
+            styled.summary(),
+            "SERIES_LABELS(border_style #000000 1px, background_style rgba(255, 255, 255, 0.8)) \
+             of CHART(empty)"
         );
         let font = Font::new("serif", 20, Some("bold"))
             .unwrap()

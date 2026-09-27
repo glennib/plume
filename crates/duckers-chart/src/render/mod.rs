@@ -28,17 +28,22 @@ const GENERIC_FAMILIES: [&str; 3] = ["sans-serif", "serif", "monospace"];
 
 /// Resolves optional SQL `width`/`height` arguments to a checked image size.
 pub fn image_size(width: Option<i64>, height: Option<i64>) -> Result<(u32, u32)> {
-    let side = |v: Option<i64>, default: u32| -> Result<u32> {
+    let side = |v: Option<i64>, default: u32| -> Option<u32> {
         match v {
-            None => Ok(default),
-            Some(v) => u32::try_from(v)
-                .ok()
-                .filter(|v| (1..=MAX_SIDE).contains(v))
-                .ok_or_else(|| size_error(v, v)),
+            None => Some(default),
+            Some(v) => u32::try_from(v).ok().filter(|v| (1..=MAX_SIDE).contains(v)),
         }
     };
-    let (w, h) = (side(width, DEFAULT_WIDTH)?, side(height, DEFAULT_HEIGHT)?);
-    Ok((w, h))
+    match (side(width, DEFAULT_WIDTH), side(height, DEFAULT_HEIGHT)) {
+        (Some(w), Some(h)) => Ok((w, h)),
+        _ => {
+            let show = |v: Option<i64>, default: u32| v.unwrap_or(i64::from(default));
+            Err(size_error(
+                show(width, DEFAULT_WIDTH),
+                show(height, DEFAULT_HEIGHT),
+            ))
+        }
+    }
 }
 
 fn size_error(w: impl std::fmt::Display, h: impl std::fmt::Display) -> Error {

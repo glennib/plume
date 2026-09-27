@@ -28,7 +28,7 @@ pub enum SeriesAggregate {
     LineSeries,
     /// `point_series(x, y)`.
     PointSeries,
-    /// `histogram(bucket, value)`.
+    /// `histogram_vertical(bucket, value)`.
     Histogram,
 }
 
@@ -37,7 +37,7 @@ impl SeriesAggregate {
         match self {
             SeriesAggregate::LineSeries => "line_series",
             SeriesAggregate::PointSeries => "point_series",
-            SeriesAggregate::Histogram => "histogram",
+            SeriesAggregate::Histogram => "histogram_vertical",
         }
     }
 
@@ -336,6 +336,12 @@ impl Accumulator {
             }
             mine.rows.extend(group.rows);
         }
+    }
+
+    /// Whether a row with this key has been pushed, so the SQL layer computes a key's label
+    /// (`key::VARCHAR`) only for the first row of each key.
+    pub fn contains_key(&self, key: &SortKey) -> bool {
+        self.groups.contains_key(key)
     }
 
     /// The number of usable rows pushed so far.

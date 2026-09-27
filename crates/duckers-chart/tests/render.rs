@@ -68,8 +68,8 @@ fn weather(city: usize) -> Vec<(i32, f64)> {
 ///  .draw_series(line_series(day, temp).style('red').label('temp'))
 ///  .configure_series_labels().draw() FROM weather WHERE city = 'Oslo'`
 ///
-/// The margin and label area sizes are duckers' defaults, and `border_style` is M4, so both
-/// are left out here.
+/// The margin and label area sizes are duckers' defaults and `border_style` is left out, so the
+/// snapshot stays the core chart; `test/svg/oslo.sql` renders the full example from SQL.
 fn oslo() -> Chart {
     let rows = weather(0)
         .into_iter()
@@ -145,7 +145,8 @@ fn articles() -> Chart {
 ///  .configure_series_labels().position('upper_left').draw()
 ///  .to_png(800, 600) FROM range(10) t(i)`
 ///
-/// `background_style(mix('white', 0.8))` is M4 and left out.
+/// `background_style(mix('white', 0.8))` is left out; `test/svg/squares.sql` renders the full
+/// example from SQL.
 fn squares() -> Chart {
     let rows = || {
         (0..10)
@@ -220,7 +221,7 @@ fn timestamps() -> Chart {
         .unwrap()
 }
 
-/// Integer buckets from `histogram(x, 1)`, counting rows, on a segmented integer axis.
+/// Integer buckets from `histogram_vertical(x, 1)`, counting rows, on a segmented integer axis.
 fn dice() -> Chart {
     let rows = (0..200)
         .map(|i: i64| row(XValue::Integer((i * 7 + i / 3) % 6 + 1 + (i % 5) / 4), 1.0))
@@ -346,7 +347,11 @@ fn size_limits() {
     assert!(to_svg(&chart, 10, 8193).is_err());
     assert!(to_svg(&chart, 8192, 1).is_ok());
     assert_eq!(duckers_chart::image_size(None, None).unwrap(), (640, 480));
-    assert!(duckers_chart::image_size(Some(-1), None).is_err());
+    let err = duckers_chart::image_size(Some(-1), None).unwrap_err();
+    assert_eq!(
+        err.message(),
+        "chart size must be between 1 and 8192 px per side, got -1x480"
+    );
 }
 
 #[test]

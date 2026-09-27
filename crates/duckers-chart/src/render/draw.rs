@@ -175,6 +175,17 @@ where
                 for setting in &style.settings {
                     match setting {
                         SeriesLabelSetting::Position(p) => labels.position(label_position(*p)),
+                        SeriesLabelSetting::BorderStyle {
+                            color,
+                            stroke_width,
+                        } => labels.border_style(ShapeStyle {
+                            color: color.to_plotters(),
+                            filled: false,
+                            stroke_width: *stroke_width,
+                        }),
+                        SeriesLabelSetting::BackgroundStyle(color) => {
+                            labels.background_style(color.to_plotters())
+                        }
                     };
                 }
                 labels.draw().map_err(plotters_error)?;

@@ -187,6 +187,30 @@ impl Chart {
         self
     }
 
+    /// `margin(px)`: `ChartBuilder::margin`, all four sides.
+    pub fn margin(mut self, px_value: i64) -> Result<Chart> {
+        let m = px("margin", px_value)?;
+        self.margin = Sides {
+            top: m,
+            bottom: m,
+            left: m,
+            right: m,
+        };
+        Ok(self)
+    }
+
+    /// `x_label_area_size(px)`: `ChartBuilder::x_label_area_size`, the bottom label area.
+    pub fn x_label_area_size(mut self, size: i64) -> Result<Chart> {
+        self.label_area.bottom = px("x_label_area_size", size)?;
+        Ok(self)
+    }
+
+    /// `y_label_area_size(px)`: `ChartBuilder::y_label_area_size`, the left label area.
+    pub fn y_label_area_size(mut self, size: i64) -> Result<Chart> {
+        self.label_area.left = px("y_label_area_size", size)?;
+        Ok(self)
+    }
+
     /// `x_range(lo, hi)`: the x range argument of `build_cartesian_2d`.
     pub fn x_range(mut self, lo: RangeValue, hi: RangeValue) -> Result<Chart> {
         let range = axis_range("x_range", lo, hi)?;
@@ -205,7 +229,7 @@ impl Chart {
         Ok(self)
     }
 
-    /// `fill(color)`: `root.fill(&color)`.
+    /// `root_fill(color)`: `root.fill(&color)`.
     pub fn fill(mut self, color: &str) -> Result<Chart> {
         self.fill = Color::parse(color)?;
         Ok(self)
@@ -383,6 +407,29 @@ impl SeriesLabels {
         self.style
             .settings
             .push(SeriesLabelSetting::Position(position));
+        Ok(self)
+    }
+
+    /// `SeriesLabelStyle::border_style(color [, stroke_width])`.
+    pub fn border_style(mut self, color: &str, stroke_width: Option<i64>) -> Result<SeriesLabels> {
+        let color = Color::parse(color)?;
+        let stroke_width = match stroke_width {
+            Some(w) => px("stroke_width", w)?,
+            None => 1,
+        };
+        self.style.settings.push(SeriesLabelSetting::BorderStyle {
+            color,
+            stroke_width,
+        });
+        Ok(self)
+    }
+
+    /// `SeriesLabelStyle::background_style(color)`.
+    pub fn background_style(mut self, color: &str) -> Result<SeriesLabels> {
+        let color = Color::parse(color)?;
+        self.style
+            .settings
+            .push(SeriesLabelSetting::BackgroundStyle(color));
         Ok(self)
     }
 
@@ -576,8 +623,8 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err.message(),
-            "point_size does not apply to histogram values: it is LineSeries::point_size and \
-             applies to line_series"
+            "point_size does not apply to histogram_vertical values: it is LineSeries::point_size \
+             and applies to line_series"
         );
         assert!(line(Column::Numeric(vec![])).size(3).is_err());
         assert!(line(Column::Numeric(vec![])).point_size(3).is_ok());
@@ -625,6 +672,52 @@ mod tests {
         );
         assert!(labels.clone().position_at(10, -20).is_ok());
         assert!(labels.position_at(1 << 40, 0).is_err());
+    }
+
+    #[test]
+    fn builder_sizes() {
+        let chart = Chart::new()
+            .margin(4)
+            .unwrap()
+            .x_label_area_size(50)
+            .unwrap()
+            .y_label_area_size(60)
+            .unwrap();
+        assert_eq!(chart.margin.left, 4);
+        assert_eq!(chart.margin.top, 4);
+        assert_eq!(chart.label_area.bottom, 50);
+        assert_eq!(chart.label_area.left, 60);
+        let err = Chart::new().margin(-1).unwrap_err();
+        assert_eq!(
+            err.message(),
+            "margin must be between 0 and 8192 px, got -1"
+        );
+    }
+
+    #[test]
+    fn legend_styles() {
+        let labels = Chart::new()
+            .configure_series_labels()
+            .border_style("black", Some(2))
+            .unwrap()
+            .background_style("white")
+            .unwrap();
+        assert_eq!(
+            labels.style.settings,
+            [
+                SeriesLabelSetting::BorderStyle {
+                    color: Color::BLACK,
+                    stroke_width: 2
+                },
+                SeriesLabelSetting::BackgroundStyle(Color::WHITE)
+            ]
+        );
+        assert!(
+            Chart::new()
+                .configure_series_labels()
+                .border_style("nope", None)
+                .is_err()
+        );
     }
 
     #[test]
