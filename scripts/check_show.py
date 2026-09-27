@@ -205,7 +205,7 @@ def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
     bin_dir.mkdir()
     log = tmp / "opened.txt"
     opener = bin_dir / "xdg-open"
-    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{log}"\n')
+    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{log}"\n', encoding="utf-8")
     opener.chmod(0o755)
     env = base_env(
         tmp,
@@ -223,19 +223,19 @@ def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
     # The opener is not waited for.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        lines = log.read_text().splitlines() if log.exists() else []
+        lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
         if len(lines) >= 2:
             break
         time.sleep(0.05)
     time.sleep(0.2)
-    lines = log.read_text().splitlines() if log.exists() else []
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     check(len(lines) == 2, f"expected 2 pages opened, got {lines}")
     for line in lines:
         page = Path(line)
         check(
             page.parent == tmp / "cache" / "duckers", f"page outside the cache: {page}"
         )
-        html = page.read_text()
+        html = page.read_text(encoding="utf-8")
         m = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", html)
         check(m is not None, "the page embeds no PNG")
         check(png_size(base64.b64decode(m.group(1))) == (640, 480), "PNG size")
@@ -272,7 +272,7 @@ def check_python_auto(duckdb: Path, ext: Path, tmp: Path) -> None:
     bin_dir.mkdir()
     log = tmp / "opened.txt"
     opener = bin_dir / "xdg-open"
-    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{log}"\n')
+    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$1" >> "{log}"\n', encoding="utf-8")
     opener.chmod(0o755)
     env = base_env(
         tmp,
@@ -294,11 +294,14 @@ def check_python_auto(duckdb: Path, ext: Path, tmp: Path) -> None:
     while time.monotonic() < deadline and not log.exists():
         time.sleep(0.05)
     time.sleep(0.2)
-    lines = log.read_text().splitlines() if log.exists() else []
+    lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     check(len(lines) == 1, f"expected 1 page opened, got {lines}")
     page = Path(lines[0])
     check(page.parent == tmp / "cache" / "duckers", f"page outside the cache: {page}")
-    check("data:image/png;base64," in page.read_text(), "the page embeds no PNG")
+    check(
+        "data:image/png;base64," in page.read_text(encoding="utf-8"),
+        "the page embeds no PNG",
+    )
 
 
 def check_headless_sql(ext: Path, tmp: Path) -> None:

@@ -4,6 +4,10 @@ Each `<dir>/<name>.sql` runs on a fresh connection with the extension loaded, af
 `<dir>/_setup.sql`; the last statement must return one VARCHAR, the SVG, which must equal
 `<dir>/<name>.svg`. `--update` writes the files instead of comparing.
 
+The files are UTF-8 whatever the locale's encoding (cp1252 on Windows), and the SVG files are
+written with LF line endings on every platform. Reading translates CRLF to LF, so a checkout with
+CRLF line endings compares equal.
+
 Usage: check_svg.py EXTENSION [--dir test/svg] [--update]
 """
 
@@ -34,18 +38,22 @@ def main() -> int:
         "--update", action="store_true", help="write the expected files"
     )
     args = parser.parse_args()
+    # A diff can hold characters that the console's code page lacks.
+    sys.stdout.reconfigure(errors="backslashreplace")
 
     setup_file = args.dir / "_setup.sql"
-    setup = setup_file.read_text() if setup_file.exists() else ""
+    setup = setup_file.read_text(encoding="utf-8") if setup_file.exists() else ""
     failed = 0
     for sql_file in sorted(args.dir.glob("[!_]*.sql")):
         expected_file = sql_file.with_suffix(".svg")
-        actual = render(args.extension, setup, sql_file.read_text())
+        actual = render(args.extension, setup, sql_file.read_text(encoding="utf-8"))
         if args.update:
-            expected_file.write_text(actual)
+            expected_file.write_text(actual, encoding="utf-8", newline="")
             print(f"{expected_file}: written")
             continue
-        expected = expected_file.read_text() if expected_file.exists() else ""
+        expected = (
+            expected_file.read_text(encoding="utf-8") if expected_file.exists() else ""
+        )
         if actual == expected:
             print(f"{sql_file}: ok")
             continue
