@@ -2,8 +2,8 @@
 #
 #   make                 debug build plus footer: build/debug/duckers.duckdb_extension
 #   make release         the same, optimised: build/release/duckers.duckdb_extension
-#   make test            Rust unit tests, sqllogictests and SVG snapshots (Python wheel) and CLI
-#                        tests on the debug build
+#   make test            Rust unit tests, sqllogictests and SVG snapshots (Python wheel), CLI
+#                        tests and show() checks on the debug build
 #   make test_release    the same on the release build
 #   make shell           the pinned DuckDB v2 preview CLI with the debug build loaded
 #
@@ -76,7 +76,8 @@ SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || e
 
 .PHONY: all debug release build_debug build_release footer_debug footer_release duckdb shell \
         shell_release venv test test_debug test_release test_rust test_sql_debug test_sql_release \
-        test_cli_debug test_cli_release test_svg_debug test_svg_release update_svg fmt lint \
+        test_cli_debug test_cli_release test_show_debug test_show_release test_svg_debug \
+        test_svg_release update_svg fmt lint \
         bindings clean
 
 all: debug
@@ -122,8 +123,8 @@ venv:
 	$(UV) sync --locked
 
 test: test_debug
-test_debug: test_rust test_sql_debug test_svg_debug test_cli_debug
-test_release: test_rust test_sql_release test_svg_release test_cli_release
+test_debug: test_rust test_sql_debug test_svg_debug test_cli_debug test_show_debug
+test_release: test_rust test_sql_release test_svg_release test_cli_release test_show_release
 
 test_rust:
 	$(CARGO) nextest run --no-tests=pass
@@ -168,6 +169,17 @@ test_cli_debug: debug $(DUCKDB)
 
 test_cli_release: release $(DUCKDB)
 	$(call run_cli_tests,$(RELEASE_EXTENSION))
+
+# show() checks: the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in
+# opener, and test/show/*.test with no terminal and no display, each in a scrubbed environment so
+# that nothing opens on the desktop. Linux only; elsewhere the script reports a skip.
+CHECK_SHOW = $(UV) run --locked python scripts/check_show.py $(DUCKDB)
+
+test_show_debug: debug venv $(DUCKDB)
+	$(CHECK_SHOW) $(DEBUG_EXTENSION)
+
+test_show_release: release venv $(DUCKDB)
+	$(CHECK_SHOW) $(RELEASE_EXTENSION)
 
 fmt:
 	$(CARGO) fmt

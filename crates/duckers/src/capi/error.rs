@@ -40,6 +40,11 @@ impl Error {
         Self::new(sys::DUCKDB_V2_ERROR_TYPE_CONVERSION, message)
     }
 
+    /// A failure to reach something outside DuckDB, such as a display.
+    pub fn io(message: impl Into<String>) -> Self {
+        Self::new(sys::DUCKDB_V2_ERROR_IO_GENERAL, message)
+    }
+
     /// A broken invariant inside duckers.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(sys::DUCKDB_V2_ERROR_RUNTIME_INTERNAL, message)

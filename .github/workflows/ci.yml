@@ -52,7 +52,7 @@ jobs:
       - name: Build (release) and append the footer
         run: make release
       - name: Test the release build
-        run: make test_sql_release test_svg_release test_cli_release
+        run: make test_sql_release test_svg_release test_cli_release test_show_release
 
       - uses: actions/upload-artifact@v4
         with:

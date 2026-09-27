@@ -12,3 +12,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 duckers-chart = { path = "../duckers-chart" }
 duckers-sys = { path = "../duckers-sys" }
+duckers-view = { path = "../duckers-view" }

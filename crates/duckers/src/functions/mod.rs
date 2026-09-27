@@ -4,6 +4,7 @@ mod args;
 mod chart;
 mod internal;
 mod series;
+mod show;
 
 use crate::capi::{Extension, Result, ScalarFunction};
 use crate::types::Types;
@@ -19,5 +20,6 @@ pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
     ))?;
     series::register(ext, types)?;
     chart::register(ext, types)?;
+    show::register(ext, types)?;
     internal::register(ext, types)
 }

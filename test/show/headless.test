@@ -1,0 +1,75 @@
+# name: test/show/headless.test
+# description: show() where no viewer can work, and the environment defaults
+# group: [duckers]
+
+# scripts/check_show.py runs this file on Linux with no controlling terminal and no display,
+# TERM=xterm-kitty, DUCKERS_VIEWER=kitty (invalid) and DUCKERS_WAIT=yes.
+require-env DUCKERS_TEST_HEADLESS 1
+
+require duckers
+
+# An invalid DUCKERS_VIEWER is an error, not a silent fallback to 'auto', until duckers_set
+# replaces it; the other keys stay usable.
+statement error
+SELECT chart().show()
+----
+Invalid Input Error: show: environment variable DUCKERS_VIEWER='kitty' is invalid: expected one of 'auto', 'terminal', 'window', 'browser'; fix or unset it, or override it with duckers_set
+
+statement error
+SELECT duckers_get('viewer')
+----
+Invalid Input Error: duckers_get: environment variable DUCKERS_VIEWER='kitty' is invalid
+
+query TT
+SELECT duckers_get('wait'), duckers_get('max_show')
+----
+true	10
+
+# A viewer named in the call does not need the default.
+statement error
+SELECT chart().show(viewer := 'terminal')
+----
+IO Error: show: viewer 'terminal' is unavailable: cannot open /dev/tty (No such device or address (os error 6)); the process has no controlling terminal
+
+statement error
+SELECT chart().show(viewer := 'window', wait := false)
+----
+IO Error: show: viewer 'window' is unavailable: no display: neither WAYLAND_DISPLAY nor DISPLAY is set
+
+statement error
+SELECT chart().show(viewer := 'browser')
+----
+IO Error: show: viewer 'browser' is unavailable: no graphical session: neither WAYLAND_DISPLAY nor DISPLAY is set
+
+query T
+SELECT duckers_set('viewer', 'auto')
+----
+auto
+
+# auto tries every viewer and lists each one's reason.
+statement error
+SELECT chart().show()
+----
+IO Error: show: no viewer can show the chart here: terminal: cannot open /dev/tty (No such device or address (os error 6)); the process has no controlling terminal; window: no display: neither WAYLAND_DISPLAY nor DISPLAY is set; browser: no graphical session: neither WAYLAND_DISPLAY nor DISPLAY is set
+
+# The error stops the query at the first row.
+statement error
+SELECT i, chart().show() FROM range(3) r(i)
+----
+IO Error: show: no viewer can show the chart here
+
+# NULL charts and rows past the cap are not shown, so they cannot fail.
+query I
+SELECT count(*) FROM (SELECT (NULL::CHART).show() FROM range(3))
+----
+3
+
+query T
+SELECT duckers_set('max_show', 0)
+----
+0
+
+query I
+SELECT count(chart().show()) FROM range(3)
+----
+3
