@@ -89,8 +89,8 @@ They are the contract; the tables below follow from them.
 | Type | plotters counterpart | Made by | Consumed by |
 |---|---|---|---|
 | `SERIES` | `LineSeries`, `PointSeries`, `Histogram`, `AreaSeries`, ... plus their `ShapeStyle` and `SeriesAnno` | series aggregates | `draw_series` |
-| `CHART` | `ChartBuilder` + `ChartContext` + the root `DrawingArea` | `chart()` | outputs, `configure_*`, `draw_series` |
-| `MESH` | `MeshStyle` | `configure_mesh(chart)` | `draw` |
+| `CHART` | `ChartBuilder` + `ChartContext` + the root `DrawingArea`, or a grid, titled area or `Pie` on it | `chart()`, `split_evenly`, `titled`, `pie` | outputs, `configure_*`, `draw_series`, the layout functions |
+| `MESH` | `MeshStyle`, or `SecondaryMeshStyle` | `configure_mesh(chart)`, `configure_secondary_axes(chart)` | `draw` |
 | `SERIES_LABELS` | `SeriesLabelStyle` | `configure_series_labels(chart)` | `draw` |
 | `FONT` | `FontDesc`/`TextStyle` | `font(family, size [, style])` | any text-style parameter |
 
@@ -198,10 +198,18 @@ These scalar functions take and return `CHART`.
 | `draw_series(series \| series[])` | `ChartContext::draw_series` | |
 | `configure_mesh()` | `ChartContext::configure_mesh()` | returns `MESH` |
 | `configure_series_labels()` | `ChartContext::configure_series_labels()` | returns `SERIES_LABELS` |
-| `set_secondary_coord()` | `ChartContext::set_secondary_coord(x, y)` with ranges from the secondary series | |
-| `secondary_x_range(lo, hi)`, `secondary_y_range(lo, hi)` | the range arguments of `set_secondary_coord` | data extent |
+| `set_secondary_coord()` | `ChartContext::set_secondary_coord(x, y)` with ranges from the secondary series | implied by the three below (decision 25) |
+| `secondary_x_range(lo, hi)`, `secondary_y_range(lo, hi)` | the range arguments of `set_secondary_coord` | data extent of the secondary series; the primary x axis when the secondary x has neither series nor range |
 | `draw_secondary_series(series \| series[])` | `DualCoordChartContext::draw_secondary_series` | |
-| `configure_secondary_axes()` | `configure_secondary_axes()` | returns `MESH` (mesh lines disabled, as in plotters) |
+| `configure_secondary_axes()` | `configure_secondary_axes()` | returns `MESH` (mesh lines disabled, as in plotters); drawn with defaults right after the primary mesh if the chain never draws it |
+
+The secondary x axis must have the primary x axis' kind; the secondary y axis may have any kind.
+The secondary axes are linear (or time, band and category axes by the data); there are no secondary scale calls.
+On a chart with secondary axes the right label area defaults to 40 px,
+and the top one too when the secondary x axis differs from the primary one, unless the chain sets them.
+Secondary series continue the `Palette99` numbering of the primary ones and share their legend.
+These methods, like every other in this table except `root_fill`, apply to a cartesian `CHART` only
+(see [Layout](#layout)).
 
 `build_cartesian_2d` itself has no SQL function.
 The range expressions it takes are covered by `x_range`/`y_range`, the log,
@@ -233,6 +241,11 @@ If a chain never calls `configure_mesh().draw()`,
 duckers draws `configure_mesh().draw()` with defaults before the first series.
 A chain that does call it controls the order, as in plotters.
 
+On the `MESH` of `configure_secondary_axes()` only `SecondaryMeshStyle`'s setters apply: `axis_style`, `x_label_offset`,
+`y_label_offset`, `x_labels`, `y_labels`, `x_label_formatter`, `y_label_formatter`, `axis_desc_style`, `x_desc`,
+`y_desc`, `label_style`, `set_all_tick_mark_size`, `set_tick_mark_size` and `draw`.
+The others are errors naming `SecondaryMeshStyle`.
+
 ### Legend
 
 `configure_series_labels(chart)` returns a `SERIES_LABELS`; `draw()` returns the `CHART`.
@@ -250,6 +263,27 @@ A chain that does call it controls the order, as in plotters.
 
 If any series has a `label` and the chain never draws the legend,
 duckers draws `configure_series_labels().draw()` with defaults last.
+
+### Layout
+
+A `CHART` is one of four roots: a cartesian chart (`chart()`), a grid, a titled area or a pie.
+
+| SQL | plotters | Notes |
+|---|---|---|
+| `split_evenly(charts, rows, cols)` | `root.split_evenly((rows, cols))`, one chart drawn per cell | `charts` is a `CHART[]`, row-major; `NULL` elements and missing cells are blank; more charts than cells is an error; 1 to 64 rows and columns; cells may be any root |
+| `titled(chart, text [, size \| font])` | `root.titled(text, style)` | sans-serif 20 (plotters has no default) |
+| `pie(size, label)` | `Pie::new(center, radius, sizes, colors, labels)` | an aggregate; one slice per row, colours from `Palette99`; `order_by :=` (default: label, then size); rows with a `NULL`, `NaN`, infinite or non-positive size skipped; `label` shown as `::VARCHAR` |
+| `start_angle(deg)` | `Pie::start_angle` | 0 (three o'clock) |
+| `label_style(size \| font)` | `Pie::label_style` | sans-serif at 5% of the radius |
+| `percentages(size \| font)` | `Pie::percentages` | none |
+| `label_offset(px)` | `Pie::label_offset` | 5% of the radius |
+| `radius(px)` | the `radius` argument of `Pie::new` | the largest radius that keeps the labels inside the area |
+
+`root_fill`, `titled`, `split_evenly`, the outputs, `show` and the copy functions apply to every root;
+each root fills its own area, so a blank grid cell shows the grid's fill.
+The builder methods of [Chart builder](#chart-builder) are errors on the other roots, naming the method and the root;
+`caption` on them points at `titled`.
+The pie methods are errors on the other roots.
 
 ### Styles
 
@@ -557,9 +591,11 @@ Each spike answers a question that a later milestone assumes.
 
 - Secondary axes: `set_secondary_coord`, `secondary_*_range`, `draw_secondary_series`,
   `configure_secondary_axes`.
-- Subplots: `split_evenly(charts, rows, cols)` and `titled(text)` over a list of charts, mirroring
+- Subplots: `split_evenly(charts, rows, cols)` over a list of charts and `titled(chart, text)`, mirroring
   `DrawingArea::split_evenly` and `titled`.
-- `pie(sizes, labels)` as a chart of its own.
+- `pie(size, label)` as a chart of its own, with `start_angle`, `label_style`, `percentages`, `label_offset` and
+  `radius`.
+- Not covered: secondary scale calls (log, monthly, yearly), `Pie::donut_hole`, per-slice colours.
 
 ### M7: files and hosts
 
@@ -796,6 +832,48 @@ Each item records the choice, the alternative, and why.
     so it is an error there. plotters draws a boxplot's box unfilled
     and its lower whisker 1 px wide whatever the stroke width; duckers keeps that.
     `Boxplot::whisker_width` and `offset` are not exposed.
+25. **Secondary axes are implied, inferred and defaulted.**
+    `draw_secondary_series`, `secondary_x_range`/`secondary_y_range`
+    and `configure_secondary_axes` imply `set_secondary_coord()`, which takes no ranges:
+    plotters draws nothing on secondary axes it was not given (rule 8).
+    The secondary ranges are the extent of the secondary series,
+    and a secondary x axis with neither series nor range is the primary x axis.
+    A chart with secondary axes gets them drawn with defaults right after the primary mesh
+    (whether or not a secondary series is drawn yet),
+    and 40 px right and, when the secondary x axis differs, top label areas unless the chain sizes them;
+    the top and right sizes are therefore `Option`s in the spec, `None` until set.
+    The secondary x axis must have the primary's kind,
+    checked by whichever call draws the second of the two and at render time. plotters allows any pair,
+    but a dual-coordinate chart shares its x data in practice, and a mismatch is almost always a mistake.
+    The secondary axes have no scale calls; `secondary_x_log_scale` and friends can be appended later.
+    Alternative: make `set_secondary_coord(x_lo, x_hi, y_lo, y_hi)` take the ranges as plotters does.
+    Rejected for the same reason as decision 10.
+26. **A `CHART` is a root; `Chart` stays the cartesian builder.**
+    The value behind `CHART` is an enum of a cartesian chart, a grid, a titled area and a pie,
+    so the layouts compose with every output function and with each other without new SQL types.
+    A method of `ChartBuilder` or `ChartContext` on another root is an error naming the method and the root kind,
+    rather than reaching into a cell; `root_fill`, `titled` and `split_evenly` work on every root.
+    Every root fills its own area; `titled` copies the fill of the chart it wraps so the title strip matches it.
+    Alternative: a separate `LAYOUT` type.
+    Rejected because `show`, `to_png` and `COPY` would all need a second overload,
+    and a grid cell could not hold a grid.
+27. **`split_evenly` takes a list; `titled` takes a chart.** plotters splits an area and draws into the parts;
+    in SQL the charts exist first, so `split_evenly(charts, rows, cols)` takes the `CHART[]`
+    and fills the cells row-major, with `NULL` elements and missing cells blank and more charts than cells an error.
+    Rows and columns are capped at 64, since a cell of a 8192 px image is then at least 128 px.
+    `titled(chart, text)` takes the chart
+    (the roadmap first wrote `titled(text)`),
+    with sans-serif 20 when no style is given: plotters' `titled` has no default.
+28. **A pie is an aggregate over rows, ordered like a series, and fits its labels.**
+    `pie(size, label)` makes one slice per row, as `Pie::new` takes parallel slices;
+    duplicate labels are separate slices (SQL aggregates them if wanted).
+    Slices follow `order_by`, then the label in its type's order, then the size,
+    so the result does not depend on row order.
+    Colours are `Palette99` in slice order, the series rule.
+    `Pie` draws on the backend directly, so its labels are not clipped to the area:
+    without `radius(px)` duckers picks the largest radius at which every label, placed as `Pie` places it,
+    stays 10 px inside the area.
+    `Pie::donut_hole` and per-slice colours are left out until someone needs them.
 
 ## Open questions
 

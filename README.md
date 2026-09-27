@@ -667,6 +667,139 @@ FROM range(120) r(m);
 - The value format changed (format version 3): `CHART` and `SERIES` values stored by an earlier duckers do not
   decode.
 
+## M6: layout
+
+Secondary axes, subplots and pies.
+The [plan](plan/duckers.md#the-user-api) has the tables; M6 covers the following.
+
+- A `CHART` is now one of four roots, all of the same SQL type: a cartesian chart (`chart()`), a grid (`split_evenly`),
+  a titled chart (`titled`) or a pie (`pie`).
+  `typeof()` says `CHART` for each, and the summary names the root: `CHART(grid 2x2, 3 charts)`,
+  `CHART(titled 'Overview', grid 2x2, 3 charts)`, `CHART(pie, 5 slices)`.
+- `root_fill`, `titled`, `split_evenly`, `to_svg`, `to_png`, `show` and `COPY ... (FORMAT png|svg)` work on every root.
+  The `ChartBuilder` and `ChartContext` methods
+  (`caption`, `margin*`, the label areas, ranges and scales, `draw_series`,
+  `configure_*` and the secondary-axis methods) are errors on the other roots, naming the method and the root;
+  `caption` on them points at `titled`.
+
+### Secondary axes
+
+- `set_secondary_coord()` stands for plotters' `ChartContext::set_secondary_coord(x, y)`.
+  It takes no arguments: the secondary ranges are the extent of the secondary series,
+  or `secondary_x_range(lo, hi)` and `secondary_y_range(lo, hi)`, which take bounds like `x_range` and `y_range`.
+- `draw_secondary_series(series | series[])` is `DualCoordChartContext::draw_secondary_series`.
+  It, the secondary ranges and `configure_secondary_axes()` imply `set_secondary_coord()`, so a chain need not call it
+  (rule 8 of the paradigm: plotters would draw nothing without it).
+- `configure_secondary_axes()` returns a `MESH` for plotters' `SecondaryMeshStyle`; `draw()` on it returns the chart.
+  It has `SecondaryMeshStyle`'s setters: `axis_style`, `x_label_offset`, `y_label_offset`, `x_labels`, `y_labels`,
+  `x_label_formatter`, `y_label_formatter`, `axis_desc_style`, `x_desc`, `y_desc`, `label_style`,
+  `set_all_tick_mark_size` and `set_tick_mark_size`.
+  The other `MESH` methods (light and bold line styles, `disable_*`, `x_label_style`, `y_label_style`,
+  `*max_light_lines`) are errors on it naming `SecondaryMeshStyle`, which draws no mesh lines.
+- The secondary x axis has the primary's kind
+  (plotters' dual-coordinate charts share the x data in practice);
+  a mismatch is an error naming both kinds, from whichever call draws the second series.
+  The secondary y axis can be any kind the series allow: numbers, dates, timestamps, categories or buckets.
+- Defaults, as for the primary axes:
+  the secondary axes are drawn right after the primary mesh unless the chain calls
+  `configure_secondary_axes().draw()`;
+  the right label area is 40 px, and the top one too when the secondary x axis differs from the primary one,
+  unless the chain sets them (`right_y_label_area_size`, `top_x_label_area_size`, `set_all_label_area_size`);
+  a secondary x axis with neither series nor range is the primary x axis.
+- Secondary series take the next `Palette99` colours after the primary ones, in draw order,
+  and labelled ones are in the same legend.
+- The summary counts them: `CHART(histogram+line, 1 series + 1 secondary, 24 points)`.
+
+```sql
+-- From test/svg/dual_axis.sql: precipitation bars on the right axis, temperature on the left one.
+SELECT chart().caption('Bergen climate', 24)
+         .y_range(0, 16)
+         .configure_mesh().y_desc('°C').draw()
+         .configure_secondary_axes().y_desc('mm').y_label_formatter('{:.0f}').draw()
+         .draw_secondary_series(histogram_vertical(month, rain, order_by := m)
+                                  .style(mix('blue', 0.4)).label('precipitation'))
+         .draw_series(line_series(month, temp, order_by := m).style('red', 2).point_size(3)
+                        .label('temperature'))
+         .configure_series_labels().position('upper_left').background_style('white')
+             .border_style('black').draw()
+         .to_svg()
+FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211), ...) t(m, month, temp, rain);
+```
+
+### Subplots: `split_evenly` and `titled`
+
+- `split_evenly(charts, rows, cols)` takes a `CHART[]` and returns a `CHART` drawn
+  as plotters' `DrawingArea::split_evenly((rows, cols))`, the charts filling the cells row-major.
+  A `NULL` element is a blank cell, and so are the cells past the last chart; more charts than cells is an error.
+  `rows` and `cols` are 1 to 64.
+  A cell can be any root, including another grid.
+- `titled(chart, text [, size | font])` is `DrawingArea::titled(text, style)`: the title across the top,
+  the chart below it.
+  plotters has no default size; duckers uses sans-serif 20.
+- Each cell fills its own area with its own `root_fill`
+  (white by default); `root_fill` on the grid fills the whole area, which blank cells show.
+  The strip behind a title takes the fill of the chart it was put on, until `root_fill` on the titled chart changes it.
+- `list(chart)` over a `GROUP BY` gives the `CHART[]` for one grid cell per group.
+
+```sql
+-- From test/svg/grid.sql: three titled charts and a blank cell.
+SELECT split_evenly([
+         (SELECT chart().configure_mesh().x_labels(4).draw()
+                   .draw_series(line_series(day, temp, key := city)) FROM weather)
+           .titled('Temperature'),
+         (SELECT chart().draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
+          FROM (SELECT section, count(*) AS n FROM articles GROUP BY section))
+           .titled('Articles'),
+         (SELECT pie(n, section).label_style(11).percentages(10)
+          FROM (SELECT section, count(*) AS n FROM articles GROUP BY section))
+           .titled('Share'),
+       ], 2, 2)
+         .root_fill('grey_100')
+         .titled('Overview', 28)
+         .to_svg(800, 600);
+
+-- From test/sql/layout.test: one cell per group.
+SELECT split_evenly(list(c), 1, 2)::VARCHAR
+FROM (SELECT g, chart().draw_series(line_series(i, i)) AS c FROM range(4) t(i), (VALUES (1), (2)) v(g) GROUP BY g);
+-- CHART(grid 1x2, 2 charts)
+```
+
+### Pies
+
+- `pie(size, label)` is an aggregate returning a `CHART` drawn as plotters' `Pie::new(center, radius, sizes, colors,
+  labels)`, one slice per row, coloured from `Palette99` in slice order.
+- The slices are in label order, ties by size, unless `order_by := expr` says otherwise; `key :=` does not apply.
+  Labels sort as their type does and are drawn as `label::VARCHAR`, the rule of `key :=`; a `NULL` label is empty.
+- Rows with a `NULL`, `NaN`, infinite, zero or negative `size` are skipped.
+- Methods on a pie `CHART`, after plotters' `Pie` setters: `start_angle(deg)`
+  (degrees clockwise from three o'clock, plotters' default 0; `-90` starts at twelve),
+  `label_style(size | font)` (plotters: sans-serif at 5% of the radius), `percentages(size | font)`
+  (draws each slice's percentage inside it, `37.9%`),
+  `label_offset(px)` (from the rim; plotters: 5% of the radius), and `radius(px)`, the `radius` argument of `Pie::new`.
+  Without `radius` the pie takes the largest radius that keeps every label inside its area, with a 10 px margin.
+- `caption` does not apply to a pie, which plotters draws without a `ChartBuilder`; `titled` gives it a title.
+
+```sql
+-- From test/svg/pie.sql.
+SELECT pie(n, section, order_by := -n)
+         .start_angle(-90)
+         .label_style(14)
+         .percentages(font('sans-serif', 12).color('white'))
+         .to_svg()
+FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
+```
+
+### Caveats
+
+- The secondary axes have no scale calls: they are linear (or time, band and category axes by the data), without
+  `secondary_x_log_scale` or monthly key points.
+- plotters' `Pie::donut_hole` is not exposed, nor per-slice colours; the slices take the `Palette99` colours.
+- plotters draws the pie straight onto the backend, so an explicit `radius` too large for the area draws past it,
+  over neighbouring grid cells.
+- `titled` puts the title in a strip as high as the text plus up to 10 px, as plotters does; there is no margin
+  setting for it.
+- The value format changed (format version 4): values stored by an earlier duckers do not decode.
+
 ## M7: files and hosts
 
 ### Writing files: `FORMAT png` and `FORMAT svg`
