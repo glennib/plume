@@ -1,0 +1,322 @@
+# name: test/sql/series.test
+# description: the series aggregates line_series, point_series and histogram_vertical
+# group: [duckers]
+
+require duckers
+
+# __duckers_debug shows the decoded value, so these tests can check the numbers inside a SERIES.
+query T
+SELECT __duckers_debug(line_series(x, y)) FROM (VALUES (3, 1), (1, 5), (2, 0), (1, 2)) t(x, y)
+----
+Series { kind: Line(LineOptions { point_size: 0 }), x: Numeric([1.0, 1.0, 2.0, 3.0]), y: [2.0, 5.0, 0.0, 1.0], style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+query T
+SELECT __duckers_debug(point_series(i, 1))
+FROM range(1) r(i)
+----
+Series { kind: Point(PointOptions { size: 3, marker: Circle }), x: Numeric([0.0]), y: [1.0], style: Style { color: None, stroke_width: 1, filled: false }, label: None }
+
+# histogram_vertical sums the values per bucket; its bars are filled.
+query T
+SELECT __duckers_debug(histogram_vertical(s, n)) FROM (VALUES ('b', 1), ('a', 2), ('b', 3)) t(s, n)
+----
+Series { kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0 }), x: Category(["a", "b"]), y: [2.0, 4.0], style: Style { color: None, stroke_width: 1, filled: true }, label: None }
+
+# histogram_vertical(x, 1) counts rows.
+query T
+SELECT __duckers_debug(histogram_vertical(i % 3, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM range(10) r(i)
+----
+x: Integer([0, 1, 2]), y: [4.0, 3.0, 3.0]
+
+query T
+SELECT __duckers_debug(histogram_vertical(d, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES (DATE '2024-01-02'), (DATE '2024-01-01'), (DATE '2024-01-02')) t(d)
+----
+x: Date([19723, 19724]), y: [1.0, 2.0]
+
+# Every numeric type is a number on a continuous axis, DECIMAL and HUGEINT included.
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT
+
+query T
+SELECT __duckers_debug(line_series(x::${type}, (x * 2)::${type})).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES (4), (1)) t(x)
+----
+x: Numeric([1.0, 4.0]), y: [2.0, 8.0]
+
+endloop
+
+foreach type FLOAT DOUBLE DECIMAL(4,2) DECIMAL(9,2) DECIMAL(18,2) DECIMAL(38,2)
+
+query T
+SELECT __duckers_debug(point_series(x::${type}, x::${type})).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES (-1.25), (2.5)) t(x)
+----
+x: Numeric([-1.25, 2.5]), y: [-1.25, 2.5]
+
+endloop
+
+# DATE is a date axis; every TIMESTAMP flavour is a timestamp axis in microseconds.
+query T
+SELECT __duckers_debug(line_series(d, 1)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (DATE '2024-01-01')) t(d)
+----
+x: Date([19723])
+
+statement ok
+SET TimeZone = 'UTC'
+
+foreach type TIMESTAMP TIMESTAMP_MS TIMESTAMP_NS TIMESTAMPTZ
+
+query T
+SELECT __duckers_debug(line_series(ts::${type}, 1)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (TIMESTAMP '2024-01-01 00:00:01.5')) t(ts)
+----
+x: Timestamp([1704067201500000])
+
+endloop
+
+query T
+SELECT __duckers_debug(line_series(ts::TIMESTAMP_S, 1)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (TIMESTAMP '2024-01-01 00:00:01')) t(ts)
+----
+x: Timestamp([1704067201000000])
+
+# VARCHAR is a category axis.
+query T
+SELECT __duckers_debug(line_series(s, n)).regexp_extract('x: [^)]*\)')
+FROM (VALUES ('b', 1), ('a', 2)) t(s, n)
+----
+x: Category(["a", "b"])
+
+# Rows with a NULL, NaN or infinite x or y are skipped, as are infinite dates and timestamps.
+query T
+SELECT __duckers_debug(line_series(x, y)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES (1, 'nan'::DOUBLE), (2, 'inf'::DOUBLE), ('nan'::DOUBLE, 1), ('-inf'::DOUBLE, 1), (NULL, 1), (4, NULL), (3, 3)) t(x, y)
+----
+x: Numeric([3.0]), y: [3.0]
+
+query TT
+SELECT line_series(d, 1)::VARCHAR, line_series(ts, 1)::VARCHAR
+FROM (VALUES (DATE 'infinity', TIMESTAMP '-infinity'), (DATE '2024-01-01', TIMESTAMP '2024-01-01')) t(d, ts)
+----
+SERIES(line, 1 point)	SERIES(line, 1 point)
+
+# Zero usable rows give an empty SERIES, or an empty SERIES[] with key.
+query TT
+SELECT line_series(i, i)::VARCHAR, len(line_series(i, i, key := i)) FROM range(0) r(i)
+----
+SERIES(line, 0 points)	0
+
+query T
+SELECT point_series(x, x)::VARCHAR FROM (VALUES (NULL::DOUBLE)) t(x)
+----
+SERIES(point, 0 points)
+
+# order_by sets the drawing order; ties are broken by x, then y.
+query T
+SELECT __duckers_debug(line_series(x, y, order_by := t)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES (1, 10, 3), (2, 20, 1), (3, 30, 2), (0, 5, 2)) v(x, y, t)
+----
+x: Numeric([2.0, 0.0, 3.0, 1.0]), y: [20.0, 5.0, 30.0, 10.0]
+
+# NULL order_by values sort last.
+query T
+SELECT __duckers_debug(line_series(x, 0, order_by := t)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, NULL), (2, 'b'), (3, 'a')) v(x, t)
+----
+x: Numeric([3.0, 2.0, 1.0])
+
+# A parametric curve drawn in parameter order.
+query T
+SELECT __duckers_debug(line_series(cos(t), sin(t), order_by := t)).regexp_extract('x: Numeric\(\[[^,]*, [^,]*,')
+FROM (SELECT i / 20.0 AS t FROM range(126) r(i))
+----
+x: Numeric([1.0, 0.9987502603949663,
+
+# Histogram buckets follow order_by.
+query T
+SELECT __duckers_debug(histogram_vertical(section, n, order_by := -n)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM (VALUES ('sport', 412), ('culture', 158), ('news', 530)) t(section, n)
+----
+x: Category(["news", "sport", "culture"]), y: [530.0, 412.0, 158.0]
+
+# order_by takes any type.
+query T
+SELECT __duckers_debug(line_series(x, 0, order_by := t)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, INTERVAL 2 day), (2, INTERVAL 3 hour), (3, INTERVAL 1 month)) v(x, t)
+----
+x: Numeric([2.0, 1.0, 3.0])
+
+query T
+SELECT __duckers_debug(line_series(x, 0, order_by := t)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, [2, 1]), (2, [1, 5]), (3, [1])) v(x, t)
+----
+x: Numeric([3.0, 2.0, 1.0])
+
+query T
+SELECT __duckers_debug(line_series(x, 0, order_by := t)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, true), (2, false)) v(x, t)
+----
+x: Numeric([2.0, 1.0])
+
+query T
+SELECT __duckers_debug(line_series(x, 0, order_by := t)).regexp_extract('x: [^)]*\)')
+FROM (VALUES (1, 2.50), (2, -1.25), (3, 10.00)) v(x, t)
+----
+x: Numeric([2.0, 1.0, 3.0])
+
+# key splits the rows into one series per distinct key, labelled key::VARCHAR, ordered by key.
+query T
+SELECT line_series(i, i * i, key := i % 3)::VARCHAR FROM range(10) r(i)
+----
+['SERIES(line \'0\', 4 points)', 'SERIES(line \'1\', 3 points)', 'SERIES(line \'2\', 3 points)']
+
+query T
+SELECT point_series(x, 1, key := k)::VARCHAR
+FROM (VALUES (1, 'oslo'), (2, 'bergen'), (3, 'oslo'), (4, NULL)) t(x, k)
+----
+['SERIES(point \'bergen\', 1 point)', 'SERIES(point \'oslo\', 2 points)', 'SERIES(point, 1 point)']
+
+query T
+SELECT line_series(x, 1, key := k)::VARCHAR
+FROM (VALUES (1, 1.5::DOUBLE), (2, 1.0::DOUBLE), (3, 2.50::DECIMAL(3,2))) t(x, k)
+----
+['SERIES(line \'1.0\', 1 point)', 'SERIES(line \'1.5\', 1 point)', 'SERIES(line \'2.5\', 1 point)']
+
+query T
+SELECT line_series(x, 1, key := k)::VARCHAR
+FROM (VALUES (1, DATE '2024-01-02'), (2, DATE '2024-01-01')) t(x, k)
+----
+['SERIES(line \'2024-01-01\', 1 point)', 'SERIES(line \'2024-01-02\', 1 point)']
+
+query T
+SELECT line_series(x, 1, key := k)::VARCHAR
+FROM (VALUES (1, true), (2, false)) t(x, k)
+----
+['SERIES(line \'false\', 1 point)', 'SERIES(line \'true\', 1 point)']
+
+query T
+SELECT line_series(x, 1, key := k)::VARCHAR
+FROM (VALUES (1, [1, 2]), (2, [1])) t(x, k)
+----
+['SERIES(line \'[1]\', 1 point)', 'SERIES(line \'[1, 2]\', 1 point)']
+
+# key and order_by together.
+query T
+SELECT list_transform(line_series(x, y, key := k, order_by := -x), lambda s: __duckers_debug(s).regexp_extract('x: [^)]*\)'))
+FROM (VALUES (1, 1, 'a'), (2, 2, 'a'), (3, 3, 'b')) t(x, y, k)
+----
+['x: Numeric([2.0, 1.0])', 'x: Numeric([3.0])']
+
+# A keyed histogram_vertical sums per bucket within each key.
+query T
+SELECT histogram_vertical(s, 1, key := k)::VARCHAR
+FROM (VALUES ('a', 1), ('a', 1), ('b', 2)) t(s, k)
+----
+['SERIES(histogram \'1\', 1 bucket)', 'SERIES(histogram \'2\', 1 bucket)']
+
+# GROUP BY gives one series per group.
+query IT
+SELECT i % 3 AS g, line_series(i, i)::VARCHAR FROM range(10) r(i) GROUP BY g ORDER BY g
+----
+0	SERIES(line, 4 points)
+1	SERIES(line, 3 points)
+2	SERIES(line, 3 points)
+
+# Enough rows for several threads, so partial states are combined; the result does not depend on
+# how the rows are split.
+query T
+SELECT line_series(i, i, key := i % 3)::VARCHAR FROM range(300000) r(i)
+----
+['SERIES(line \'0\', 100000 points)', 'SERIES(line \'1\', 100000 points)', 'SERIES(line \'2\', 100000 points)']
+
+query T
+SELECT __duckers_debug(histogram_vertical((i % 4)::INTEGER, 1)).regexp_extract('x: .*y: \[[^\]]*\]')
+FROM range(1000000) r(i)
+----
+x: Integer([0, 1, 2, 3]), y: [250000.0, 250000.0, 250000.0, 250000.0]
+
+query I
+SELECT count(DISTINCT s::BLOB) FROM (
+    SELECT line_series(i % 1000, i, order_by := -i)::BLOB AS s FROM range(200000) r(i)
+    UNION ALL
+    SELECT line_series(i % 1000, i, order_by := -i)::BLOB FROM (SELECT * FROM range(200000) r(i) ORDER BY random())
+)
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT g, point_series(i, i) FROM (SELECT i, i % 1000 AS g FROM range(100000) r(i)) GROUP BY g)
+----
+1000
+
+# Named arguments by name, in any order, and dot-call syntax.
+query T
+SELECT (i).line_series(i * 2, order_by := -i, key := i % 2)::VARCHAR FROM range(4) r(i)
+----
+['SERIES(line \'0\', 2 points)', 'SERIES(line \'1\', 2 points)']
+
+query T
+SELECT line_series(y := i, x := i)::VARCHAR FROM range(4) r(i)
+----
+SERIES(line, 4 points)
+
+# A NULL key := or order_by := is the same as leaving it out.
+query TT
+SELECT typeof(line_series(i, i, key := NULL)), typeof(line_series(i, i, order_by := NULL)) FROM range(2) r(i)
+----
+SERIES	SERIES
+
+# ORDER BY inside the call is dropped (the aggregates are order-independent, see duckdb#26109);
+# order_by := orders instead.
+query T
+SELECT __duckers_debug(line_series(i, i ORDER BY i DESC)).regexp_extract('x: [^)]*\)') FROM range(3) r(i)
+----
+x: Numeric([0.0, 1.0, 2.0])
+
+# Argument types are checked at bind time.
+statement error
+SELECT line_series(true, 1)
+----
+Binder Error: line_series: x must be a number, DATE, TIMESTAMP or VARCHAR, got BOOLEAN
+
+statement error
+SELECT point_series(1, 'a')
+----
+Binder Error: point_series: y must be a number, got VARCHAR
+
+statement error
+SELECT line_series(1, DATE '2024-01-01')
+----
+Binder Error: line_series: y must be a number, got DATE
+
+statement error
+SELECT histogram_vertical(1.5, 1)
+----
+Binder Error: histogram_vertical: histogram buckets cannot be DOUBLE or DECIMAL: plotters' Histogram needs a discrete bucket axis; bin the values first (for example floor(x / 10)::INTEGER * 10), or use .step() once it exists
+
+statement error
+SELECT histogram_vertical(TIMESTAMP '2024-01-01', 1)
+----
+Binder Error: histogram_vertical: histogram buckets cannot be TIMESTAMP
+
+statement error
+SELECT histogram_vertical([1], 1)
+----
+Binder Error: histogram_vertical: bucket must be VARCHAR, an integer or DATE, got INTEGER[]
+
+statement error
+SELECT histogram_vertical('a', 'b')
+----
+Binder Error: histogram_vertical: value must be a number, got VARCHAR
+
+statement error
+SELECT line_series(1, 1, bogus := 1)
+----
+Binder Error
+
+statement error
+SELECT line_series(1)
+----
+Binder Error

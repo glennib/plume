@@ -1,7 +1,6 @@
 //! duckers: plotters charts for DuckDB v2, as a loadable extension on the stable v2 C API.
 
 pub mod capi;
-pub mod envelope;
 mod functions;
 pub mod types;
 
@@ -20,6 +19,6 @@ pub unsafe extern "C" fn duckers_init_c_api_v2(input: *mut duckers_sys::duckdb_v
 }
 
 fn load(ext: &Extension<'_>) -> Result<()> {
-    let types = types::register(ext, envelope::byte_count_summary)?;
+    let types = types::register(ext)?;
     functions::register(ext, &types)
 }

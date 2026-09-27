@@ -1,5 +1,5 @@
 # name: test/sql/types.test
-# description: the custom types, their casts and the value envelope
+# description: the custom types, their casts and the value encoding
 # group: [duckers]
 
 require duckers
@@ -7,51 +7,74 @@ require duckers
 # typeof reports the custom type names.
 query TTTTT
 SELECT
-    typeof(__duckers_envelope('CHART', ''::BLOB)::CHART),
-    typeof(__duckers_envelope('MESH', ''::BLOB)::MESH),
-    typeof(__duckers_envelope('SERIES_LABELS', ''::BLOB)::SERIES_LABELS),
-    typeof(__duckers_envelope('SERIES', ''::BLOB)::SERIES),
-    typeof(__duckers_envelope('FONT', ''::BLOB)::FONT)
+    typeof(chart()),
+    typeof(chart().configure_mesh()),
+    typeof(chart().configure_series_labels()),
+    typeof(line_series(i, i)),
+    typeof(line_series(i, i, key := i % 2))
+FROM range(3) r(i)
 ----
-CHART	MESH	SERIES_LABELS	SERIES	FONT
+CHART	MESH	SERIES_LABELS	SERIES	SERIES[]
 
-query T
-SELECT typeof(NULL::CHART)
+query TT
+SELECT typeof(NULL::CHART), typeof(NULL::FONT)
 ----
-CHART
+CHART	FONT
 
 # The VARCHAR cast is the one-line summary.
-query TTTTT
+query TTTT
 SELECT
-    __duckers_envelope('CHART', 'abc'::BLOB)::CHART::VARCHAR,
-    __duckers_envelope('MESH', ''::BLOB)::MESH::VARCHAR,
-    __duckers_envelope('SERIES_LABELS', 'x'::BLOB)::SERIES_LABELS::VARCHAR,
-    __duckers_envelope('SERIES', 'a payload longer than twelve bytes'::BLOB)::SERIES::VARCHAR,
-    __duckers_envelope('FONT', 'ab'::BLOB)::FONT::VARCHAR
+    chart()::VARCHAR,
+    chart().configure_mesh().x_desc('day')::VARCHAR,
+    chart().configure_series_labels().position('upper_left')::VARCHAR,
+    line_series(i, i).label('temp')::VARCHAR
+FROM range(120) r(i)
 ----
-CHART(3 bytes)	MESH(0 bytes)	SERIES_LABELS(1 bytes)	SERIES(34 bytes)	FONT(2 bytes)
+CHART(empty)	MESH(x_desc 'day') of CHART(empty)	SERIES_LABELS(position upper_left) of CHART(empty)	SERIES(line 'temp', 120 points)
+
+query T
+SELECT chart().draw_series(line_series(i, i, key := i % 2))::VARCHAR FROM range(240) r(i)
+----
+CHART(line, 2 series, 240 points)
+
+query T
+SELECT chart().caption('Oslo').draw_series(line_series(i, i)).draw_series(point_series(i, i))::VARCHAR
+FROM range(10) r(i)
+----
+CHART(line+point, 2 series, 20 points, caption 'Oslo')
+
+query T
+SELECT histogram_vertical(s, 1)::VARCHAR FROM (VALUES ('a'), ('b'), ('a')) t(s)
+----
+SERIES(histogram, 2 buckets)
 
 # Type names are case-insensitive.
 query T
-SELECT __duckers_envelope('chart', ''::BLOB)::chart::varchar
+SELECT chart()::chart::varchar
 ----
-CHART(0 bytes)
+CHART(empty)
 
-# BLOB round trip: the bytes are the envelope, unchanged.
+# The BLOB cast gives the encoded value: a 4-byte magic naming the type, the format version as a
+# little-endian u16, then the spec.
+query TTTT
+SELECT
+    (chart()::BLOB)[1:6] = 'DKch\x01\x00'::BLOB,
+    (chart().configure_mesh()::BLOB)[1:4] = 'DKme'::BLOB,
+    (chart().configure_series_labels()::BLOB)[1:4] = 'DKsl'::BLOB,
+    (line_series(1, 1)::BLOB)[1:4] = 'DKse'::BLOB
+----
+true	true	true	true
+
+# BLOB round trip.
 query T
-SELECT __duckers_envelope('CHART', 'abc'::BLOB)::CHART::BLOB = __duckers_envelope('CHART', 'abc'::BLOB)
+SELECT chart().caption('t')::BLOB::CHART::VARCHAR
+----
+CHART(empty, caption 't')
+
+query T
+SELECT chart()::BLOB::CHART::BLOB = chart()::BLOB
 ----
 true
-
-query T
-SELECT octet_length(__duckers_envelope('SERIES', 'abc'::BLOB)::SERIES::BLOB)
-----
-10
-
-query T
-SELECT __duckers_envelope('CHART', 'abc'::BLOB)::CHART::BLOB::CHART::VARCHAR
-----
-CHART(3 bytes)
 
 # Casting foreign bytes to a duckers type fails, and TRY_CAST gives NULL.
 statement error
@@ -60,27 +83,42 @@ SELECT 'abc'::BLOB::CHART
 Conversion Error: not a duckers CHART value
 
 statement error
-SELECT __duckers_envelope('MESH', ''::BLOB)::CHART
+SELECT chart().configure_mesh()::BLOB::CHART
 ----
-Conversion Error: expected a CHART value, got a MESH value
+Conversion Error: not a duckers CHART value: the BLOB holds a MESH value
 
 query T
 SELECT TRY_CAST('abc'::BLOB AS CHART) IS NULL
 ----
 true
 
-# A string literal casts to the custom type through the base type without the envelope check;
-# the summary then reports the value as invalid.
+# A string literal casts to the custom type through the base type without the check; every
+# consumer of the value checks it instead.
 statement error
 SELECT ('abc'::CHART)::VARCHAR
 ----
 Conversion Error: not a duckers CHART value
 
+statement error
+SELECT ('abc'::CHART).caption('x')
+----
+Invalid Input Error: caption: not a duckers CHART value
+
+statement error
+SELECT ('abc'::CHART).to_svg()
+----
+Invalid Input Error: to_svg: not a duckers CHART value
+
 # Values written by an incompatible duckers name the format version.
 statement error
-SELECT ('DKRS'::BLOB || '\x01\x07\x00'::BLOB)::CHART
+SELECT ('DKch'::BLOB || '\x07\x00'::BLOB)::CHART
 ----
-format version 7
+Conversion Error: CHART format version 7 not supported by this duckers (it reads version 1)
+
+statement error
+SELECT (chart()::BLOB || '\x00'::BLOB)::CHART
+----
+corrupt CHART value: 1 trailing bytes
 
 # NULL stays NULL through every cast.
 query TTT
@@ -90,35 +128,35 @@ true	true	true
 
 # Casts run per row over a column.
 query IT
-SELECT i, __duckers_envelope('CHART', repeat('x', i::INTEGER)::BLOB)::CHART::VARCHAR
-FROM range(0, 30, 10) r(i)
+SELECT i, chart().draw_series(line_series(j, j))::VARCHAR
+FROM range(1, 4) r(i), range(i) s(j)
+GROUP BY i
 ORDER BY i
 ----
-0	CHART(0 bytes)
-10	CHART(10 bytes)
-20	CHART(20 bytes)
+1	CHART(line, 1 series, 1 point)
+2	CHART(line, 1 series, 2 points)
+3	CHART(line, 1 series, 3 points)
 
 query T
 SELECT count(*) FILTER (WHERE TRY_CAST(b AS CHART) IS NULL)
-FROM (SELECT CASE WHEN i % 2 = 0 THEN __duckers_envelope('CHART', ''::BLOB) ELSE 'junk'::BLOB END AS b FROM range(100) r(i))
+FROM (SELECT CASE WHEN i % 2 = 0 THEN chart()::BLOB ELSE 'junk'::BLOB END AS b FROM range(100) r(i))
 ----
 50
 
-# Values can be stored in tables.
+# Values can be stored in tables and used later.
 statement ok
-CREATE TABLE charts(c CHART)
+CREATE TABLE series_table(s SERIES, ss SERIES[])
 
 statement ok
-INSERT INTO charts SELECT __duckers_envelope('CHART', i::VARCHAR::BLOB)::CHART FROM range(3) r(i)
+INSERT INTO series_table
+SELECT line_series(i, i), point_series(i, i, key := i % 3) FROM range(9) r(i)
+
+query TT
+SELECT s::VARCHAR, len(ss) FROM series_table
+----
+SERIES(line, 9 points)	3
 
 query T
-SELECT c::VARCHAR FROM charts
+SELECT chart().draw_series(s).draw_series(ss)::VARCHAR FROM series_table
 ----
-CHART(1 bytes)
-CHART(1 bytes)
-CHART(1 bytes)
-
-statement error
-SELECT __duckers_envelope('PLOT', ''::BLOB)
-----
-unknown duckers type PLOT
+CHART(line+point, 4 series, 18 points)

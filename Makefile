@@ -2,7 +2,8 @@
 #
 #   make                 debug build plus footer: build/debug/duckers.duckdb_extension
 #   make release         the same, optimised: build/release/duckers.duckdb_extension
-#   make test            Rust unit tests, sqllogictests (Python wheel) and CLI tests on the debug build
+#   make test            Rust unit tests, sqllogictests and SVG snapshots (Python wheel) and CLI
+#                        tests on the debug build
 #   make test_release    the same on the release build
 #   make shell           the pinned DuckDB v2 preview CLI with the debug build loaded
 #
@@ -75,7 +76,8 @@ SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || e
 
 .PHONY: all debug release build_debug build_release footer_debug footer_release duckdb shell \
         shell_release venv test test_debug test_release test_rust test_sql_debug test_sql_release \
-        test_cli_debug test_cli_release fmt lint bindings clean
+        test_cli_debug test_cli_release test_svg_debug test_svg_release update_svg fmt lint \
+        bindings clean
 
 all: debug
 
@@ -120,19 +122,33 @@ venv:
 	$(UV) sync --locked
 
 test: test_debug
-test_debug: test_rust test_sql_debug test_cli_debug
-test_release: test_rust test_sql_release test_cli_release
+test_debug: test_rust test_sql_debug test_svg_debug test_cli_debug
+test_release: test_rust test_sql_release test_svg_release test_cli_release
 
 test_rust:
 	$(CARGO) nextest run --no-tests=pass
 
-SQLLOGICTEST = $(UV) run --locked python -m duckdb_sqllogictest --test-dir test/sql
+# The tests write their files (COPY ... TO) into build/test-sql/.
+SQLLOGICTEST = mkdir -p build/test-sql && $(UV) run --locked python -m duckdb_sqllogictest --test-dir test/sql
 
 test_sql_debug: debug venv
 	$(SQLLOGICTEST) --external-extension $(DEBUG_EXTENSION)
 
 test_sql_release: release venv
 	$(SQLLOGICTEST) --external-extension $(RELEASE_EXTENSION)
+
+# SVG snapshots: each test/svg/<name>.sql renders a chart through the wheel, and the SVG must
+# equal test/svg/<name>.svg. `make update_svg` rewrites the expected files for review.
+CHECK_SVG = $(UV) run --locked python scripts/check_svg.py
+
+test_svg_debug: debug venv
+	$(CHECK_SVG) $(DEBUG_EXTENSION)
+
+test_svg_release: release venv
+	$(CHECK_SVG) $(RELEASE_EXTENSION)
+
+update_svg: debug venv
+	$(CHECK_SVG) $(DEBUG_EXTENSION) --update
 
 # CLI tests: each test/cli/<name>.sql runs in the preview CLI, and its output must equal
 # test/cli/<name>.out. They cover what the Python runner cannot see, such as how the shell renders

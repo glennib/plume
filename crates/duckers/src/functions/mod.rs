@@ -1,6 +1,9 @@
 //! The SQL functions duckers registers.
 
+mod args;
+mod chart;
 mod internal;
+mod series;
 
 use crate::capi::{Extension, Result, ScalarFunction};
 use crate::types::Types;
@@ -14,5 +17,7 @@ pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
         &types.varchar,
         |_, _| Ok(Some(VERSION)),
     ))?;
+    series::register(ext, types)?;
+    chart::register(ext, types)?;
     internal::register(ext, types)
 }

@@ -1,0 +1,355 @@
+# name: test/sql/chart.test
+# description: chart(), the methods on CHART, MESH, SERIES_LABELS and SERIES, and mix
+# group: [duckers]
+
+require duckers
+
+# chart() is an empty chart with duckers' defaults.
+query T
+SELECT __duckers_debug(chart())
+----
+Chart { caption: None, margin: Sides { top: 10, bottom: 10, left: 10, right: 10 }, label_area: Sides { top: 0, bottom: 30, left: 40, right: 0 }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, fill: Color { r: 255, g: 255, b: 255, a: 1.0 }, ops: [] }
+
+# The builder methods.
+query T
+SELECT __duckers_debug(chart().caption('Oslo').margin(4).x_label_area_size(50).y_label_area_size(60).root_fill('grey_100'))
+----
+Chart { caption: Some(Caption { text: "Oslo", font: Font { family: "sans-serif", size: 30, style: Normal, color: None } }), margin: Sides { top: 4, bottom: 4, left: 4, right: 4 }, label_area: Sides { top: 0, bottom: 50, left: 60, right: 0 }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, fill: Color { r: 245, g: 245, b: 245, a: 1.0 }, ops: [] }
+
+query T
+SELECT __duckers_debug(chart().caption('Oslo', 20)).regexp_extract('size: [0-9]+')
+----
+size: 20
+
+# x_range and y_range take numbers of any type, DATEs and TIMESTAMPs.
+query T
+SELECT __duckers_debug(chart().x_range(0, 10.5).y_range(-10::TINYINT, 30::DECIMAL(4,1))).regexp_extract('x_axis.*y_axis[^}]*Linear')
+----
+x_axis: AxisSpec { range: Some(Numeric(0.0, 10.5)), scale: Linear }, y_axis: AxisSpec { range: Some(Numeric(-10.0, 30.0)), scale: Linear
+
+query T
+SELECT __duckers_debug(chart().x_range(DATE '2024-01-01', DATE '2024-02-01')).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
+----
+x_axis: AxisSpec { range: Some(Date(19723, 19754)
+
+statement ok
+SET TimeZone = 'UTC'
+
+foreach type TIMESTAMP TIMESTAMPTZ TIMESTAMP_MS TIMESTAMP_NS
+
+query T
+SELECT __duckers_debug(chart().x_range(TIMESTAMP '2024-01-01'::${type}, TIMESTAMP '2024-01-02'::${type})).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
+----
+x_axis: AxisSpec { range: Some(Timestamp(1704067200000000, 1704153600000000)
+
+endloop
+
+# lo > hi reverses the axis.
+query T
+SELECT chart().x_range(10, 0)::VARCHAR
+----
+CHART(empty)
+
+# draw_series takes a SERIES or a SERIES[]; draw order is chain order.
+query T
+SELECT chart().draw_series(line_series(i, i)).draw_series(point_series(i, i, key := i % 2))::VARCHAR FROM range(10) r(i)
+----
+CHART(line+point, 3 series, 20 points)
+
+# A NULL element of a SERIES[] draws nothing.
+query T
+SELECT chart().draw_series([line_series(i, i), NULL])::VARCHAR FROM range(3) r(i)
+----
+CHART(line, 1 series, 3 points)
+
+query T
+SELECT chart().draw_series([]::SERIES[])::VARCHAR
+----
+CHART(empty)
+
+# configure_mesh() returns a MESH carrying the chart; draw() returns the chart.
+query T
+SELECT chart().caption('c').configure_mesh().x_desc('day').y_desc('°C')::VARCHAR
+----
+MESH(x_desc 'day', y_desc '°C') of CHART(empty, caption 'c')
+
+query T
+SELECT __duckers_debug(chart().configure_mesh().x_desc('x').draw().draw_series(line_series(1, 1))).regexp_extract('ops: \[[A-Za-z]+\([A-Za-z]+')
+----
+ops: [Mesh(MeshStyle
+
+query T
+SELECT typeof(chart().configure_mesh().draw())
+----
+CHART
+
+# configure_series_labels() returns a SERIES_LABELS; draw() returns the chart.
+query T
+SELECT chart().configure_series_labels().position('upper_left').position(10, -20).border_style('black').border_style('red', 2).background_style(mix('white', 0.8))::VARCHAR
+----
+SERIES_LABELS(position upper_left, position (10, -20), border_style #000000 1px, border_style #ff0000 2px, background_style rgba(255, 255, 255, 0.8)) of CHART(empty)
+
+query T
+SELECT typeof(chart().configure_series_labels().draw())
+----
+CHART
+
+query T
+SELECT __duckers_debug(chart().configure_series_labels().draw()).regexp_extract('ops: .*')
+----
+ops: [SeriesLabels(SeriesLabelStyle { settings: [] })] }
+
+# The series methods.
+query T
+SELECT __duckers_debug(line_series(i, i).style('red').label('temp').point_size(2)).regexp_extract('kind: [^)]*\)')
+FROM range(2) r(i)
+----
+kind: Line(LineOptions { point_size: 2 })
+
+query T
+SELECT __duckers_debug(line_series(i, i).style('red').label('temp')).regexp_extract('style: .*')
+FROM range(2) r(i)
+----
+style: Style { color: Some(Color { r: 255, g: 0, b: 0, a: 1.0 }), stroke_width: 1, filled: false }, label: Some("temp") }
+
+query T
+SELECT __duckers_debug(point_series(i, i).style('#00ff0080', 3).size(4).filled()).regexp_extract('kind: .*')
+FROM range(2) r(i)
+----
+kind: Point(PointOptions { size: 4, marker: Circle }), x: Numeric([0.0, 1.0]), y: [0.0, 1.0], style: Style { color: Some(Color { r: 0, g: 255, b: 0, a: 0.5019607843137255 }), stroke_width: 3, filled: true }, label: None }
+
+query T
+SELECT __duckers_debug(histogram_vertical(i, 1).stroke_width(2)).regexp_extract('stroke_width: [0-9]+')
+FROM range(2) r(i)
+----
+stroke_width: 2
+
+# Series methods apply to each element of a keyed result through list_transform.
+query T
+SELECT list_transform(line_series(i, i, key := i % 2), lambda s, n: s.stroke_width(2).style('palette99:' || n))::VARCHAR
+FROM range(4) r(i)
+----
+['SERIES(line \'0\', 2 points)', 'SERIES(line \'1\', 2 points)']
+
+query T
+SELECT list_transform(line_series(i, i, key := i % 2), lambda s: __duckers_debug(s.stroke_width(2)).regexp_extract('stroke_width: [0-9]+'))
+FROM range(4) r(i)
+----
+['stroke_width: 2', 'stroke_width: 2']
+
+query T
+SELECT chart().draw_series(list_transform(line_series(i, i, key := i % 3), lambda s: s.stroke_width(2)))::VARCHAR
+FROM range(9) r(i)
+----
+CHART(line, 3 series, 9 points)
+
+# Values are immutable: the same SERIES can be drawn on several charts.
+query TT
+WITH s AS (SELECT line_series(i, i) AS s FROM range(3) r(i))
+SELECT chart().draw_series(s)::VARCHAR, chart().draw_series(s).draw_series(s)::VARCHAR FROM s
+----
+CHART(line, 1 series, 3 points)	CHART(line, 2 series, 6 points)
+
+# GROUP BY gives one chart per group.
+query IT
+SELECT i % 3 AS g, chart().caption('group ' || g).draw_series(line_series(i, i))::VARCHAR
+FROM range(10) r(i)
+GROUP BY g
+ORDER BY g
+----
+0	CHART(line, 1 series, 4 points, caption 'group 0')
+1	CHART(line, 1 series, 3 points, caption 'group 1')
+2	CHART(line, 1 series, 3 points, caption 'group 2')
+
+# mix mirrors plotters' Color::mix, and dot calls on a literal work in both spellings.
+query TTT
+SELECT mix('white', 0.8), ('white').mix(0.8), 'white'.mix(0.8)
+----
+rgba(255, 255, 255, 0.8)	rgba(255, 255, 255, 0.8)	rgba(255, 255, 255, 0.8)
+
+query T
+SELECT mix('#ff000080', 0.5)
+----
+rgba(255, 0, 0, 0.25098039215686274)
+
+# Colour strings.
+query T
+SELECT list_transform(['red', 'BLUE_400', 'deeporange', '#123456', '#12345678', 'rgb(1, 2, 3)', 'rgba(1, 2, 3, 0.5)', 'hsl(0.5, 1, 0.5)', 'palette99:0', 'transparent'],
+    lambda c: __duckers_debug(chart().root_fill(c)).regexp_extract('fill: Color \{ ([^}]*) \}', 1))
+----
+['r: 255, g: 0, b: 0, a: 1.0', 'r: 66, g: 165, b: 245, a: 1.0', 'r: 255, g: 87, b: 34, a: 1.0', 'r: 18, g: 52, b: 86, a: 1.0', 'r: 18, g: 52, b: 86, a: 0.47058823529411764', 'r: 1, g: 2, b: 3, a: 1.0', 'r: 1, g: 2, b: 3, a: 0.5', 'r: 0, g: 255, b: 255, a: 1.0', 'r: 230, g: 25, b: 75, a: 1.0', 'r: 0, g: 0, b: 0, a: 0.0']
+
+# NULL in, NULL out, for every scalar.
+query TTTTTTTT
+SELECT
+    (NULL::CHART).caption('x') IS NULL,
+    chart().caption(NULL) IS NULL,
+    chart().caption('x', NULL) IS NULL,
+    chart().x_range(NULL, 1) IS NULL,
+    chart().y_range(0, NULL::DATE) IS NULL,
+    chart().root_fill(NULL) IS NULL,
+    chart().margin(NULL) IS NULL,
+    chart().draw_series(NULL::SERIES) IS NULL
+----
+true	true	true	true	true	true	true	true
+
+query TTTTTTTT
+SELECT
+    chart().draw_series(NULL::SERIES[]) IS NULL,
+    (NULL::CHART).configure_mesh() IS NULL,
+    chart().configure_mesh().x_desc(NULL) IS NULL,
+    (NULL::MESH).draw() IS NULL,
+    chart().configure_series_labels().position(NULL) IS NULL,
+    chart().configure_series_labels().position(1, NULL) IS NULL,
+    (NULL::SERIES_LABELS).draw() IS NULL,
+    chart().configure_series_labels().border_style('red', NULL) IS NULL
+----
+true	true	true	true	true	true	true	true
+
+query TTTTTTTT
+SELECT
+    (NULL::SERIES).style('red') IS NULL,
+    line_series(1, 1).style(NULL) IS NULL,
+    line_series(1, 1).stroke_width(NULL) IS NULL,
+    (NULL::SERIES).filled() IS NULL,
+    line_series(1, 1).label(NULL) IS NULL,
+    line_series(1, 1).point_size(NULL) IS NULL,
+    point_series(1, 1).size(NULL) IS NULL,
+    mix(NULL, 0.5) IS NULL
+----
+true	true	true	true	true	true	true	true
+
+query TTTT
+SELECT (NULL::CHART).to_svg() IS NULL, chart().to_svg(NULL, 1) IS NULL, (NULL::CHART).to_png() IS NULL, chart().to_png(1, NULL) IS NULL
+----
+true	true	true	true
+
+# NULL per row over a column.
+query T
+SELECT list(chart().caption(c)::VARCHAR ORDER BY i) FROM (VALUES (1, 'a'), (2, NULL), (3, 'c')) t(i, c)
+----
+['CHART(empty, caption \'a\')', NULL, 'CHART(empty, caption \'c\')']
+
+# Runtime errors come from the function that received the bad value, in plotters' terms.
+statement error
+SELECT line_series(1, 1).style('nope')
+----
+Invalid Input Error: style: unknown colour 'nope': expected a plotters colour name ('red', 'blue_400'), '#rrggbb', '#rrggbbaa', 'rgb(r, g, b)', 'rgba(r, g, b, a)', 'hsl(h, s, l)' or 'palette99:n'
+
+statement error
+SELECT chart().root_fill('#12')
+----
+Invalid Input Error: root_fill: unknown colour '#12'
+
+statement error
+SELECT line_series(1, 1).stroke_width(-1)
+----
+Invalid Input Error: stroke_width must be between 0 and 8192 px, got -1
+
+statement error
+SELECT point_series(1, 1).point_size(3)
+----
+Invalid Input Error: point_size does not apply to point_series values: it is LineSeries::point_size and applies to line_series
+
+statement error
+SELECT line_series(1, 1).size(3)
+----
+Invalid Input Error: size does not apply to line_series values: it is the size argument of PointSeries::new and applies to point_series
+
+statement error
+SELECT chart().x_range(1, 1)
+----
+Invalid Input Error: x_range needs lo <> hi: plotters cannot map a range whose start equals its end (lo > hi reverses the axis)
+
+statement error
+SELECT chart().x_range(0, DATE '2024-01-01')
+----
+Invalid Input Error: x_range bounds must have the same type, got numeric and date
+
+statement error
+SELECT chart().y_range(DATE '2024-01-01', DATE '2024-02-01')
+----
+Invalid Input Error: y_range bounds are date but the y axis is numeric
+
+statement error
+SELECT chart().draw_series(line_series(d, 1)).x_range(0, 1) FROM (VALUES (DATE '2024-01-01')) t(d)
+----
+Invalid Input Error: x_range bounds are numeric but the x axis is date
+
+statement error
+SELECT chart().x_range(0, 1).draw_series(line_series(d, 1)) FROM (VALUES (DATE '2024-01-01')) t(d)
+----
+Invalid Input Error: draw_series: x_range bounds are numeric but the x axis is date
+
+statement error
+SELECT chart().draw_series(line_series(1, 1)).draw_series(point_series('a', 1))
+----
+Invalid Input Error: draw_series: cannot draw point_series with category x values on a chart whose x axis is numeric
+
+statement error
+SELECT chart().caption('x', 0)
+----
+Invalid Input Error: caption: font size must be at least 1 px
+
+statement error
+SELECT chart().margin(9000)
+----
+Invalid Input Error: margin must be between 0 and 8192 px, got 9000
+
+statement error
+SELECT chart().configure_series_labels().position('top')
+----
+Invalid Input Error: position: unknown SeriesLabelPosition 'top': expected one of 'upper_left', 'middle_left', 'lower_left', 'upper_middle', 'middle_middle', 'lower_middle', 'upper_right', 'middle_right', 'lower_right', or position(x, y)
+
+statement error
+SELECT chart().configure_series_labels().position(100000, 0)
+----
+Invalid Input Error: position: SeriesLabelPosition::Coordinate takes px between -8192 and 8192, got 100000
+
+statement error
+SELECT mix('white', 2)
+----
+Invalid Input Error: mix alpha must be between 0 and 1, got 2
+
+statement error
+SELECT chart().draw_series(('abc'::SERIES))
+----
+Invalid Input Error: draw_series: not a duckers SERIES value
+
+statement error
+SELECT chart().draw_series(chart().configure_mesh()::BLOB::SERIES)
+----
+Conversion Error: not a duckers SERIES value: the BLOB holds a MESH value
+
+# Argument types are checked at bind time.
+statement error
+SELECT chart().x_range('a', 'b')
+----
+Binder Error: x_range: lo must be a number, DATE or TIMESTAMP, got VARCHAR
+
+statement error
+SELECT chart().y_range(0, true)
+----
+Binder Error: y_range: hi must be a number, DATE or TIMESTAMP, got BOOLEAN
+
+# Methods dispatch on the type of their first argument.
+statement error
+SELECT chart().x_desc('x')
+----
+Binder Error
+
+statement error
+SELECT chart().draw()
+----
+Binder Error
+
+statement error
+SELECT line_series(1, 1).caption('x')
+----
+Binder Error
+
+# DuckDB's own position() is still there.
+query I
+SELECT position('b' IN 'abc')
+----
+2

@@ -1,0 +1,226 @@
+# name: test/sql/output.test
+# description: to_svg, to_png, files through COPY ... (FORMAT blob), and the plan's worked examples
+# group: [duckers]
+
+require duckers
+
+statement ok
+CREATE TABLE weather AS
+SELECT city, DATE '2024-01-01' + d::INTEGER AS day,
+       round(-2 + 4 * c + 0.3 * d + 5 * sin(d / 5 + c), 1) AS temp
+FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(60) r(d)
+
+statement ok
+CREATE TABLE articles AS
+SELECT section
+FROM (VALUES ('sport', 412), ('culture', 158), ('news', 530), ('economy', 201), ('opinion', 97)) s(section, n),
+     range(n)
+
+# A PNG starts with the signature and an IHDR chunk with the width, the height, 8-bit RGB.
+statement ok
+CREATE MACRO png_header(png) AS
+    CASE WHEN hex(png[1:16]) = '89504E470D0A1A0A0000000D49484452' AND hex(png[25:26]) = '0802'
+    THEN ('0x' || hex(png[17:20]))::INTEGER || 'x' || ('0x' || hex(png[21:24]))::INTEGER
+    ELSE 'not a PNG' END
+
+# The default size is 640x480.
+query TT
+SELECT png_header(chart().to_png()), typeof(chart().to_png())
+----
+640x480	BLOB
+
+query T
+SELECT png_header(chart().to_png(800, 600))
+----
+800x600
+
+query T
+SELECT png_header(chart().to_png(1, 8192))
+----
+1x8192
+
+query TT
+SELECT chart().to_svg()[1:60], typeof(chart().to_svg())
+----
+<svg width="640" height="480" viewBox="0 0 640 480" xmlns="h	VARCHAR
+
+query T
+SELECT chart().to_svg(800, 600)[1:44]
+----
+<svg width="800" height="600" viewBox="0 0 8
+
+statement error
+SELECT chart().to_png(0, 480)
+----
+Invalid Input Error: to_png: chart size must be between 1 and 8192 px per side, got 0x480
+
+statement error
+SELECT chart().to_svg(640, 8193)
+----
+Invalid Input Error: to_svg: chart size must be between 1 and 8192 px per side, got 640x8193
+
+# Rendering is deterministic.
+query TT
+SELECT a = b, c = d FROM (
+    SELECT chart().draw_series(line_series(i, i * i)).to_png() AS a,
+           chart().draw_series(line_series(i, i * i)).to_png() AS b,
+           chart().draw_series(line_series(i, i * i)).to_svg() AS c,
+           chart().draw_series(line_series(i, i * i)).to_svg() AS d
+    FROM range(10) r(i)
+)
+----
+true	true
+
+# The same chart with rows in a different order and from several threads renders the same.
+query T
+SELECT count(DISTINCT png) FROM (
+    SELECT chart().draw_series(point_series(i % 100, i % 7, key := i % 3)).to_png() AS png FROM range(100000) r(i)
+    UNION ALL
+    SELECT chart().draw_series(point_series(i % 100, i % 7, key := i % 3)).to_png() FROM (SELECT * FROM range(100000) r(i) ORDER BY random())
+)
+----
+1
+
+# The SVG holds the text of the chart.
+query TTTTT
+SELECT svg LIKE '%Oslo temperature%', svg LIKE '%>
+day
+<%', svg LIKE '%°C%', svg LIKE '%2024-01-01%', svg LIKE '%stroke="#FF0000"%'
+FROM (
+    SELECT chart().caption('Oslo temperature').configure_mesh().x_desc('day').y_desc('°C').draw()
+             .draw_series(line_series(day, temp).style('red').label('temp')).to_svg() AS svg
+    FROM weather WHERE city = 'Oslo'
+)
+----
+true	true	true	true	true
+
+# The default mesh is drawn before the first series: the black axis line comes before the series
+# in palette colour 0.
+query T
+SELECT strpos(svg, 'stroke="#000000"') < strpos(svg, 'stroke="#E6194B"')
+FROM (SELECT chart().draw_series(line_series(i, i)).to_svg() AS svg FROM range(3) r(i))
+----
+true
+
+# A labelled series gets a legend without configure_series_labels.
+query T
+SELECT chart().draw_series(line_series(i, i).label('unit circle')).to_svg() LIKE '%unit circle%' FROM range(3) r(i)
+----
+true
+
+# Every axis kind renders: numeric, integer buckets, dates, timestamps, date buckets and
+# categories, and an empty chart.
+query T
+SELECT png_header(c.to_png()) FROM (
+    SELECT chart().draw_series(line_series(i, i)) AS c FROM range(3) r(i)
+    UNION ALL SELECT chart().draw_series(histogram_vertical(i % 6, 1)) FROM range(100) r(i)
+    UNION ALL SELECT chart().draw_series(line_series(day, temp, key := city)) FROM weather
+    UNION ALL SELECT chart().draw_series(point_series(TIMESTAMP '2024-01-01' + i * INTERVAL 1 hour, i)) FROM range(48) r(i)
+    UNION ALL SELECT chart().draw_series(histogram_vertical(day, temp)) FROM weather WHERE day < DATE '2024-01-15'
+    UNION ALL SELECT chart().draw_series(histogram_vertical(section, 1)) FROM articles
+    UNION ALL SELECT chart()
+    UNION ALL SELECT chart().x_range(DATE '2024-02-01', DATE '2024-01-01').draw_series(line_series(day, temp)) FROM weather
+    UNION ALL SELECT chart().x_range(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-01 12:00').draw_series(line_series(TIMESTAMP '2024-01-01' + i * INTERVAL 1 hour, i)) FROM range(48) r(i)
+    UNION ALL SELECT chart().x_range(0, 10).draw_series(histogram_vertical(i, i)) FROM range(5) r(i)
+)
+----
+640x480
+640x480
+640x480
+640x480
+640x480
+640x480
+640x480
+640x480
+640x480
+640x480
+
+# Rendering checks the axis ranges against the axis kinds.
+statement error
+SELECT chart().draw_series(histogram_vertical(i, 1)).x_range(0.5, 5).to_png() FROM range(3) r(i)
+----
+Invalid Input Error: x_range on an integer bucket axis takes whole numbers, got 0.5 and 5
+
+# The plan's worked examples, with to_png() and COPY ... (FORMAT blob) in place of
+# (FORMAT png) and show(). Files go to build/test-sql/, which the Makefile creates.
+statement ok
+COPY (
+    SELECT chart()
+             .caption('Oslo temperature', 30)
+             .margin(10)
+             .x_label_area_size(30)
+             .y_label_area_size(40)
+             .y_range(-10, 30)
+             .configure_mesh().x_desc('day').y_desc('°C').draw()
+             .draw_series(line_series(day, temp).style('red').label('temp'))
+             .configure_series_labels().border_style('black').draw()
+             .to_png(800, 600)
+    FROM weather
+    WHERE city = 'Oslo'
+) TO '__WORKING_DIRECTORY__/build/test-sql/oslo.png' (FORMAT blob)
+
+query T
+SELECT png_header(content) FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/oslo.png')
+----
+800x600
+
+query T
+SELECT png_header(chart().draw_series(line_series(day, temp, key := city)).to_png()) FROM weather
+----
+640x480
+
+statement ok
+COPY (
+    SELECT chart().caption('Articles per section')
+             .draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
+             .to_svg()
+             .encode()
+    FROM (SELECT section, count(*) AS n FROM articles GROUP BY section)
+) TO '__WORKING_DIRECTORY__/build/test-sql/articles.svg' (FORMAT blob)
+
+query T
+SELECT decode(content)[1:4] FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/articles.svg')
+----
+<svg
+
+query T
+SELECT png_header(
+    chart()
+        .configure_mesh().x_desc('x').y_desc('y').draw()
+        .draw_series(line_series(i, i * i).style('red').label('y = x²'))
+        .draw_series(point_series(i, i * i).style('black').size(4).filled())
+        .configure_series_labels().position('upper_left').background_style(mix('white', 0.8)).draw()
+        .to_png(800, 600))
+FROM range(10) t(i)
+----
+800x600
+
+query T
+SELECT png_header(chart().draw_series(line_series(cos(t), sin(t), order_by := t)).to_png())
+FROM (SELECT i / 20.0 AS t FROM range(126) r(i))
+----
+640x480
+
+# One file per group with PARTITION_BY.
+statement ok
+COPY (SELECT city, chart().draw_series(line_series(day, temp)).to_png() AS png
+      FROM weather GROUP BY city)
+TO '__WORKING_DIRECTORY__/build/test-sql/charts' (FORMAT blob, PARTITION_BY city, OVERWRITE)
+
+query TT
+SELECT regexp_extract(filename, 'city=([^/]*)/', 1) AS city, png_header(content)
+FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/charts/*/*')
+ORDER BY city
+----
+Bergen	640x480
+Oslo	640x480
+Troms%C3%B8	640x480
+
+# A CHART passes COPY's FORMAT blob check too, and the file then holds the encoded chart.
+statement ok
+COPY (SELECT chart()::BLOB) TO '__WORKING_DIRECTORY__/build/test-sql/chart.bin' (FORMAT blob)
+
+query T
+SELECT content::CHART::VARCHAR FROM read_blob('__WORKING_DIRECTORY__/build/test-sql/chart.bin')
+----
+CHART(empty)

@@ -1,27 +1,31 @@
 //! Internal functions for tests, prefixed `__duckers_`. They are not part of the user API and may
 //! change or disappear in any release.
 
+use duckers_chart::{Chart, Font, Mesh, Series, SeriesLabels, Value};
+
 use crate::capi::{
-    Aggregate, AggregateFunction, AggregateInput, Bind, Error, Extension, OutputVector, Result,
-    ScalarFunction, TypeId,
+    Aggregate, AggregateFunction, AggregateInput, Bind, Error, Extension, LogicalType,
+    OutputVector, Result, ScalarFunction, TypeId,
 };
-use crate::envelope::{self, ValueKind};
 use crate::types::Types;
 
+/// `__duckers_debug(value)`: the Rust `Debug` text of a decoded value, so tests can see the
+/// numbers inside a `SERIES` or `CHART`.
+fn debug<T: Value + std::fmt::Debug>(ty: &LogicalType, types: &Types) -> ScalarFunction {
+    ScalarFunction::map_rows("__duckers_debug", &types.varchar, |input, row| {
+        let value =
+            T::decode(input.arg(0).bytes(row)?).map_err(|e| Error::invalid_input(e.to_string()))?;
+        Ok(Some(format!("{value:?}")))
+    })
+    .param("value", ty)
+}
+
 pub fn register(ext: &Extension<'_>, types: &Types) -> Result<()> {
-    // `__duckers_envelope('CHART', payload)` wraps raw bytes in a value envelope and returns them
-    // as a BLOB, so tests can build values of every type before the constructors exist:
-    // `__duckers_envelope('CHART', 'x'::BLOB)::CHART`.
-    ext.register_scalar(
-        ScalarFunction::map_rows("__duckers_envelope", &types.blob, |input, row| {
-            let name = input.arg(0).str(row)?;
-            let kind = ValueKind::from_sql_name(name)
-                .ok_or_else(|| Error::invalid_input(format!("unknown duckers type {name}")))?;
-            Ok(Some(envelope::encode(kind, input.arg(1).bytes(row)?)))
-        })
-        .param("kind", &types.varchar)
-        .param("payload", &types.blob),
-    )?;
+    ext.register_scalar(debug::<Chart>(&types.chart, types))?;
+    ext.register_scalar(debug::<Series>(&types.series, types))?;
+    ext.register_scalar(debug::<Mesh>(&types.mesh, types))?;
+    ext.register_scalar(debug::<SeriesLabels>(&types.series_labels, types))?;
+    ext.register_scalar(debug::<Font>(&types.font, types))?;
 
     // `__duckers_agg_probe(x, y, label := ...)` exercises the aggregate layer the series
     // aggregates build on: ANY parameters checked in bind, a named parameter with a default, NULL
