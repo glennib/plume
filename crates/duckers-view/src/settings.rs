@@ -221,6 +221,21 @@ pub fn get(key: &str) -> Result<String, SettingsError> {
     state().get(key)
 }
 
+/// The default viewer. Fails only for an invalid `DUCKERS_VIEWER` that [`set`] has not replaced.
+pub fn viewer() -> Result<Viewer, SettingsError> {
+    state().viewer.clone()
+}
+
+/// The default `wait`. Fails only for an invalid `DUCKERS_WAIT` that [`set`] has not replaced.
+pub fn wait() -> Result<bool, SettingsError> {
+    state().wait.clone()
+}
+
+/// The multi-row cap.
+pub fn max_show() -> u64 {
+    state().max_show
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

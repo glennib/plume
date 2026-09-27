@@ -3,6 +3,9 @@
 //! A `minifb` window belongs to the thread that created it and pumps only its own events, so each window
 //! gets a thread of its own and there is no process-wide event loop.
 //!
+//! - **Linux and the BSDs** use X11, which Wayland desktops provide through Xwayland. The `wayland` feature
+//!   adds native Wayland windows, at the price of a libwayland warning on stderr each time one is closed
+//!   (see `Cargo.toml`).
 //! - **Linux and Windows:** the window thread is spawned for both modes. With `wait = false` the call returns
 //!   once the window is up, and the thread keeps redrawing it until the user closes it or the process exits.
 //!   With `wait = true` the call also joins the thread.
@@ -84,9 +87,20 @@ fn availability(
     }
     match platform {
         Platform::Windows => Ok(()),
-        Platform::Unix => {
+        Platform::Unix if cfg!(feature = "wayland") => {
             if has(env, "WAYLAND_DISPLAY") || has(env, "DISPLAY") {
                 Ok(())
+            } else {
+                Err("no display: neither WAYLAND_DISPLAY nor DISPLAY is set".into())
+            }
+        }
+        Platform::Unix => {
+            if has(env, "DISPLAY") {
+                Ok(())
+            } else if has(env, "WAYLAND_DISPLAY") {
+                Err("no X11 display: DISPLAY is not set, and windows need X11 \
+                     (on Wayland, through Xwayland)"
+                    .into())
             } else {
                 Err("no display: neither WAYLAND_DISPLAY nor DISPLAY is set".into())
             }
@@ -298,15 +312,18 @@ mod tests {
 
     #[test]
     fn unix_needs_a_display() {
-        assert!(
-            check(
-                Platform::Unix,
-                &[("WAYLAND_DISPLAY", "wayland-1")],
-                false,
-                false
-            )
-            .is_ok()
+        let wayland_only = check(
+            Platform::Unix,
+            &[("WAYLAND_DISPLAY", "wayland-1")],
+            false,
+            false,
         );
+        if cfg!(feature = "wayland") {
+            assert!(wayland_only.is_ok());
+        } else {
+            let e = wayland_only.unwrap_err();
+            assert!(e.contains("Xwayland"), "{e}");
+        }
         assert!(check(Platform::Unix, &[("DISPLAY", ":0")], true, false).is_ok());
         let e = check(Platform::Unix, &[("DISPLAY", "")], false, false).unwrap_err();
         assert!(e.contains("no display"), "{e}");
