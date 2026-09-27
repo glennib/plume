@@ -4,3 +4,5 @@
 /.venv
 /.rumdl_cache
 __pycache__/
+*.snap.new
+*.pending-snap
