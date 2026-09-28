@@ -1,5 +1,9 @@
 //! `show(chart, ...)`, which hands a rendered chart to a viewer, and `duckers_set` / `duckers_get`,
 //! which change and read its process-wide defaults.
+//!
+//! The VISUALIZE shim registers the settings `duckers_viewer`, `duckers_wait` and
+//! `duckers_max_show`, which `show()` reads through its context when they exist: a value set with
+//! `SET` takes precedence over the process-wide default, and the named parameter over both.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,12 +12,13 @@ use duckers_view::{Image, ShowError, ShowOptions, Viewer, settings};
 
 use super::args::{chart_error, scalar};
 use crate::capi::{
-    Bind, BindData, Error, Extension, InputVector, OutputVector, Result, ScalarFunction,
+    Bind, BindData, Context, Error, Extension, InputVector, OutputVector, Result, ScalarFunction,
     ScalarInput, TypeId,
 };
 use crate::types::Types;
 
-/// The bind data of one `show()` call site: how many rows it has shown.
+/// The bind data of one `show()` call site: how many rows it has shown, and the session settings
+/// as they were when it was bound.
 ///
 /// DuckDB binds a call site once per planned statement and runs every execution of that plan with
 /// the same bind data, so this counts per `show()` call in a statement, across all threads, and
@@ -21,6 +26,41 @@ use crate::types::Types;
 #[derive(Default)]
 struct Site {
     shown: AtomicU64,
+    session: Session,
+}
+
+/// The `duckers_viewer`, `duckers_wait` and `duckers_max_show` settings, which exist when the
+/// VISUALIZE shim is loaded. Each is `None` while unset (their default is `NULL`) and otherwise
+/// replaces the process-wide setting of the same name.
+#[derive(Default)]
+struct Session {
+    viewer: Option<Viewer>,
+    wait: Option<bool>,
+    max_show: Option<u64>,
+}
+
+impl Session {
+    fn read(ctx: Context<'_>) -> Result<Session> {
+        let setting =
+            |key: &'static str| -> Result<Option<String>> { ctx.option(&format!("duckers_{key}")) };
+        let invalid = |key: &str, e: duckers_view::SettingsError| {
+            Error::binder(format!("show: SET duckers_{key}: {e}"))
+        };
+        Ok(Session {
+            viewer: setting("viewer")?
+                .map(|v| v.parse::<Viewer>())
+                .transpose()
+                .map_err(|e| invalid("viewer", e))?,
+            wait: setting("wait")?
+                .map(|v| settings::parse_wait(&v))
+                .transpose()
+                .map_err(|e| invalid("wait", e))?,
+            max_show: setting("max_show")?
+                .map(|v| settings::parse_max_show(&v))
+                .transpose()
+                .map_err(|e| invalid("max_show", e))?,
+        })
+    }
 }
 
 impl Site {
@@ -101,7 +141,10 @@ fn bind(b: &mut Bind<'_>) -> Result<Option<BindData>> {
         image_size(width, height)
             .map_err(|e| Error::binder(chart_error("show", e).message().to_string()))?;
     }
-    Ok(Some(Box::new(Site::default())))
+    Ok(Some(Box::new(Site {
+        shown: AtomicU64::new(0),
+        session: Session::read(b.context())?,
+    })))
 }
 
 fn parse_viewer(name: &str) -> Result<Viewer> {
@@ -146,13 +189,14 @@ fn exec(input: &ScalarInput<'_>, out: &mut OutputVector<'_>) -> Result<()> {
         let height = opt(input.arg(HEIGHT), row, InputVector::i64)?;
         let (w, h) = image_size(width, height).map_err(|e| chart_error("show", e))?;
 
-        if site.take(settings::max_show()) {
+        let session = &site.session;
+        if site.take(session.max_show.unwrap_or_else(settings::max_show)) {
             let options = ShowOptions {
-                viewer: match viewer {
+                viewer: match viewer.or(session.viewer) {
                     Some(v) => v,
                     None => settings::viewer().map_err(|e| settings_error("show", e))?,
                 },
-                wait: match wait {
+                wait: match wait.or(session.wait) {
                     Some(w) => w,
                     None => settings::wait().map_err(|e| settings_error("show", e))?,
                 },

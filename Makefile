@@ -6,8 +6,12 @@
 #                        tests and show() checks on the debug build
 #   make test_release    the same on the release build
 #   make shell           the pinned DuckDB v2 preview CLI with the debug build loaded
+#   make shim            the VISUALIZE grammar shim: build/shim/duckers_visualize.duckdb_extension,
+#                        built inside DuckDB's own build against the pinned source (slow the first time)
+#   make test_shim       the shim's tests on the debug build; make shell_shim loads both extensions
 #
-# Tools: cargo, jq, curl, uv (for the test venv) and a Python 3 for the footer script.
+# Tools: cargo, jq, curl, uv (for the test venv) and a Python 3 for the footer script; the shim
+# needs cmake, git and a C++17 compiler on top.
 #
 # Variables worth overriding:
 #   TARGET=<triple>      cross-compile with `cargo build --target`, e.g. aarch64-apple-darwin
@@ -24,6 +28,9 @@ C_API_VERSION := v2.0.0
 # The Python wheel in pyproject.toml is the same build.
 DUCKDB_VERSION := v2.0.0-alpha43385
 DUCKDB_SOURCE_ID := ca15f79c32
+# The commit the pinned build was made from, in full: DUCKDB_SOURCE_ID is its prefix, and the shim
+# build fetches it by this hash.
+DUCKDB_SOURCE_COMMIT := ca15f79c32c52c4b51df81f11cf915311db950d1
 DUCKDB_RELEASE_URL := https://duckdb-staging.duckdb.org/$(DUCKDB_SOURCE_ID)/$(DUCKDB_VERSION)/duckdb/duckdb/github_release
 
 PYTHON ?= $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
@@ -75,10 +82,10 @@ DUCKDB := $(CLI_DIR)/duckdb$(if $(findstring windows,$(HOST_PLATFORM)),.exe)
 SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
 
 .PHONY: all debug release build_debug build_release footer_debug footer_release duckdb shell \
-        shell_release venv test test_debug test_release test_rust test_sql_debug test_sql_release \
-        test_cli_debug test_cli_release test_show_debug test_show_release test_svg_debug \
-        test_svg_release update_svg fmt lint \
-        bindings clean
+        shell_release shell_shim venv test test_debug test_release test_rust test_sql_debug \
+        test_sql_release test_cli_debug test_cli_release test_show_debug test_show_release \
+        test_svg_debug test_svg_release update_svg duckdb_source shim test_shim test_shim_debug \
+        test_shim_release fmt lint bindings clean
 
 all: debug
 
@@ -118,6 +125,56 @@ shell: debug $(DUCKDB)
 shell_release: release $(DUCKDB)
 	$(DUCKDB) -unsigned -cmd "LOAD '$(RELEASE_EXTENSION)'"
 
+# The debug build with the VISUALIZE shim loaded and its grammar active.
+shell_shim: debug shim $(DUCKDB)
+	$(DUCKDB) -unsigned -cmd "LOAD '$(DEBUG_EXTENSION)'" -cmd "LOAD '$(SHIM_EXTENSION)'" \
+		-cmd "SET active_grammar_extensions = ['$(SHIM_NAME)']"
+
+# The VISUALIZE grammar shim (M8): a C++ grammar extension for DuckDB's PEG parser, built inside
+# DuckDB's own CMake build against the pinned source. A v2 C++ extension links DuckDB statically and
+# loads only into the exact DuckDB version it was built from, so unlike the core it is rebuilt per
+# DuckDB version. Needs cmake, git and a C++17 compiler; the DuckDB build takes a while the first
+# time and is kept in build/shim/cmake.
+SHIM_NAME := duckers_visualize
+DUCKDB_SOURCE_DIR := .duckdb/$(DUCKDB_VERSION)/src
+DUCKDB_SOURCE_STAMP := $(DUCKDB_SOURCE_DIR)/.fetched
+SHIM_CMAKE_DIR := build/shim/cmake
+SHIM_EXTENSION := build/shim/$(SHIM_NAME).duckdb_extension
+# Extra configure flags, e.g. SHIM_CMAKE_FLAGS='-G Ninja'; the build's parallelism.
+SHIM_CMAKE_FLAGS ?=
+SHIM_JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+CMAKE ?= cmake
+GIT ?= git
+
+# The pinned DuckDB source: one commit, fetched sparse and without unneeded blobs, with the
+# directories the build reads (no tests).
+duckdb_source: $(DUCKDB_SOURCE_STAMP)
+
+$(DUCKDB_SOURCE_STAMP):
+	rm -rf $(DUCKDB_SOURCE_DIR)
+	mkdir -p $(DUCKDB_SOURCE_DIR)
+	$(GIT) -C $(DUCKDB_SOURCE_DIR) init -q
+	$(GIT) -C $(DUCKDB_SOURCE_DIR) remote add origin https://github.com/duckdb/duckdb.git
+	$(GIT) -C $(DUCKDB_SOURCE_DIR) sparse-checkout set src third_party extension scripts tools
+	$(GIT) -C $(DUCKDB_SOURCE_DIR) fetch --depth 1 --filter=blob:none -q origin $(DUCKDB_SOURCE_COMMIT)
+	$(GIT) -C $(DUCKDB_SOURCE_DIR) checkout -q FETCH_HEAD
+	touch $@
+
+shim: $(SHIM_EXTENSION)
+
+# Only the loadable extension target is built, not the shell or the tests; parquet and jemalloc
+# are left out of the DuckDB library the shim links, since it uses neither. The EXTENSION profile
+# is DuckDB's own for distributed extensions (x86-64-v2 rather than the CLI's v3 on amd64).
+$(SHIM_EXTENSION): $(DUCKDB_SOURCE_STAMP) shim/CMakeLists.txt shim/extension_config.cmake $(wildcard shim/src/*)
+	$(CMAKE) -S $(DUCKDB_SOURCE_DIR) -B $(SHIM_CMAKE_DIR) -DCMAKE_BUILD_TYPE=Release \
+		-DEXTENSION_STATIC_BUILD=1 -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0 -DBUILD_BENCHMARKS=0 \
+		-DSKIP_EXTENSIONS=parquet -DENABLE_JEMALLOC=OFF -DDUCKDB_OPTIMIZATION_PROFILE=EXTENSION \
+		-DOVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION) \
+		-DDUCKDB_EXTENSION_CONFIGS=$(abspath shim/extension_config.cmake) \
+		-DDUCKERS_VERSION=$(EXTENSION_VERSION) $(SHIM_CMAKE_FLAGS)
+	$(CMAKE) --build $(SHIM_CMAKE_DIR) --parallel $(SHIM_JOBS) --target $(SHIM_NAME)_loadable_extension
+	cp $(SHIM_CMAKE_DIR)/extension/$(SHIM_NAME)/$(SHIM_NAME).duckdb_extension $@
+
 # The test venv: the pinned DuckDB wheel and DuckDB's Python sqllogictest runner (pyproject.toml).
 venv:
 	$(UV) sync --locked
@@ -130,13 +187,15 @@ test_rust:
 	$(CARGO) nextest run --no-tests=pass
 
 # The tests write their files (COPY ... TO) into build/test-sql/.
-SQLLOGICTEST = mkdir -p build/test-sql && $(UV) run --locked python -m duckdb_sqllogictest --test-dir test/sql
+SQLLOGICTEST = $(UV) run --locked python -m duckdb_sqllogictest
 
 test_sql_debug: debug venv
-	$(SQLLOGICTEST) --external-extension $(DEBUG_EXTENSION)
+	mkdir -p build/test-sql
+	$(SQLLOGICTEST) --test-dir test/sql --external-extension $(DEBUG_EXTENSION)
 
 test_sql_release: release venv
-	$(SQLLOGICTEST) --external-extension $(RELEASE_EXTENSION)
+	mkdir -p build/test-sql
+	$(SQLLOGICTEST) --test-dir test/sql --external-extension $(RELEASE_EXTENSION)
 
 # SVG snapshots: each test/svg/<name>.sql renders a chart through the wheel, and the SVG must
 # equal test/svg/<name>.svg. `make update_svg` rewrites the expected files for review.
@@ -180,6 +239,27 @@ test_show_debug: debug venv $(DUCKDB)
 
 test_show_release: release venv $(DUCKDB)
 	$(CHECK_SHOW) $(RELEASE_EXTENSION)
+
+# Shim tests: test/shim/*.test through the wheel with the core registered and the shim loaded by
+# path (DUCKERS_SHIM), and test/shim/cli.sql in the preview CLI with only the shim loaded, which
+# loads the core from the copy next to it.
+define run_shim_tests
+	@mkdir -p build/test-sql build/test-cli
+	cp $(1) build/shim/duckers.duckdb_extension
+	DUCKERS_SHIM=$(abspath $(SHIM_EXTENSION)) $(SQLLOGICTEST) --test-dir test/shim --external-extension $(1)
+	@set -e; $(DUCKDB) -unsigned -bail -cmd "LOAD '$(SHIM_EXTENSION)'" -f test/shim/cli.sql > build/test-cli/shim.out 2>&1 \
+		|| { cat build/test-cli/shim.out; exit 1; }; \
+		diff -u --strip-trailing-cr test/shim/cli.out build/test-cli/shim.out; \
+		echo "test/shim/cli.sql: ok"
+endef
+
+test_shim: test_shim_debug
+
+test_shim_debug: shim debug venv $(DUCKDB)
+	$(call run_shim_tests,$(DEBUG_EXTENSION))
+
+test_shim_release: shim release venv $(DUCKDB)
+	$(call run_shim_tests,$(RELEASE_EXTENSION))
 
 fmt:
 	$(CARGO) fmt

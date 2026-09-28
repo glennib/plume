@@ -63,6 +63,40 @@ jobs:
           path: build/release/duckers.duckdb_extension
           if-no-files-found: error
 
+  # The VISUALIZE grammar shim is a C++ extension built inside DuckDB's own build against the
+  # pinned source, so this job compiles DuckDB; ccache keeps the repeat builds short. It is built
+  # where the shim is expected to work; Windows is not tried yet.
+  shim:
+    name: shim ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux_amd64 }
+          - { os: macos-latest, platform: osx_arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.19"
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: shim-${{ matrix.platform }}
+
+      - name: Build the shim (fetches and builds the pinned DuckDB source)
+        run: make shim
+      - name: Test the shim (sqllogictests via the wheel, preview CLI)
+        run: make test_shim
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: duckers_visualize-${{ matrix.platform }}
+          path: build/shim/duckers_visualize.duckdb_extension
+          if-no-files-found: error
+
   lint:
     runs-on: ubuntu-latest
     steps:

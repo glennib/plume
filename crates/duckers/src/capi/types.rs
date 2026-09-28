@@ -31,6 +31,37 @@ impl Context<'_> {
         self.handle
     }
 
+    /// The current setting of the configuration option `name`, as text: the connection's value,
+    /// else the global one, else the option's default. `None` when there is no such option (an
+    /// extension's option while that extension is not loaded) or the setting is empty, which is
+    /// how an extension option with a `NULL` default reads until it is set.
+    pub fn option(&self, name: &str) -> Result<Option<String>> {
+        let mut option: sys::duckdb_v2_option_handle = ptr::null_mut();
+        let found = check(|err| unsafe {
+            ffi!(duckdb_v2_context_get_option_by_name(
+                self.handle,
+                sys::str_view(name.as_bytes()),
+                &mut option,
+                err
+            ))
+        });
+        match found {
+            Ok(()) => {}
+            Err(e) if e.code() == sys::DUCKDB_V2_ERROR_INPUT_INVALID => return Ok(None),
+            Err(e) => return Err(e),
+        }
+        let mut text = sys::duckdb_v2_str::default();
+        let read =
+            check(|err| unsafe { ffi!(duckdb_v2_option_get_setting(option, &mut text, err)) });
+        // SAFETY: the view borrows from the option, which is destroyed after the copy.
+        let value =
+            read.map(|()| String::from_utf8_lossy(unsafe { sys::str_bytes(text) }).into_owned());
+        // SAFETY: the option is ours, and nothing borrows from it any more.
+        unsafe { ffi!(duckdb_v2_option_destroy(&mut option)) };
+        let value = value?;
+        Ok((!value.is_empty()).then_some(value))
+    }
+
     /// A type by id, for the types that take no parameters (`BIGINT`, `VARCHAR`, `ANY`, ...).
     pub fn type_from_id(&self, id: TypeId) -> Result<LogicalType> {
         let mut out = ptr::null_mut();
