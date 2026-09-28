@@ -4,7 +4,7 @@ duckers lets SQL users draw charts with Rust's [`plotters`](https://github.com/p
 v2, see them inline in the terminal or in a window, and write them as SVG or PNG.
 Its API mirrors plotters, so a plotters user who knows the rules in [The duckers paradigm](#the-duckers-paradigm) can
 write the SQL for a chart without a reference.
-A `VISUALIZE` clause is optional sugar on top and comes last.
+A `VISUALIZE` clause is optional sugar on top and comes last (see [The `VISUALIZE` clause](#the-visualize-clause)).
 
 This document decides the user API and the behaviour, and lays out the roadmap.
 The research behind it is in [`docs/reports/`](../docs/reports/):
@@ -383,8 +383,11 @@ Behaviour:
   (`DUCKERS_VIEWER`, `DUCKERS_WAIT`)
   and can be changed in a session with `duckers_set('viewer', 'browser')`, which returns the new value;
   `duckers_get('viewer')` reads one.
-  They are process-wide because a v2 C-API extension cannot register `SET` options;
-  the C++ shim could add real options later.
+  They are process-wide because a v2 C-API extension cannot register `SET` options.
+  The grammar shim (M8) registers `duckers_viewer`, `duckers_wait` and `duckers_max_show` as real options,
+  which `show()` reads through its context when they exist:
+  a value set with `SET` takes precedence over the process-wide default, and the named parameter over both.
+  Their default is `NULL`, meaning the process-wide setting, so loading the shim changes nothing by itself.
   An invalid environment value is an error from every `show()` that needs it, until `duckers_set` replaces it.
 - A named argument left out or passed as `NULL` takes its default (the setting, or 640×480);
   only a `NULL` chart gives `NULL`.
@@ -400,6 +403,33 @@ Behaviour:
   shipping a second binary inside a `.duckdb_extension` runs into Apple Silicon signing
   and managed-Windows application control, and the browser covers the case.
   A user-installed `duckers-view` on `PATH` could be added as a fourth viewer without changing the API.
+
+### The `VISUALIZE` clause
+
+The grammar shim `duckers_visualize` (M8) adds a statement suffix to DuckDB's parser:
+
+```sql
+<query> VISUALIZE <target list>
+```
+
+which is `SELECT <target list> FROM (<query>)`; `VISUALISE` is the same word.
+The target list is one or more expressions with optional aliases, usually one chart expression,
+and the query is any `SELECT` (with CTEs, `ORDER BY`, `LIMIT`, set operations).
+`GROUP BY` belongs to the query; the series aggregates in the chart expression consume the query's rows.
+
+- It applies to a statement, so `EXPLAIN` and `PREPARE` take it, and a subquery, a view body or `COPY (...)` does not.
+- It is active per connection: `SET active_grammar_extensions = ['duckers_visualize']` switches it on
+  (`RESET` off), which is DuckDB's rule for every grammar extension.
+  While it is active, `visualize` and `visualise` are reserved words: fine after `AS`, quoted as identifiers.
+- Loading the shim loads the core when it is not loaded yet: the `duckers.duckdb_extension` next to the shim's own
+  file, or the installed extension of that name; without either the load fails.
+- The shim also registers the `duckers_viewer`, `duckers_wait` and `duckers_max_show` settings
+  (see [Display](#display)).
+
+```sql
+SELECT day, temp FROM weather WHERE city = 'Oslo'
+VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
+```
 
 ### Worked examples
 
@@ -520,6 +550,11 @@ Two extensions, as before, but with the weight moved to the core.
    Adds `VISUALIZE`/`VISUALISE` via PEG rules
    and desugars `<query> VISUALIZE <chart expression>` into `SELECT <chart expression> FROM (<query>)`.
    It contains no rendering and no vocabulary of its own; it is optional and last.
+   A v2 C++ extension links DuckDB statically and loads only into the DuckDB version it was built from
+   (decision 29),
+   so the shim is built inside DuckDB's own CMake build against the pinned source
+   (`make shim`, a few minutes of compiling DuckDB) and lives in `shim/`.
+   It also registers the `duckers_*` settings and loads the core.
 
 Prior art shaped a few choices: usql's `\chart` shows that inline terminal images work in a SQL shell,
 ggsql-duckdb shows a browser viewer and an output-mode setting,
@@ -608,8 +643,9 @@ Each spike answers a question that a later milestone assumes.
 
 - PEG rules for `VISUALIZE`/`VISUALISE`, desugaring onto the M2 API, enabling via `active_grammar_extensions`,
   and a loader that ensures the core is loaded.
-- The shim can also register real `SET duckers_*` options, which the core reads through the context.
-- Built per DuckDB version; only started once the grammar-extension API is stable at v2.0 GA.
+- The shim also registers real `SET duckers_*` options, which the core reads through the context.
+- Built per DuckDB version, with DuckDB's own build against the pinned source.
+  The grammar-extension API may still move before v2.0 GA; the shim follows the pin, the core does not need to.
 
 ### M9: distribution
 
@@ -874,6 +910,58 @@ Each item records the choice, the alternative, and why.
     without `radius(px)` duckers picks the largest radius at which every label, placed as `Pie` places it,
     stays 10 px inside the area.
     `Pie::donut_hole` and per-slice colours are left out until someone needs them.
+29. **The shim is built inside DuckDB's build and links DuckDB statically.**
+    A v2 loadable C++ extension is built with `EXTENSION_STATIC_BUILD`:
+    DuckDB itself is linked into the extension and its symbols hidden,
+    and the release binaries export nothing for an extension to resolve against
+    (the preview CLI has no `duckdb::` symbol in its dynamic table).
+    So the shim cannot be compiled against headers alone; `make shim` fetches the pinned source
+    (one commit, sparse and without unneeded blobs, into `.duckdb/<version>/src`),
+    configures DuckDB's CMake build with the shim as an out-of-tree extension config
+    and DuckDB's `EXTENSION` optimisation profile
+    (the baseline its distributed extensions are built for),
+    and builds only the loadable target, without the shell, the tests, parquet and jemalloc.
+    The result loads only into that exact DuckDB version, which is DuckDB's rule for the C++ ABI.
+    Alternative: link against the shared `libduckdb` from the release tarball;
+    rejected because the file would then need that library next to it at run time, and would carry a second,
+    complete copy of DuckDB either way.
+30. **`VISUALIZE` replaces the `SelectStatement` rule and takes a target list.**
+    The rule becomes `SelectStatement <- SelectStatementInternal VisualizeClause?`,
+    with `VisualizeClause <- VisualizeKeyword TargetList`, and the shim's transform builds the wrapping `SELECT`
+    (or passes the statement through when the clause is absent).
+    One parse, no backtracking, and the suffix comes after `ORDER BY` and `LIMIT`, where ggsql puts it.
+    `SelectStatement` is only referenced from the statement list, so the clause is a statement suffix:
+    `PREPARE` takes a statement and so takes it; `EXPLAIN` has a select rule of its own, replaced the same way;
+    a subquery, a view body and `COPY (...)` use `SelectStatementInternal` and do not.
+    A target list rather than one expression costs nothing and allows an alias or a second column.
+    Both words are added to `ReservedKeyword`, as DuckDB's own demo does for `EXTEND`:
+    otherwise `SELECT x VISUALIZE ...` would read `VISUALIZE` as the alias of `x`,
+    and `FROM t VISUALIZE ...` as the alias of `t`.
+    Alternative: prepend a choice (`VisualizeStatement / SelectStatementInternal`);
+    rejected because it parses every `SELECT` twice when the clause is absent.
+31. **The shim does not switch its grammar on; the connection does.**
+    `active_grammar_extensions` is a local setting by DuckDB's design, and the C++ entrypoint sees the database,
+    not the connection that ran `LOAD`.
+    An `OnConnectionOpened` callback could activate it for connections opened later, but not for the one that loaded it,
+    which is the only one the shell has; a rule that holds for some connections and not others was rejected.
+    `SET active_grammar_extensions = ['duckers_visualize']` (in `~/.duckdbrc` for the shell) is the way.
+    The shim does load the core, which is a database-wide act: the `duckers.duckdb_extension` next to its own file
+    (found with `dladdr`, or the module handle on Windows),
+    else the installed extension, else the load fails with both places named,
+    since a shim without the core would fail every query it accepts.
+32. **Session settings default to `NULL` and override the process-wide ones.**
+    `duckers_viewer`, `duckers_wait` and `duckers_max_show` are extension options of the shim, so `SET`, `SET GLOBAL`,
+    `RESET` and `current_setting` work on them, and `duckdb_settings()` lists them.
+    `show()` reads them through its context when it is bound
+    (the C API reads any option by name)
+    and takes them over `duckers_set` and the environment; a `NULL`
+    (the default) means the process-wide setting, so loading the shim changes nothing until a `SET`.
+    DuckDB stores nothing for an option registered with a `NULL` default,
+    and `current_setting` then calls it unrecognized,
+    so the shim stores a typed `NULL` right after registering each one.
+    `duckers_set` and `duckers_get` keep their process-wide meaning, since they also exist without the shim.
+    Alternative: make the `SET` callback write through to the process-wide setting;
+    rejected because the callback runs in the C++ copy of DuckDB and cannot reach the core's state.
 
 ## Open questions
 
@@ -882,8 +970,7 @@ Each item records the choice, the alternative, and why.
 - Whether duckdb#26109 gets fixed before v2.0 GA, which would also unblock `OVER ()` on series aggregates.
 - macOS and Windows viewer behaviour is inferred from source, not tested;
   the README lists it as unverified and `docs/manual-acceptance-m3.md` has the checks to run.
-- How the shim is enabled (`active_grammar_extensions` is per-connection) and how it ensures the core is loaded
-  (M8).
-- How far the grammar-extension API moves before v2.0 GA (M8).
+- How far the grammar-extension API moves before v2.0 GA: the shim is built against the pinned preview and is
+  rebuilt with each pin (M8).
 - Grouped bars (`histogram_vertical` with `key`) need bar offsets plotters does not provide;
   left out until someone needs it.

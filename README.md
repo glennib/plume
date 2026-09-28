@@ -10,6 +10,8 @@ the research behind it is in [`docs/reports/`](docs/reports/).
 
 duckers targets the stable DuckDB v2 C API (`v2.0.0`), so one build per platform keeps loading across DuckDB releases.
 DuckDB v2 is in preview, and duckers is built and tested against a pinned preview build, `v2.0.0-alpha43385`.
+The optional `VISUALIZE` clause comes from a second, small extension, a C++ grammar shim built per DuckDB version
+([M8](#m8-visualize)).
 
 ## M1: skeleton
 
@@ -92,9 +94,11 @@ make test_release   # the same on the release build
   (the test venv's wheel)
   in a pseudo-terminal and with no terminal, and the sqllogictests in `test/show/` with no terminal and no display.
   Each process gets a scrubbed environment and a temporary `HOME`, so nothing opens on the desktop.
+- `make test_shim`: the `VISUALIZE` shim, see [M8](#m8-visualize); it builds the shim first.
 
 `make lint` runs rustfmt, clippy and ruff in check mode, and `make fmt` applies the formatters.
 CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64), macOS (arm64) and Windows (x86_64).
+It also builds and tests the shim on Linux (x86_64) and macOS (arm64).
 
 ### Layout
 
@@ -109,9 +113,11 @@ CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64
 - `crates/duckers-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
   and the plotters renderer with the embedded font; it does not depend on DuckDB.
 - `crates/duckers-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
+- `shim/`: the `VISUALIZE` grammar shim, a C++ extension built inside DuckDB's own build
+  (`make shim`); see [M8](#m8-visualize).
 - `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
   `scripts/check_show.py`: the `show()` checks.
-- `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`: the SQL tests.
+- `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`, `test/shim/`: the SQL tests.
 
 ## M2: first charts
 
@@ -267,6 +273,8 @@ FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
 
 The defaults for `viewer` and `wait`, and the multi-row cap, are process-wide:
 a C-API extension cannot register `SET` options.
+(The `VISUALIZE` shim registers `duckers_viewer`, `duckers_wait` and `duckers_max_show` as session settings on top,
+see [M8](#the-duckers_-settings).)
 
 | Key | Environment | Values | Default |
 |---|---|---|---|
@@ -911,3 +919,138 @@ From how the clients treat `BLOB`s and how `show()` probes, expect:
 - `show()` in R or Node started from a terminal can use the terminal viewer;
   in RStudio, an R Jupyter kernel or a Node process without a terminal, `'auto'` goes to a window or the browser.
 - `COPY ... (FORMAT png)` behaves the same in every client, since the engine runs it.
+
+## M8: VISUALIZE
+
+The `VISUALIZE` clause, from the grammar shim `duckers_visualize`: a second extension, in C++,
+that adds the clause to DuckDB's parser, registers the `duckers_*` settings, and loads the core.
+
+```sql
+LOAD 'build/debug/duckers.duckdb_extension';
+LOAD 'build/shim/duckers_visualize.duckdb_extension';
+SET active_grammar_extensions = ['duckers_visualize'];
+
+SELECT day, temp FROM weather WHERE city = 'Oslo'
+VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
+```
+
+### The clause
+
+`<query> VISUALIZE <target list>` is `SELECT <target list> FROM (<query>)`; `VISUALISE` is the same word.
+
+- The target list is one or more expressions with optional aliases, usually one chart expression ending in `show()`,
+  `to_svg()` or `to_png()`.
+  The query is any `SELECT`: with CTEs, `ORDER BY`, `LIMIT`, set operations.
+  `GROUP BY` belongs to the query, and the series aggregates in the chart expression consume the query's rows:
+
+  ```sql
+  SELECT section, count(*) AS n FROM articles GROUP BY section
+  VISUALIZE chart().draw_series(histogram_vertical(section, n, order_by := -n)).to_svg();
+  ```
+
+- It is a statement suffix.
+  `EXPLAIN` and `PREPARE` take a statement with it; a subquery, a view body and `COPY (...) TO` do not,
+  so a file is written with `COPY (SELECT chart()... FROM ...) TO 'f.png'` as before.
+- An `ORDER BY` before `VISUALIZE` does not order the drawing: the series aggregates sort by `x` unless `order_by :=`
+  says otherwise, as anywhere else.
+
+### Switching it on
+
+DuckDB activates grammar extensions per connection:
+
+```sql
+SET active_grammar_extensions = ['duckers_visualize'];   -- on
+RESET active_grammar_extensions;                          -- off
+```
+
+`~/.duckdbrc` is the place for the shell.
+`duckdb_grammar_extensions()` lists the registered grammars.
+While the grammar is active, `visualize` and `visualise` are reserved words: `SELECT 1 AS visualize` is fine,
+but as a bare identifier they need quotes (`"visualize"`).
+The shim does not switch itself on: the setting is local to a connection by DuckDB's design,
+and the extension entrypoint has no connection to set it on.
+
+### Loading
+
+Loading the shim loads the core when it is not loaded yet: the `duckers.duckdb_extension` next to the shim's own file,
+or else the installed extension of that name.
+Without either the `LOAD` fails and names both places.
+Loading the core first, by any path, works too.
+
+Both are unsigned, so DuckDB needs `-unsigned` or `allow_unsigned_extensions`, as for the core.
+The shim loads only into the exact DuckDB version it was built for
+(`v2.0.0-alpha43385`, the pinned preview); any other DuckDB refuses it with a version mismatch.
+The core is not tied to a version.
+
+```sh
+make shell_shim     # the preview CLI with the debug core and the shim loaded, and the grammar active
+```
+
+### The `duckers_*` settings
+
+The shim registers three settings, which `show()` reads when a query is bound:
+
+| Setting | Type | Values |
+|---|---|---|
+| `duckers_viewer` | `VARCHAR` | `auto`, `terminal`, `window`, `browser` (case-insensitive) |
+| `duckers_wait` | `BOOLEAN` | |
+| `duckers_max_show` | `UBIGINT` | `0` shows nothing |
+
+- Each defaults to `NULL`, which means the process-wide setting of [M3](#settings)
+  (`duckers_set`, `DUCKERS_VIEWER`, `DUCKERS_WAIT`), so loading the shim changes nothing until a `SET`.
+- A value set with `SET` (or `SET GLOBAL`) takes precedence over the process-wide setting, and `show()`'s named
+  parameter over both; `RESET` returns to the process-wide one.
+- A bad value fails at `SET` time: `SET duckers_viewer = 'kitty'` is an error naming the four viewers,
+  a non-boolean or negative value fails the cast to the setting's type.
+- `current_setting('duckers_viewer')` reads the session's value;
+  `duckers_get('viewer')` keeps reporting the process-wide one.
+  `duckdb_settings()` lists the three with their descriptions.
+  One DuckDB wrinkle: after `RESET` of a value that was set with `SET GLOBAL`,
+  `current_setting` reports the option as unrecognized until the next `SET`,
+  since DuckDB drops a `NULL`-default option's value on a global reset;
+  `show()` and `duckdb_settings()` read it as unset.
+- A prepared statement reads the settings when it is prepared, like the rest of its bind.
+
+```sql
+SET duckers_viewer = 'browser';
+SET duckers_max_show = 3;
+SELECT chart().draw_series(line_series(day, temp)).show() FROM weather GROUP BY city;
+```
+
+### Building the shim
+
+A DuckDB v2 loadable C++ extension links DuckDB statically and hides its symbols
+(the release binaries export nothing an extension could resolve against),
+so the shim is built inside DuckDB's own CMake build against the pinned source, and only that DuckDB loads it.
+
+```sh
+make shim           # build/shim/duckers_visualize.duckdb_extension
+make test_shim      # the shim tests, on the debug core
+```
+
+- `make shim` fetches the pinned DuckDB commit into `.duckdb/v2.0.0-alpha43385/src`
+  (one commit, sparse and without unneeded blobs: about 40 MB),
+  configures the build in `build/shim/cmake` with `EXTENSION_STATIC_BUILD`, DuckDB's own version string,
+  its `EXTENSION` optimisation profile
+  (the x86-64-v2 baseline of DuckDB's distributed extensions),
+  and `shim/extension_config.cmake` as the extension config, and builds only the loadable extension target,
+  without the shell, the tests, parquet and jemalloc.
+  Compiling DuckDB takes a while the first time; the build directory is kept, and ccache or sccache on `PATH` is used.
+- Needed on top of the core's tools: `cmake`, `git` and a C++17 compiler.
+  `SHIM_CMAKE_FLAGS='-G Ninja'` picks a generator, `SHIM_JOBS=n` the parallelism.
+- `shim/src/duckers_visualize_extension.cpp` is the whole shim: the grammar change
+  (`SelectStatement <- SelectStatementInternal VisualizeClause?`, the same for `EXPLAIN`'s own select rule,
+  both keywords reserved), its transform, the settings and the core loader;
+  `shim/CMakeLists.txt` and `shim/extension_config.cmake` plug it into DuckDB's build.
+- `make test_shim` runs `test/shim/*.test` through the wheel (the core registered, the shim loaded by path),
+  and `test/shim/cli.sql` in the preview CLI with only the shim loaded, which loads the core from the copy the
+  Makefile puts next to it.
+- When the pinned DuckDB moves, the shim is rebuilt against the new commit (`DUCKDB_SOURCE_COMMIT` in the Makefile)
+  and its grammar and transform are checked against the grammar-extension API, which may still change before v2.0 GA.
+
+### Platforms
+
+Verified on Linux (x86_64) in the pinned preview CLI and the wheel.
+CI builds and tests the shim on Linux (x86_64) and macOS (arm64).
+Windows is not tried: DuckDB's build supports static extension builds with MSVC,
+and the shim's own code has a Windows path (the module handle in place of `dladdr`), but nothing has been run there.
