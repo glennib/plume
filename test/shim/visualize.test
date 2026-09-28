@@ -1,0 +1,163 @@
+# name: test/shim/visualize.test
+# description: The VISUALIZE clause of the grammar shim, its activation per connection, and the duckers_* settings
+# group: [duckers]
+
+# make test_shim points DUCKERS_SHIM at the built shim and hands the runner the core.
+require-env DUCKERS_SHIM
+
+require duckers
+
+statement ok
+LOAD '${DUCKERS_SHIM}'
+
+# The grammar is registered, but a connection has to switch it on. Until then VISUALIZE is an
+# ordinary word, here the implicit alias of 1, and the error is at what follows it.
+query T
+SELECT name FROM duckdb_grammar_extensions()
+----
+duckers_visualize
+
+statement error
+SELECT 1 VISUALIZE chart()
+----
+Parser Error: syntax error at or near "chart"
+
+statement ok
+SET active_grammar_extensions = ['duckers_visualize']
+
+# <query> VISUALIZE <targets> is SELECT <targets> FROM (<query>).
+query T
+SELECT i FROM range(5) r(i) VISUALIZE chart().draw_series(line_series(i, i * i))::VARCHAR
+----
+CHART(line, 1 series, 5 points)
+
+query T
+SELECT i FROM range(5) r(i) VISUALISE chart().draw_series(point_series(i, i))::VARCHAR
+----
+CHART(point, 1 series, 5 points)
+
+# The target list can hold several expressions and aliases, and the query a CTE, ORDER BY and LIMIT.
+query IT
+WITH t AS (SELECT i, i % 2 AS k FROM range(10) r(i))
+SELECT * FROM t ORDER BY i DESC LIMIT 6
+VISUALIZE count(*) AS n, chart().draw_series(line_series(i, i, key := k))::VARCHAR AS c
+----
+6	CHART(line, 2 series, 6 points)
+
+# GROUP BY belongs to the query; the chart expression aggregates its rows.
+query TT
+SELECT section, count(*) AS n
+FROM (VALUES ('news'), ('news'), ('sport')) v(section)
+GROUP BY section
+VISUALIZE list(section ORDER BY section)::VARCHAR, chart().draw_series(histogram_vertical(section, n))::VARCHAR
+----
+[news, sport]	CHART(histogram, 1 series, 2 points)
+
+# Output functions apply as in any chart expression.
+query T
+SELECT i FROM range(3) r(i) VISUALIZE chart().draw_series(line_series(i, i)).to_svg()[1:26]
+----
+<svg width="640" height="4
+
+# VISUALIZE is a statement suffix, not part of a subquery.
+statement error
+SELECT * FROM (SELECT 1 AS i VISUALIZE chart())
+----
+Parser Error
+
+# EXPLAIN and PREPARE take a statement, so they take one with VISUALIZE.
+statement ok
+EXPLAIN SELECT i FROM range(3) r(i) VISUALIZE chart().draw_series(line_series(i, i))
+
+statement ok
+PREPARE p AS SELECT i FROM range(4) r(i) VISUALIZE chart().draw_series(line_series(i, i))::VARCHAR
+
+query T
+EXECUTE p
+----
+CHART(line, 1 series, 4 points)
+
+# While the grammar is active, VISUALIZE and VISUALISE are reserved words: fine as an explicit
+# alias, quoted as an identifier.
+query I
+SELECT 1 AS visualize
+----
+1
+
+query I
+SELECT "visualize" FROM (SELECT 2 AS "visualize")
+----
+2
+
+statement error
+SELECT visualise FROM (SELECT 2 AS visualise)
+----
+Parser Error
+
+# RESET switches the grammar off again for this connection.
+statement ok
+RESET active_grammar_extensions
+
+statement error
+SELECT 1 VISUALIZE chart()
+----
+Parser Error: syntax error at or near "chart"
+
+# The duckers_* settings: NULL (unset) means the process-wide setting, which duckers_get reports.
+query TTT
+SELECT current_setting('duckers_viewer'), current_setting('duckers_wait'), current_setting('duckers_max_show')
+----
+NULL	NULL	NULL
+
+statement error
+SET duckers_viewer = 'kitty'
+----
+Invalid Input Error: duckers_viewer: expected one of 'auto', 'terminal', 'window', 'browser', got 'kitty'
+
+statement ok
+SET duckers_viewer = 'Browser'
+
+query TT
+SELECT current_setting('duckers_viewer'), duckers_get('viewer')
+----
+browser	auto
+
+statement error
+SET duckers_wait = 'maybe'
+----
+Could not convert string 'maybe' to BOOL
+
+statement ok
+SET duckers_wait = true
+
+statement error
+SET duckers_max_show = -1
+----
+out of range for the destination type UINT64
+
+statement ok
+SET GLOBAL duckers_max_show = 3
+
+query I
+SELECT current_setting('duckers_max_show')
+----
+3
+
+# With duckers_max_show = 0, show() shows nothing, so it succeeds where no viewer could work.
+statement ok
+SET duckers_max_show = 0
+
+query T
+SELECT chart().show()::VARCHAR FROM range(3)
+----
+CHART(empty)
+CHART(empty)
+CHART(empty)
+
+statement ok
+RESET duckers_max_show
+
+query TTT
+SELECT current_setting('duckers_viewer'), current_setting('duckers_wait'), current_setting('duckers_max_show')
+----
+browser	true	NULL
