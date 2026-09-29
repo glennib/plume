@@ -1,8 +1,8 @@
 # name: test/sql/output.test
 # description: to_svg, to_png, files through COPY ... (FORMAT blob), and the plan's worked examples
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 statement ok
 CREATE TABLE weather AS

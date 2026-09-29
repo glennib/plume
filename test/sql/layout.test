@@ -1,8 +1,8 @@
 # name: test/sql/layout.test
 # description: Layout: split_evenly, titled, pie and the methods on a pie CHART
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 statement ok
 CREATE TABLE articles AS
@@ -24,7 +24,7 @@ SELECT typeof(split_evenly([chart()], 1, 1))
 CHART
 
 query T
-SELECT __duckers_debug(split_evenly([NULL], 1, 2)).regexp_extract('Grid \{ rows: 1, cols: 2, cells: \[None\]')
+SELECT __plume_debug(split_evenly([NULL], 1, 2)).regexp_extract('Grid \{ rows: 1, cols: 2, cells: \[None\]')
 ----
 Grid { rows: 1, cols: 2, cells: [None]
 
@@ -90,16 +90,16 @@ SELECT split_evenly([chart(), chart(), chart()], 2, 2).titled('Overview')::VARCH
 CHART(titled 'Overview', grid 2x2, 3 charts)
 
 query TTT
-SELECT __duckers_debug(chart().titled('a')).regexp_extract('size: [0-9]+'),
-       __duckers_debug(chart().titled('a', 30)).regexp_extract('size: [0-9]+'),
-       __duckers_debug(chart().titled('a', font('serif', 12, 'bold'))).regexp_extract('family: "[a-z-]*", size: [0-9]+, style: [A-Za-z]+')
+SELECT __plume_debug(chart().titled('a')).regexp_extract('size: [0-9]+'),
+       __plume_debug(chart().titled('a', 30)).regexp_extract('size: [0-9]+'),
+       __plume_debug(chart().titled('a', font('serif', 12, 'bold'))).regexp_extract('family: "[a-z-]*", size: [0-9]+, style: [A-Za-z]+')
 ----
 size: 20	size: 30	family: "serif", size: 12, style: Bold
 
 # The title strip takes the inner chart's fill until root_fill changes it.
 query TT
-SELECT __duckers_debug(chart().root_fill('grey').titled('a')).regexp_extract('^Titled \{[^}]*\}[^}]*\}'),
-       __duckers_debug(chart().titled('a').root_fill('red')).regexp_extract('^Titled \{[^}]*\}[^}]*\}')
+SELECT __plume_debug(chart().root_fill('grey').titled('a')).regexp_extract('^Titled \{[^}]*\}[^}]*\}'),
+       __plume_debug(chart().titled('a').root_fill('red')).regexp_extract('^Titled \{[^}]*\}[^}]*\}')
 ----
 Titled { text: "a", font: Font { family: "sans-serif", size: 20, style: Normal, color: None }, fill: Color { r: 158, g: 158, b: 158, a: 1.0 }	Titled { text: "a", font: Font { family: "sans-serif", size: 20, style: Normal, color: None }, fill: Color { r: 255, g: 0, b: 0, a: 1.0 }
 
@@ -161,28 +161,28 @@ SELECT pie(n, section)::VARCHAR FROM articles
 CHART(pie, 5 slices)
 
 query T
-SELECT __duckers_debug(pie(n, section)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]')
+SELECT __plume_debug(pie(n, section)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]')
 FROM articles
 ----
 Pie { sizes: [158.0, 201.0, 530.0, 97.0, 412.0], labels: ["culture", "economy", "news", "opinion", "sport"]
 
 query T
-SELECT __duckers_debug(pie(n, section, order_by := -n)).regexp_extract('labels: [^]]*\]')
+SELECT __plume_debug(pie(n, section, order_by := -n)).regexp_extract('labels: [^]]*\]')
 FROM articles
 ----
 labels: ["news", "sport", "economy", "culture", "opinion"]
 
 # Ties on the label are broken by size; labels sort as their type does and show as ::VARCHAR.
 query TT
-SELECT __duckers_debug(pie(n, l)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]'),
-       __duckers_debug(pie(n, l::INTEGER)).regexp_extract('labels: [^]]*\]')
+SELECT __plume_debug(pie(n, l)).regexp_extract('^Pie \{ sizes: [^]]*\], labels: [^]]*\]'),
+       __plume_debug(pie(n, l::INTEGER)).regexp_extract('labels: [^]]*\]')
 FROM (VALUES (3, '10'), (1, '9'), (2, '10')) t(n, l)
 ----
 Pie { sizes: [2.0, 3.0, 1.0], labels: ["10", "10", "9"]	labels: ["9", "10", "10"]
 
 # Rows with a NULL, NaN, infinite, zero or negative size are skipped; a NULL label is empty.
 query TT
-SELECT pie(n, s)::VARCHAR, __duckers_debug(pie(n, s)).regexp_extract('labels: [^]]*\]')
+SELECT pie(n, s)::VARCHAR, __plume_debug(pie(n, s)).regexp_extract('labels: [^]]*\]')
 FROM (VALUES (1, 'a'), (NULL, 'b'), ('nan'::DOUBLE, 'c'), ('inf'::DOUBLE, 'd'), (0, 'e'), (-1, 'f'), (2, NULL)) t(n, s)
 ----
 CHART(pie, 2 slices)	labels: ["a", ""]
@@ -212,7 +212,7 @@ Binder Error
 
 # The methods of plotters' Pie, and the radius argument of Pie::new.
 query T
-SELECT __duckers_debug(pie(n, section).start_angle(-90).label_style(14).percentages(font('serif', 10))
+SELECT __plume_debug(pie(n, section).start_angle(-90).label_style(14).percentages(font('serif', 10))
          .label_offset(-5).radius(100)).regexp_extract('settings: .*')
 FROM articles
 ----
@@ -273,7 +273,7 @@ true	false	true
 
 # show() and COPY take every root. With max_show at 0 show() returns the chart unchanged.
 statement ok
-SELECT duckers_set('max_show', 0)
+SELECT plume_set('max_show', 0)
 
 query TT
 SELECT g.show()::VARCHAR, p.show()::VARCHAR
@@ -282,7 +282,7 @@ FROM (SELECT split_evenly([chart(), NULL], 1, 2) AS g, (SELECT pie(n, section) F
 CHART(grid 1x2, 1 chart)	CHART(pie, 5 slices)
 
 statement ok
-SELECT duckers_set('max_show', 10)
+SELECT plume_set('max_show', 10)
 
 statement ok
 COPY (SELECT split_evenly([chart().caption('a'), NULL, (SELECT pie(n, section) FROM articles)], 2, 2).titled('Grid'))

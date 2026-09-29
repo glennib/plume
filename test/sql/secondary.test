@@ -1,8 +1,8 @@
 # name: test/sql/secondary.test
 # description: Secondary axes: set_secondary_coord, secondary_*_range, draw_secondary_series, configure_secondary_axes
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # set_secondary_coord() marks the chart as dual-coordinate; the ranges come from the secondary
 # series unless secondary_x_range/secondary_y_range set them.
@@ -12,13 +12,13 @@ SELECT chart().set_secondary_coord()::VARCHAR
 CHART(empty, secondary coord)
 
 query T
-SELECT __duckers_debug(chart().set_secondary_coord()).regexp_extract('secondary: [^,]*, [^}]*\}[^}]*\}')
+SELECT __plume_debug(chart().set_secondary_coord()).regexp_extract('secondary: [^,]*, [^}]*\}[^}]*\}')
 ----
 secondary: Some(SecondaryCoord { x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }
 
 # Calling it again keeps the ranges set so far.
 query T
-SELECT __duckers_debug(chart().secondary_y_range(0, 100).set_secondary_coord()).regexp_extract('y_axis: AxisSpec \{ range: Some\([^)]*\)\)', 0)
+SELECT __plume_debug(chart().secondary_y_range(0, 100).set_secondary_coord()).regexp_extract('y_axis: AxisSpec \{ range: Some\([^)]*\)\)', 0)
 ----
 y_axis: AxisSpec { range: Some(Numeric(0.0, 100.0))
 
@@ -36,7 +36,7 @@ FROM range(4) t(i)
 CHART(histogram, 0 series + 2 secondary, 4 points)
 
 query T
-SELECT __duckers_debug(chart().draw_secondary_series(line_series(1, 2))).regexp_extract('ops: \[[A-Za-z]*')
+SELECT __plume_debug(chart().draw_secondary_series(line_series(1, 2))).regexp_extract('ops: \[[A-Za-z]*')
 ----
 ops: [SecondarySeries
 
@@ -119,7 +119,7 @@ SELECT typeof(chart().configure_secondary_axes()), chart().configure_secondary_a
 MESH	MESH(secondary; y_desc 'mm', y_labels 5) of CHART(empty, secondary coord)
 
 query T
-SELECT __duckers_debug(chart().configure_secondary_axes().y_desc('mm').draw()).regexp_extract('ops: .*')
+SELECT __plume_debug(chart().configure_secondary_axes().y_desc('mm').draw()).regexp_extract('ops: .*')
 ----
 ops: [SecondaryAxes(MeshStyle { settings: [YDesc("mm")] })] }
 

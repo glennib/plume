@@ -1,15 +1,15 @@
-# duckers
+# plume
 
-duckers is a DuckDB v2 extension for drawing charts with Rust's [plotters](https://github.com/plotters-rs/plotters) from
+plume is a DuckDB v2 extension for drawing charts with Rust's [plotters](https://github.com/plotters-rs/plotters) from
 SQL.
 A chart is a SQL value built with plotters' vocabulary
 (`chart().caption(...).draw_series(line_series(x, y))`),
 and output functions turn it into SVG or PNG, or show it in the terminal or a window.
-The design and roadmap are in [`plan/duckers.md`](plan/duckers.md);
+The design and roadmap are in [`plan/plume.md`](plan/plume.md);
 the research behind it is in [`docs/reports/`](docs/reports/).
 
-duckers targets the stable DuckDB v2 C API (`v2.0.0`), so one build per platform keeps loading across DuckDB releases.
-DuckDB v2 is in preview, and duckers is built and tested against a pinned preview build, `v2.0.0-alpha43385`.
+plume targets the stable DuckDB v2 C API (`v2.0.0`), so one build per platform keeps loading across DuckDB releases.
+DuckDB v2 is in preview, and plume is built and tested against a pinned preview build, `v2.0.0-alpha43385`.
 The optional `VISUALIZE` clause comes from a second, small extension, a C++ grammar shim built per DuckDB version
 ([M8](#m8-visualize)).
 
@@ -17,14 +17,14 @@ The optional `VISUALIZE` clause comes from a second, small extension, a C++ gram
 
 The extension loads and defines its value types.
 
-- `duckers_version()` returns the extension version, e.g. `v0.1.0`.
+- `plume_version()` returns the extension version, e.g. `v0.1.0`.
 - The types `CHART`, `MESH`, `SERIES_LABELS`, `SERIES` and `FONT` exist.
   Each is a custom type over `BLOB`, with casts to `VARCHAR`
   (a one-line summary such as `CHART(line, 2 series, 240 points)`,
   which is also how the DuckDB shell displays the value) and to and from `BLOB`.
-  Casting a `BLOB` that is not a duckers value of that type fails, and `TRY_CAST` gives `NULL`.
-- Internal functions for the tests start with `__duckers_`
-  (`__duckers_debug(value)` prints a decoded value, `__duckers_agg_probe` exercises the aggregate layer);
+  Casting a `BLOB` that is not a plume value of that type fails, and `TRY_CAST` gives `NULL`.
+- Internal functions for the tests start with `__plume_`
+  (`__plume_debug(value)` prints a decoded value, `__plume_agg_probe` exercises the aggregate layer);
   they are not part of the API and may change in any release.
 
 ### Building
@@ -34,8 +34,8 @@ Needed: a Rust toolchain, `make`, `jq`, `curl`, Python 3
 `mise install` installs the pinned versions of uv, jq, rumdl and cargo-nextest from [`mise.toml`](mise.toml).
 
 ```sh
-make            # debug build: build/debug/duckers.duckdb_extension
-make release    # optimised:   build/release/duckers.duckdb_extension
+make            # debug build: build/debug/plume.duckdb_extension
+make release    # optimised:   build/release/plume.duckdb_extension
 ```
 
 Each build compiles the `cdylib` with cargo
@@ -44,12 +44,12 @@ and then appends the 512-byte metadata footer DuckDB requires
 (`scripts/append_footer.py`: ABI `C_STRUCT`, C API `v2.0.0`, the platform, the extension version).
 `TARGET=<rust target triple>` cross-compiles, and the footer names the matching DuckDB platform
 (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`, ...).
-The output file must be called `duckers.duckdb_extension`:
-DuckDB derives the entrypoint name (`duckers_init_c_api_v2`) from the file name.
+The output file must be called `plume.duckdb_extension`:
+DuckDB derives the entrypoint name (`plume_init_c_api_v2`) from the file name.
 
 ### Loading
 
-duckers is not signed, so DuckDB loads it only with unsigned extensions allowed:
+plume is not signed, so DuckDB loads it only with unsigned extensions allowed:
 
 ```sh
 make shell      # the pinned preview CLI with the debug build loaded
@@ -60,16 +60,16 @@ and checks it against [`scripts/duckdb-cli.sha256`](scripts/duckdb-cli.sha256).
 With any other DuckDB v2 build:
 
 ```sh
-duckdb -unsigned -cmd "LOAD 'build/release/duckers.duckdb_extension'"
+duckdb -unsigned -cmd "LOAD 'build/release/plume.duckdb_extension'"
 ```
 
 ```python
 import duckdb
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
-con.load_extension("build/release/duckers.duckdb_extension")
+con.load_extension("build/release/plume.duckdb_extension")
 ```
 
-The Python client returns duckers values as `bytes`; cast them to `VARCHAR` for the summary.
+The Python client returns plume values as `bytes`; cast them to `VARCHAR` for the summary.
 
 ### Testing
 
@@ -87,7 +87,7 @@ make test_release   # the same on the release build
   (after `test/svg/_setup.sql`), and the SVG must equal `test/svg/<name>.svg`.
   `make update_svg` rewrites the expected files, to be reviewed like any other change.
 - `make test_cli_debug`: each `test/cli/<name>.sql` runs in the preview CLI and must print `test/cli/<name>.out`.
-  These cover the shell's rendering of duckers values, which the Python runner cannot see.
+  These cover the shell's rendering of plume values, which the Python runner cannot see.
 - `make test_show_debug`: `show()` in the preview CLI
   (`scripts/check_show.py`, Linux only):
   the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in opener, the Python client
@@ -102,17 +102,17 @@ It also builds and tests the shim on Linux (x86_64) and macOS (arm64).
 
 ### Layout
 
-- `crates/duckers-sys`: raw bindings, generated by bindgen from the vendored `duckdb_extension_v2.h`
+- `crates/plume-sys`: raw bindings, generated by bindgen from the vendored `duckdb_extension_v2.h`
   (`make bindings` regenerates them).
   A loadable extension calls DuckDB through the function-pointer table the loader hands it, which this crate stores.
-- `crates/duckers`: the extension.
+- `crates/plume`: the extension.
   `src/capi/` is a small safe layer over the C API
   (scalar functions, aggregates, custom types, casts, vectors),
   `src/types.rs` registers the custom types, and `src/functions/` holds the SQL functions,
-  which convert DuckDB vectors to calls on `duckers-chart`.
-- `crates/duckers-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
+  which convert DuckDB vectors to calls on `plume-chart`.
+- `crates/plume-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
   and the plotters renderer with the embedded font; it does not depend on DuckDB.
-- `crates/duckers-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
+- `crates/plume-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
 - `shim/`: the `VISUALIZE` grammar shim, a C++ extension built inside DuckDB's own build
   (`make shim`); see [M8](#m8-visualize).
 - `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
@@ -122,7 +122,7 @@ It also builds and tests the shim on Linux (x86_64) and macOS (arm64).
 ## M2: first charts
 
 Charts are built with plotters' vocabulary and rendered to SVG or PNG.
-The paradigm and every name are in the [plan](plan/duckers.md#the-user-api); M2 covers the following.
+The paradigm and every name are in the [plan](plan/plume.md#the-user-api); M2 covers the following.
 
 - Series aggregates: `line_series(x, y)`, `point_series(x, y)` and `histogram_vertical(bucket, value)`
   (plotters' `Histogram::vertical`; it sums `value` per bucket, so `histogram_vertical(x, 1)` counts rows).
@@ -137,7 +137,7 @@ The paradigm and every name are in the [plan](plan/duckers.md#the-user-api); M2 
   the axis), `root_fill(color)` (plotters' `root.fill`), `draw_series(series | series[])`,
   `configure_mesh()` and `configure_series_labels()`.
 - Mesh, on `MESH`: `x_desc(text)`, `y_desc(text)`, `draw()`.
-  Without a `configure_mesh().draw()` in the chain, duckers draws the default mesh before the first series.
+  Without a `configure_mesh().draw()` in the chain, plume draws the default mesh before the first series.
 - Legend, on `SERIES_LABELS`: `position(name)`, `position(x, y)`, `border_style(color [, stroke_width])`,
   `background_style(color)`, `draw()`.
   A chain with a labelled series and no legend call gets the default legend last.
@@ -186,7 +186,7 @@ A chart expression in a query with `GROUP BY` gives one chart per group.
 
 ### Writing files
 
-Files are written with duckers' copy functions, `COPY (SELECT <chart>) TO 'chart.png' (FORMAT png)` and `(FORMAT svg)`;
+Files are written with plume' copy functions, `COPY (SELECT <chart>) TO 'chart.png' (FORMAT png)` and `(FORMAT svg)`;
 see [M7](#m7-files-and-hosts).
 
 DuckDB's own `COPY ... (FORMAT blob)` also works,
@@ -259,12 +259,12 @@ FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
    It is unavailable inside tmux or screen, in terminals not on that list
    (xterm, alacritty, VS Code), and without a controlling terminal.
 2. **window**: a native window ([minifb](https://github.com/emoon/rust_minifb)) on a thread of its own,
-   titled `duckers chart N`, closed with the title-bar button or Escape.
+   titled `plume chart N`, closed with the title-bar button or Escape.
    Without `wait` the call returns once the window is up and the shell carries on;
    the window stays until it is closed or the process exits.
    On Linux and the BSDs it needs an X11 display (`DISPLAY`); Wayland desktops provide one through Xwayland.
 3. **browser**: a self-contained HTML page in the cache directory
-   (`$XDG_CACHE_HOME/duckers` or `~/.cache/duckers`, `~/Library/Caches/duckers`, `%LOCALAPPDATA%\duckers`),
+   (`$XDG_CACHE_HOME/plume` or `~/.cache/plume`, `~/Library/Caches/plume`, `%LOCALAPPDATA%\plume`),
    opened with `xdg-open`, `open` or `ShellExecuteW`.
    On Linux it needs a graphical session (`WAYLAND_DISPLAY` or `DISPLAY`).
    Pages older than a day are removed on the next write.
@@ -273,25 +273,25 @@ FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
 
 The defaults for `viewer` and `wait`, and the multi-row cap, are process-wide:
 a C-API extension cannot register `SET` options.
-(The `VISUALIZE` shim registers `duckers_viewer`, `duckers_wait` and `duckers_max_show` as session settings on top,
-see [M8](#the-duckers_-settings).)
+(The `VISUALIZE` shim registers `plume_viewer`, `plume_wait` and `plume_max_show` as session settings on top,
+see [M8](#the-plume_-settings).)
 
 | Key | Environment | Values | Default |
 |---|---|---|---|
-| `viewer` | `DUCKERS_VIEWER` | `auto`, `terminal`, `window`, `browser` | `auto` |
-| `wait` | `DUCKERS_WAIT` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` | `false` |
+| `viewer` | `PLUME_VIEWER` | `auto`, `terminal`, `window`, `browser` | `auto` |
+| `wait` | `PLUME_WAIT` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` | `false` |
 | `max_show` | | a non-negative integer | `10` |
 
-- `duckers_set(key, value)` changes a setting and returns the new value; `value` may be text, a number or a boolean.
-  `duckers_get(key)` returns the current value.
+- `plume_set(key, value)` changes a setting and returns the new value; `value` may be text, a number or a boolean.
+  `plume_get(key)` returns the current value.
   Keys and values are case-insensitive, and an invalid key or value is an error that changes nothing.
 - The environment is read the first time a setting is needed.
-  An invalid `DUCKERS_VIEWER` or `DUCKERS_WAIT` is an error from every `show()` that needs that default,
-  naming the variable, until `duckers_set` gives the key a valid value.
+  An invalid `PLUME_VIEWER` or `PLUME_WAIT` is an error from every `show()` that needs that default,
+  naming the variable, until `plume_set` gives the key a valid value.
 
 ```sql
-SELECT duckers_set('viewer', 'browser');
-SELECT duckers_set('max_show', 3), duckers_get('wait');
+SELECT plume_set('viewer', 'browser');
+SELECT plume_set('max_show', 3), plume_get('wait');
 ```
 
 ### The multi-row cap
@@ -320,18 +320,18 @@ and still returns every row with its chart; `max_show = 0` shows nothing.
   The shell returns to the prompt after the window is closed, without the interrupted result.
 - **tmux and screen** swallow inline images, so `'auto'` skips the terminal inside them and opens a window.
 - **Python** evaluates a query's `SELECT` list when the result is fetched:
-  `con.execute("SELECT duckers_set('viewer', 'window')")` changes nothing until `.fetchall()` or similar,
+  `con.execute("SELECT plume_set('viewer', 'window')")` changes nothing until `.fetchall()` or similar,
   and the same holds for `show()`.
 - **macOS** allows a window only on the process main thread, and nothing pumps its events once `show()` returns.
   So the window viewer works there only with `wait := true` and only when DuckDB runs the call on the main thread,
   which `SET threads = 1` makes likely for a small query; otherwise `'auto'` falls through to the browser.
-- **Wayland without Xwayland** has no window viewer: duckers builds minifb's X11 backend only.
+- **Wayland without Xwayland** has no window viewer: plume builds minifb's X11 backend only.
   Its Wayland backend, as minifb builds it, loads the system libwayland,
   which prints "queue ... destroyed while proxies still attached" to stderr
   (about 20 lines, between shell prompts)
   each time a window is closed; built without that, it would make the extension require `libxkbcommon.so.0` to load.
-  A build with the `duckers-view/wayland` cargo feature
-  (`cargo build --lib --release --features duckers-view/wayland && make footer_release`)
+  A build with the `plume-view/wayland` cargo feature
+  (`cargo build --lib --release --features plume-view/wayland && make footer_release`)
   adds native Wayland windows with that warning.
 - The browser cannot close its tab when DuckDB exits.
   Snap-packaged browsers cannot read `~/.cache`, so the page may not open in them.
@@ -356,7 +356,7 @@ Unverified, inferred from the source and documentation:
 
 Every plotters styling call the plan lists for the builder, the mesh, the legend and the M2 series, plus fonts,
 log scales and horizontal histograms.
-The [plan](plan/duckers.md#the-user-api) has the tables; M4 covers the following.
+The [plan](plan/plume.md#the-user-api) has the tables; M4 covers the following.
 
 - Series: `histogram_horizontal(bucket, value)`
   (plotters' `Histogram::horizontal`: buckets on the y axis, bars rightwards from the baseline),
@@ -492,14 +492,14 @@ The mapping is linear in `ln(v)` whatever the base; the base changes the key poi
 ### Fonts
 
 Every family renders with the embedded DejaVu Sans:
-duckers registers it under each family any `FONT` in the chart names,
+plume registers it under each family any `FONT` in the chart names,
 so rendering needs no system fonts and stays deterministic.
 There is one embedded face, and plotters falls back to a family's normal face, so PNG output draws bold,
 italic and oblique text in the regular face.
 SVG output writes the family, size and style into the file
 (`font-family`, `font-size`, `font-style`),
 and the viewer draws the text with its own fonts. plotters' `FontDesc` sizes are in its own units;
-`ab_glyph` lays text out at `size / 1.24` px, the same for every duckers text style.
+`ab_glyph` lays text out at `size / 1.24` px, the same for every plume text style.
 
 ### Caveats
 
@@ -519,7 +519,7 @@ and the viewer draws the text with its own fonts. plotters' `FontDesc` sizes are
 
 The rest of plotters' 2D series and elements, numeric histogram buckets with `.step(s)`,
 and monthly and yearly key points on time axes.
-The [plan](plan/duckers.md#the-user-api) has the tables; M5 covers the following.
+The [plan](plan/plume.md#the-user-api) has the tables; M5 covers the following.
 
 - Series aggregates, each with `key :=` and `order_by :=` like the M2 ones:
   - `area_series(x, y)`: plotters' `AreaSeries`, a filled polygon from the points down to the baseline.
@@ -672,13 +672,13 @@ FROM range(120) r(m);
   plotting area's edge and are cut in half; `x_range` gives them room.
 - A boxplot stores the five numbers plotters' `Quartiles` computes per bucket, as `f32` values;
   the raw values are not kept.
-- The value format changed (format version 3): `CHART` and `SERIES` values stored by an earlier duckers do not
+- The value format changed (format version 3): `CHART` and `SERIES` values stored by an earlier plume do not
   decode.
 
 ## M6: layout
 
 Secondary axes, subplots and pies.
-The [plan](plan/duckers.md#the-user-api) has the tables; M6 covers the following.
+The [plan](plan/plume.md#the-user-api) has the tables; M6 covers the following.
 
 - A `CHART` is now one of four roots, all of the same SQL type: a cartesian chart (`chart()`), a grid (`split_evenly`),
   a titled chart (`titled`) or a pie (`pie`).
@@ -743,7 +743,7 @@ FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211), .
   A cell can be any root, including another grid.
 - `titled(chart, text [, size | font])` is `DrawingArea::titled(text, style)`: the title across the top,
   the chart below it.
-  plotters has no default size; duckers uses sans-serif 20.
+  plotters has no default size; plume uses sans-serif 20.
 - Each cell fills its own area with its own `root_fill`
   (white by default); `root_fill` on the grid fills the whole area, which blank cells show.
   The strip behind a title takes the fill of the chart it was put on, until `root_fill` on the titled chart changes it.
@@ -806,13 +806,13 @@ FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
   over neighbouring grid cells.
 - `titled` puts the title in a strip as high as the text plus up to 10 px, as plotters does; there is no margin
   setting for it.
-- The value format changed (format version 4): values stored by an earlier duckers do not decode.
+- The value format changed (format version 4): values stored by an earlier plume do not decode.
 
 ## M7: files and hosts
 
 ### Writing files: `FORMAT png` and `FORMAT svg`
 
-`COPY` writes a chart to a file with duckers' copy functions.
+`COPY` writes a chart to a file with plume' copy functions.
 The query gives the `CHART` itself, and the copy function renders it, exactly as `to_png()` and `to_svg()` would:
 
 ```sql
@@ -838,12 +838,12 @@ COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i)) TO 
   and a `NULL` chart is an error too.
 - **Local files only.**
   The C API gives a copy function a path but no file system,
-  so duckers writes the file itself with the operating system's file API.
+  so plume writes the file itself with the operating system's file API.
   Remote paths (`s3://`, `https://`, ...) are a binder error; `file://` paths are local and work.
   For a remote target, write `to_png()`
   (or `to_svg().encode()`) with `FORMAT blob`, which goes through DuckDB's file system.
 - A failed `COPY` leaves no file behind:
-  duckers writes the file only once the chart has rendered and removes a partial write,
+  plume writes the file only once the chart has rendered and removes a partial write,
   and DuckDB removes the files and directories the statement had already created.
   An existing file is replaced only by a successful `COPY`
   (DuckDB writes to `tmp_<name>` first, which is the name error messages then show).
@@ -866,7 +866,7 @@ gives `cities/city=Bergen/data_0.png`, `cities/city=Oslo/data_0.png` and `cities
 `FILE_EXTENSION` is required.
 DuckDB names partition files `data_<n>.<extension>` with an extension the copy function declares,
 and the v2 C API has no way to declare one,
-so without the option the name would be `data_0.` with a bare dot. duckers refuses that name before anything is written:
+so without the option the name would be `data_0.` with a bare dot. plume refuses that name before anything is written:
 "the file name 'cities/city=Bergen/data_0.' has no extension; with PARTITION_BY,
 add FILE_EXTENSION 'png' to the COPY options to get data_0.png".
 `FILENAME_PATTERN`, `OVERWRITE` and `WRITE_PARTITION_COLUMNS` behave as for DuckDB's own formats;
@@ -877,7 +877,7 @@ The rows are rendered on whichever threads DuckDB runs the copy on; each file is
 
 ### Python
 
-The Python client returns duckers values as `bytes`: a `CHART` from `fetchone()` is the encoded chart,
+The Python client returns plume values as `bytes`: a `CHART` from `fetchone()` is the encoded chart,
 `to_png()` gives the PNG bytes and `to_svg()` a `str`.
 Cast to `VARCHAR` for the summary.
 
@@ -922,13 +922,13 @@ From how the clients treat `BLOB`s and how `show()` probes, expect:
 
 ## M8: VISUALIZE
 
-The `VISUALIZE` clause, from the grammar shim `duckers_visualize`: a second extension, in C++,
-that adds the clause to DuckDB's parser, registers the `duckers_*` settings, and loads the core.
+The `VISUALIZE` clause, from the grammar shim `plume_visualize`: a second extension, in C++,
+that adds the clause to DuckDB's parser, registers the `plume_*` settings, and loads the core.
 
 ```sql
-LOAD 'build/debug/duckers.duckdb_extension';
-LOAD 'build/shim/duckers_visualize.duckdb_extension';
-SET active_grammar_extensions = ['duckers_visualize'];
+LOAD 'build/debug/plume.duckdb_extension';
+LOAD 'build/shim/plume_visualize.duckdb_extension';
+SET active_grammar_extensions = ['plume_visualize'];
 
 SELECT day, temp FROM weather WHERE city = 'Oslo'
 VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
@@ -959,7 +959,7 @@ VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
 DuckDB activates grammar extensions per connection:
 
 ```sql
-SET active_grammar_extensions = ['duckers_visualize'];   -- on
+SET active_grammar_extensions = ['plume_visualize'];   -- on
 RESET active_grammar_extensions;                          -- off
 ```
 
@@ -972,7 +972,7 @@ and the extension entrypoint has no connection to set it on.
 
 ### Loading
 
-Loading the shim loads the core when it is not loaded yet: the `duckers.duckdb_extension` next to the shim's own file,
+Loading the shim loads the core when it is not loaded yet: the `plume.duckdb_extension` next to the shim's own file,
 or else the installed extension of that name.
 Without either the `LOAD` fails and names both places.
 Loading the core first, by any path, works too.
@@ -986,24 +986,24 @@ The core is not tied to a version.
 make shell_shim     # the preview CLI with the debug core and the shim loaded, and the grammar active
 ```
 
-### The `duckers_*` settings
+### The `plume_*` settings
 
 The shim registers three settings, which `show()` reads when a query is bound:
 
 | Setting | Type | Values |
 |---|---|---|
-| `duckers_viewer` | `VARCHAR` | `auto`, `terminal`, `window`, `browser` (case-insensitive) |
-| `duckers_wait` | `BOOLEAN` | |
-| `duckers_max_show` | `UBIGINT` | `0` shows nothing |
+| `plume_viewer` | `VARCHAR` | `auto`, `terminal`, `window`, `browser` (case-insensitive) |
+| `plume_wait` | `BOOLEAN` | |
+| `plume_max_show` | `UBIGINT` | `0` shows nothing |
 
 - Each defaults to `NULL`, which means the process-wide setting of [M3](#settings)
-  (`duckers_set`, `DUCKERS_VIEWER`, `DUCKERS_WAIT`), so loading the shim changes nothing until a `SET`.
+  (`plume_set`, `PLUME_VIEWER`, `PLUME_WAIT`), so loading the shim changes nothing until a `SET`.
 - A value set with `SET` (or `SET GLOBAL`) takes precedence over the process-wide setting, and `show()`'s named
   parameter over both; `RESET` returns to the process-wide one.
-- A bad value fails at `SET` time: `SET duckers_viewer = 'kitty'` is an error naming the four viewers,
+- A bad value fails at `SET` time: `SET plume_viewer = 'kitty'` is an error naming the four viewers,
   a non-boolean or negative value fails the cast to the setting's type.
-- `current_setting('duckers_viewer')` reads the session's value;
-  `duckers_get('viewer')` keeps reporting the process-wide one.
+- `current_setting('plume_viewer')` reads the session's value;
+  `plume_get('viewer')` keeps reporting the process-wide one.
   `duckdb_settings()` lists the three with their descriptions.
   One DuckDB wrinkle: after `RESET` of a value that was set with `SET GLOBAL`,
   `current_setting` reports the option as unrecognized until the next `SET`,
@@ -1012,8 +1012,8 @@ The shim registers three settings, which `show()` reads when a query is bound:
 - A prepared statement reads the settings when it is prepared, like the rest of its bind.
 
 ```sql
-SET duckers_viewer = 'browser';
-SET duckers_max_show = 3;
+SET plume_viewer = 'browser';
+SET plume_max_show = 3;
 SELECT chart().draw_series(line_series(day, temp)).show() FROM weather GROUP BY city;
 ```
 
@@ -1024,7 +1024,7 @@ A DuckDB v2 loadable C++ extension links DuckDB statically and hides its symbols
 so the shim is built inside DuckDB's own CMake build against the pinned source, and only that DuckDB loads it.
 
 ```sh
-make shim           # build/shim/duckers_visualize.duckdb_extension
+make shim           # build/shim/plume_visualize.duckdb_extension
 make test_shim      # the shim tests, on the debug core
 ```
 
@@ -1038,7 +1038,7 @@ make test_shim      # the shim tests, on the debug core
   Compiling DuckDB takes a while the first time; the build directory is kept, and ccache or sccache on `PATH` is used.
 - Needed on top of the core's tools: `cmake`, `git` and a C++17 compiler.
   `SHIM_CMAKE_FLAGS='-G Ninja'` picks a generator, `SHIM_JOBS=n` the parallelism.
-- `shim/src/duckers_visualize_extension.cpp` is the whole shim: the grammar change
+- `shim/src/plume_visualize_extension.cpp` is the whole shim: the grammar change
   (`SelectStatement <- SelectStatementInternal VisualizeClause?`, the same for `EXPLAIN`'s own select rule,
   both keywords reserved), its transform, the settings and the core loader;
   `shim/CMakeLists.txt` and `shim/extension_config.cmake` plug it into DuckDB's build.

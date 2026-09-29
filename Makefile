@@ -1,12 +1,12 @@
-# Build, package and try out the duckers DuckDB extension.
+# Build, package and try out the plume DuckDB extension.
 #
-#   make                 debug build plus footer: build/debug/duckers.duckdb_extension
-#   make release         the same, optimised: build/release/duckers.duckdb_extension
+#   make                 debug build plus footer: build/debug/plume.duckdb_extension
+#   make release         the same, optimised: build/release/plume.duckdb_extension
 #   make test            Rust unit tests, sqllogictests and SVG snapshots (Python wheel), CLI
 #                        tests and show() checks on the debug build
 #   make test_release    the same on the release build
 #   make shell           the pinned DuckDB v2 preview CLI with the debug build loaded
-#   make shim            the VISUALIZE grammar shim: build/shim/duckers_visualize.duckdb_extension,
+#   make shim            the VISUALIZE grammar shim: build/shim/plume_visualize.duckdb_extension,
 #                        built inside DuckDB's own build against the pinned source (slow the first time)
 #   make test_shim       the shim's tests on the debug build; make shell_shim loads both extensions
 #
@@ -19,7 +19,7 @@
 
 .DEFAULT_GOAL := debug
 
-EXTENSION_NAME := duckers
+EXTENSION_NAME := plume
 # The C API version the extension targets; the loader refuses a footer version newer than its own.
 C_API_VERSION := v2.0.0
 
@@ -52,9 +52,9 @@ CARGO_TARGET_DIR_RESOLVED := $(CARGO_TARGET_DIR_RAW)
 endif
 CARGO_OUT_DIR := $(CARGO_TARGET_DIR_RESOLVED)$(if $(TARGET),/$(TARGET))
 
-EXTENSION_VERSION := v$(shell $(CARGO_METADATA) | jq -r '.packages[] | select(.name == "duckers") | .version' | tr -d '\r')
+EXTENSION_VERSION := v$(shell $(CARGO_METADATA) | jq -r '.packages[] | select(.name == "plume") | .version' | tr -d '\r')
 
-# The cdylib's file name: duckers.dll on Windows, libduckers.dylib on macOS, libduckers.so elsewhere.
+# The cdylib's file name: plume.dll on Windows, libplume.dylib on macOS, libplume.so elsewhere.
 ifneq ($(findstring windows,$(TARGET_TRIPLE)),)
 LIBRARY := $(EXTENSION_NAME).dll
 else ifneq ($(findstring apple,$(TARGET_TRIPLE)),)
@@ -135,7 +135,7 @@ shell_shim: debug shim $(DUCKDB)
 # loads only into the exact DuckDB version it was built from, so unlike the core it is rebuilt per
 # DuckDB version. Needs cmake, git and a C++17 compiler; the DuckDB build takes a while the first
 # time and is kept in build/shim/cmake.
-SHIM_NAME := duckers_visualize
+SHIM_NAME := plume_visualize
 DUCKDB_SOURCE_DIR := .duckdb/$(DUCKDB_VERSION)/src
 DUCKDB_SOURCE_STAMP := $(DUCKDB_SOURCE_DIR)/.fetched
 SHIM_CMAKE_DIR := build/shim/cmake
@@ -171,7 +171,7 @@ $(SHIM_EXTENSION): $(DUCKDB_SOURCE_STAMP) shim/CMakeLists.txt shim/extension_con
 		-DSKIP_EXTENSIONS=parquet -DENABLE_JEMALLOC=OFF -DDUCKDB_OPTIMIZATION_PROFILE=EXTENSION \
 		-DOVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION) \
 		-DDUCKDB_EXTENSION_CONFIGS=$(abspath shim/extension_config.cmake) \
-		-DDUCKERS_VERSION=$(EXTENSION_VERSION) $(SHIM_CMAKE_FLAGS)
+		-DPLUME_VERSION=$(EXTENSION_VERSION) $(SHIM_CMAKE_FLAGS)
 	$(CMAKE) --build $(SHIM_CMAKE_DIR) --parallel $(SHIM_JOBS) --target $(SHIM_NAME)_loadable_extension
 	cp $(SHIM_CMAKE_DIR)/extension/$(SHIM_NAME)/$(SHIM_NAME).duckdb_extension $@
 
@@ -241,12 +241,12 @@ test_show_release: release venv $(DUCKDB)
 	$(CHECK_SHOW) $(RELEASE_EXTENSION)
 
 # Shim tests: test/shim/*.test through the wheel with the core registered and the shim loaded by
-# path (DUCKERS_SHIM), and test/shim/cli.sql in the preview CLI with only the shim loaded, which
+# path (PLUME_SHIM), and test/shim/cli.sql in the preview CLI with only the shim loaded, which
 # loads the core from the copy next to it.
 define run_shim_tests
 	@mkdir -p build/test-sql build/test-cli
-	cp $(1) build/shim/duckers.duckdb_extension
-	DUCKERS_SHIM=$(abspath $(SHIM_EXTENSION)) $(SQLLOGICTEST) --test-dir test/shim --external-extension $(1)
+	cp $(1) build/shim/plume.duckdb_extension
+	PLUME_SHIM=$(abspath $(SHIM_EXTENSION)) $(SQLLOGICTEST) --test-dir test/shim --external-extension $(1)
 	@set -e; $(DUCKDB) -unsigned -bail -cmd "LOAD '$(SHIM_EXTENSION)'" -f test/shim/cli.sql > build/test-cli/shim.out 2>&1 \
 		|| { cat build/test-cli/shim.out; exit 1; }; \
 		diff -u --strip-trailing-cr test/shim/cli.out build/test-cli/shim.out; \
@@ -271,9 +271,9 @@ lint:
 	$(UV) run --locked ruff check scripts
 	$(UV) run --locked ruff format --check scripts
 
-# Regenerates crates/duckers-sys/src/bindings.rs from the vendored headers (needs libclang).
+# Regenerates crates/plume-sys/src/bindings.rs from the vendored headers (needs libclang).
 bindings:
-	$(CARGO) build --lib --features duckers-sys/generate-bindings
+	$(CARGO) build --lib --features plume-sys/generate-bindings
 	$(CARGO) fmt
 
 clean:

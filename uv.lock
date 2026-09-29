@@ -51,7 +51,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "duckers-dev"
+name = "plume-dev"
 version = "0"
 source = { virtual = "." }
 dependencies = [

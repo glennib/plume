@@ -1,8 +1,8 @@
 # name: test/sql/font.test
 # description: font() and color() make FONT values; every text-style parameter takes a size or a FONT
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # font(family, size [, style]) is FontDesc::new; the style is case-insensitive.
 query TTT
@@ -17,14 +17,14 @@ SELECT list_transform(['normal', 'bold', 'italic', 'oblique'], lambda s: font('s
 
 # color(font, color) sets the TextStyle colour.
 query TT
-SELECT font('serif', 20).color('red')::VARCHAR, __duckers_debug(font('monospace', 9, 'italic').color(mix('blue', 0.5)))
+SELECT font('serif', 20).color('red')::VARCHAR, __plume_debug(font('monospace', 9, 'italic').color(mix('blue', 0.5)))
 ----
 FONT(serif, 20, #ff0000)	Font { family: "monospace", size: 9, style: Italic, color: Some(Color { r: 0, g: 0, b: 255, a: 0.5 }) }
 
 # caption takes a size (sans-serif) or a FONT.
 query TT
-SELECT __duckers_debug(chart().caption('c', 18)).regexp_extract('font: Font \{[^}]*\}'),
-       __duckers_debug(chart().caption('c', font('serif', 22, 'bold').color('#123456'))).regexp_extract('font: Font \{[^}]*\}')
+SELECT __plume_debug(chart().caption('c', 18)).regexp_extract('font: Font \{[^}]*\}'),
+       __plume_debug(chart().caption('c', font('serif', 22, 'bold').color('#123456'))).regexp_extract('font: Font \{[^}]*\}')
 ----
 font: Font { family: "sans-serif", size: 18, style: Normal, color: None }	font: Font { family: "serif", size: 22, style: Bold, color: Some(Color { r: 18, g: 52, b: 86, a: 1.0 }
 

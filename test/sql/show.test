@@ -1,19 +1,19 @@
 # name: test/sql/show.test
 # description: show() argument checks, NULL handling and the settings, without showing anything
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # Nothing in this file may reach a viewer: every call below is NULL, fails before showing, or
 # runs with max_show at 0. What the viewers do is tested by scripts/check_show.py.
 
 query T
-SELECT duckers_get('max_show')
+SELECT plume_get('max_show')
 ----
 10
 
 query T
-SELECT duckers_set('max_show', 0)
+SELECT plume_set('max_show', 0)
 ----
 0
 
@@ -90,64 +90,64 @@ SELECT ('abc'::CHART).show()
 Invalid Input Error: show:
 
 # The settings: keys and values are case-insensitive, values may be any type, and the result is
-# the new value as duckers_get reports it.
+# the new value as plume_get reports it.
 query TTT
-SELECT duckers_set('WAIT', ' On '), duckers_set('viewer', 'Terminal'), duckers_set('max_show', 3)
+SELECT plume_set('WAIT', ' On '), plume_set('viewer', 'Terminal'), plume_set('max_show', 3)
 ----
 true	terminal	3
 
 query TTT
-SELECT duckers_get('wait'), duckers_get('viewer'), duckers_get('Max_Show')
+SELECT plume_get('wait'), plume_get('viewer'), plume_get('Max_Show')
 ----
 true	terminal	3
 
 query TT
-SELECT duckers_set('wait', false), duckers_set('viewer', 'auto')
+SELECT plume_set('wait', false), plume_set('viewer', 'auto')
 ----
 false	auto
 
 query T
-SELECT duckers_set('max_show', NULL) IS NULL
+SELECT plume_set('max_show', NULL) IS NULL
 ----
 true
 
 query T
-SELECT duckers_get('max_show')
+SELECT plume_get('max_show')
 ----
 3
 
 statement error
-SELECT duckers_set('colour', 'red')
+SELECT plume_set('colour', 'red')
 ----
-Invalid Input Error: duckers_set: unknown duckers setting 'colour'; the settings are 'viewer', 'wait' and 'max_show'
+Invalid Input Error: plume_set: unknown plume setting 'colour'; the settings are 'viewer', 'wait' and 'max_show'
 
 statement error
-SELECT duckers_get('colour')
+SELECT plume_get('colour')
 ----
-Invalid Input Error: duckers_get: unknown duckers setting 'colour'
+Invalid Input Error: plume_get: unknown plume setting 'colour'
 
 statement error
-SELECT duckers_set('wait', 'maybe')
+SELECT plume_set('wait', 'maybe')
 ----
-Invalid Input Error: duckers_set: invalid value 'maybe' for 'wait': expected true or false (also 1/0, yes/no, on/off)
+Invalid Input Error: plume_set: invalid value 'maybe' for 'wait': expected true or false (also 1/0, yes/no, on/off)
 
 statement error
-SELECT duckers_set('max_show', -1)
+SELECT plume_set('max_show', -1)
 ----
-Invalid Input Error: duckers_set: invalid value '-1' for 'max_show': expected a non-negative integer
+Invalid Input Error: plume_set: invalid value '-1' for 'max_show': expected a non-negative integer
 
 statement error
-SELECT duckers_set('viewer', 'sixel')
+SELECT plume_set('viewer', 'sixel')
 ----
-Invalid Input Error: duckers_set: invalid value 'sixel' for 'viewer'
+Invalid Input Error: plume_set: invalid value 'sixel' for 'viewer'
 
-# A failed duckers_set leaves the value as it was.
+# A failed plume_set leaves the value as it was.
 query T
-SELECT duckers_get('max_show')
+SELECT plume_get('max_show')
 ----
 3
 
 query T
-SELECT duckers_set('max_show', '0')
+SELECT plume_set('max_show', '0')
 ----
 0

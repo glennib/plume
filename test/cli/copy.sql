@@ -1,4 +1,4 @@
--- COPY ... TO with the duckers formats from the shell, with paths relative to the working directory.
+-- COPY ... TO with the plume formats from the shell, with paths relative to the working directory.
 .mode csv
 COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i))
 TO 'build/test-cli/copy.png' (FORMAT png, WIDTH 320, HEIGHT 200);

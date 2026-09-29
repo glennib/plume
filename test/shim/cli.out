@@ -1,7 +1,7 @@
 extension_name,loaded
-duckers,true
-duckers_visualize,true
+plume,true
+plume_visualize,true
 chart
 "CHART(line, 1 series, 5 points)"
 active
-[duckers_visualize]
+[plume_visualize]

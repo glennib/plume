@@ -1,8 +1,8 @@
 # name: test/sql/mesh.test
 # description: every MeshStyle method on MESH, replayed on plotters' MeshStyle in chain order
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # Each method appends its setter call; the summary lists them in chain order.
 query T
@@ -22,7 +22,7 @@ SELECT chart().configure_mesh()
 MESH(x_desc 'x', y_desc 'y', axis_desc_style FONT(sans-serif, 14), axis_desc_style FONT(serif, 16, italic), x_labels 5, y_labels 0, x_label_formatter '{:.1f}', y_label_formatter '%b %d', label_style FONT(sans-serif, 10), x_label_style FONT(serif, 11), y_label_style FONT(serif, 12, #ff0000), x_label_offset -4px, y_label_offset 3px, x_max_light_lines 2, y_max_light_lines 0, max_light_lines 4, light_line_style #f5f5f5 1px, bold_line_style #e0e0e0 2px, axis_style #000000 3px, disable_x_mesh, disable_y_mesh, disable_mesh, disable_x_axis, disable_y_axis, disable_axes, set_tick_mark_size top -5px, set_all_tick_mark_size 7px) of CHART(empty)
 
 query T
-SELECT __duckers_debug(chart().configure_mesh().light_line_style(mix('black', 0.1)).set_tick_mark_size('left', 2).label_style(font('mono', 9))).regexp_extract('settings: .*\] \}')
+SELECT __plume_debug(chart().configure_mesh().light_line_style(mix('black', 0.1)).set_tick_mark_size('left', 2).label_style(font('mono', 9))).regexp_extract('settings: .*\] \}')
 ----
 settings: [LightLineStyle(LineStyle { color: Color { r: 0, g: 0, b: 0, a: 0.1 }, stroke_width: 1 }), SetTickMarkSize(Left, 2), LabelStyle(Font { family: "mono", size: 9, style: Normal, color: None })] }
 
@@ -106,7 +106,7 @@ Invalid Input Error: y_label_formatter: the template '{:.2q}' has an unsupported
 statement error
 SELECT chart().configure_mesh().x_label_formatter('%Z')
 ----
-Invalid Input Error: x_label_formatter: the strftime pattern '%Z' needs a time zone (%z, %Z), which duckers' dates and timestamps do not have
+Invalid Input Error: x_label_formatter: the strftime pattern '%Z' needs a time zone (%z, %Z), which plume' dates and timestamps do not have
 
 statement error
 SELECT chart().configure_mesh().x_labels(-1)

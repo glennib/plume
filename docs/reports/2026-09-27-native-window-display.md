@@ -51,7 +51,7 @@ so everything said about those platforms comes from source code and documentatio
 Verified in the DuckDB 1.5.5 CLI with a test extension built from the repo's scaffold (git `47de8784aad1`):
 
 - **The calling thread varies.**
-  - A single-row `SELECT duckers_tid(0)` ran on the client (main) thread in 27 of 30 runs and on worker threads in 3.
+  - A single-row `SELECT plume_tid(0)` ran on the client (main) thread in 27 of 30 runs and on worker threads in 3.
   - A parallel scan of a 20M-row table ran the function on 12 distinct threads (`threads` = 12).
     About 2.2M of the 20M rows ran on the same thread as a scalar subquery in that statement,
     normally the client thread.
@@ -59,7 +59,7 @@ Verified in the DuckDB 1.5.5 CLI with a test extension built from the repo's sca
   - In Python the tested calls also ran on the main thread.
 - **Volatility.**
   duckdb-rs exposes `VScalar::volatile()`, backed by `duckdb_scalar_function_set_volatile`.
-  - Without it, a zero-argument `duckers_tid()` reported the client thread for every row of the parallel scan, which is
+  - Without it, a zero-argument `plume_tid()` reported the client thread for every row of the parallel scan, which is
     consistent with plan-time constant folding.
   - With `volatile() -> true` and a column argument it reported 12 threads.
   - A side-effecting `show()` must be volatile, or it may run at plan time or run a different number of times than
@@ -230,8 +230,8 @@ which sends the same close request as the title-bar button.
 | 8 | Subprocess: detached child, parent exits normally                            | Child logged stdin EOF and exited; window gone                                                                    |
 | 9 | Subprocess: detached child, parent `SIGKILL`ed                               | Same                                                                                                              |
 | 10 | Subprocess: blocking, parent calls `child.wait()`                           | Child got EOF immediately and exited: `wait()` drops `stdin` first. Fixed by taking `child.stdin` before waiting  |
-| 11 | DuckDB CLI: `SELECT duckers_show(0)` (blocking minifb)                      | Ran on the main thread; shell blocked until close; next statement then ran                                        |
-| 12 | DuckDB CLI interactive (tmux): `duckers_show_detached()`, then `SELECT 42`, then `.quit` | Window open, shell usable, `.quit` exited 0 and the window vanished                                  |
+| 11 | DuckDB CLI: `SELECT plume_show(0)` (blocking minifb)                      | Ran on the main thread; shell blocked until close; next statement then ran                                        |
+| 12 | DuckDB CLI interactive (tmux): `plume_show_detached()`, then `SELECT 42`, then `.quit` | Window open, shell usable, `.quit` exited 0 and the window vanished                                  |
 | 13 | Python `duckdb` 1.5.5: blocking, then detached, then interpreter exit        | Both worked; exit code 0                                                                                          |
 
 The workspace (plotters, minifb, winit, softbuffer, libloading) built in about a minute.
@@ -365,7 +365,7 @@ if built with `--enable-sixel`.
 
 ### Inline images inside the DuckDB shell
 
-Setup: the scaffold extension gained `duckers_inline(proto, target)`.
+Setup: the scaffold extension gained `plume_inline(proto, target)`.
 It renders the chart to PNG (`png` 0.18) and writes either the kitty sequence
 (`a=T,f=100,q=2`, 4096-byte base64 chunks) or iTerm2 `OSC 1337;File=inline=1`.
 The target is `/dev/tty`, tmux-wrapped `/dev/tty`, or fd 1.
@@ -427,7 +427,7 @@ Byte order was checked from `script(1)` typescripts.
 - **Temp files:** `xdg-open` and friends return before the browser reads the file, so deleting it immediately races
   (inferred).
 
-## Implications for duckers
+## Implications for plume
 
 - Mark every display function volatile.
   Never assume a particular calling thread; check it where it matters (`pthread_main_np` on macOS).
@@ -501,4 +501,4 @@ Byte order was checked from `script(1)` typescripts.
   `eframe-0.36.2/src/{epi.rs,native/run.rs}`, `egui-plotter-0.6.0/Cargo.toml`, `plotters-piston-0.3.0/Cargo.toml`,
   `viuer-0.11.0/src/{lib.rs,printer/{kitty,iterm,sixel_util}.rs}`, `open-5.4.4/src/lib.rs`, `opener-0.8.5/src/lib.rs`,
   `duckdb-1.10505.0/src/vscalar/{mod,function}.rs`, Rust std 1.98.1 `process.rs` (`Child::wait`) and `sys/pipe/unix.rs`
-- Repo: `plan/duckers.md`, `docs/reports/*.md`, scaffold at git `47de8784aad1`
+- Repo: `plan/plume.md`, `docs/reports/*.md`, scaffold at git `47de8784aad1`

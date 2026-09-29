@@ -242,7 +242,7 @@ Verified:
 - `context_get_option_by_name(ctx, name, &opt)` plus `option_get_setting` reads any option from a scalar exec callback:
   `threads` gave `12`, `memory_limit` gave `24.8 GiB`.
   An unknown name returns "unknown configuration option".
-- `SET duckers_default_size = 3` fails as an unrecognized parameter.
+- `SET plume_default_size = 3` fails as an unrecognized parameter.
 - `getvariable('x')` passed as an aggregate argument arrives in bind as a folded constant.
 
 From the spec (`api_spec/v2/configuration/configuration.yaml`, `connection/connection.yaml`, `instance/instance.yaml`):
@@ -255,7 +255,7 @@ From the spec (`api_spec/v2/configuration/configuration.yaml`, `connection/conne
 
 Inferred:
 
-- The C++ grammar shim could register `duckers_*` options through the C++ API,
+- The C++ grammar shim could register `plume_*` options through the C++ API,
   and the Rust core could read them with `context_get_option_by_name`,
   since option listings include extension-registered options.
 - Named parameters with defaults are the C-API-only way to make chart options optional.

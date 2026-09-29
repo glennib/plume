@@ -1,95 +1,95 @@
 # name: test/sql/more_series.test
 # description: area_series, dashed_line_series, error_bar_*, candle_stick, boxplot_*, stepped histograms, and monthly and yearly axes
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # area_series: a polygon from the points down to the baseline, filled, with a transparent border.
 query T
-SELECT __duckers_debug(area_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
+SELECT __plume_debug(area_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
 ----
 Series { kind: Area(AreaOptions { baseline: 0.0, border_style: LineStyle { color: Color { r: 0, g: 0, b: 0, a: 0.0 }, stroke_width: 1 } }), x: Numeric([1.0, 2.0]), y: Numeric([3.0, 1.0]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
 
 query T
-SELECT __duckers_debug(area_series(x, y).baseline(-2).border_style('black', 2).filled()).regexp_extract('kind: (.*), x: ', 1)
+SELECT __plume_debug(area_series(x, y).baseline(-2).border_style('black', 2).filled()).regexp_extract('kind: (.*), x: ', 1)
 FROM (VALUES (1, 1)) t(x, y)
 ----
 Area(AreaOptions { baseline: -2.0, border_style: LineStyle { color: Color { r: 0, g: 0, b: 0, a: 1.0 }, stroke_width: 2 } })
 
 query T
-SELECT __duckers_debug(area_series(x, y).border_style('red')).regexp_extract('border_style: LineStyle \{[^}]*\}[^}]*\}')
+SELECT __plume_debug(area_series(x, y).border_style('red')).regexp_extract('border_style: LineStyle \{[^}]*\}[^}]*\}')
 FROM (VALUES (1, 1)) t(x, y)
 ----
 border_style: LineStyle { color: Color { r: 255, g: 0, b: 0, a: 1.0 }, stroke_width: 1 }
 
 # dashed_line_series: size and spacing are the dash and gap in px.
 query T
-SELECT __duckers_debug(dashed_line_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
+SELECT __plume_debug(dashed_line_series(x, y)) FROM (VALUES (2, 1), (1, 3)) t(x, y)
 ----
 Series { kind: DashedLine(DashedLineOptions { size: 5, spacing: 5 }), x: Numeric([1.0, 2.0]), y: Numeric([3.0, 1.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 query T
-SELECT __duckers_debug(dashed_line_series(d, 1).size(10).spacing(2)).regexp_extract('kind: (.*), x: ', 1)
+SELECT __plume_debug(dashed_line_series(d, 1).size(10).spacing(2)).regexp_extract('kind: (.*), x: ', 1)
 FROM (VALUES (DATE '2024-01-01')) t(d)
 ----
 DashedLine(DashedLineOptions { size: 10, spacing: 2 })
 
 # error_bar_vertical(x, min, avg, max): the averages are the y column, min and max the options.
 query T
-SELECT __duckers_debug(error_bar_vertical(x, lo, m, hi)) FROM (VALUES (2, 1, 2, 3), (1, 4, 5, 6)) t(x, lo, m, hi)
+SELECT __plume_debug(error_bar_vertical(x, lo, m, hi)) FROM (VALUES (2, 1, 2, 3), (1, 4, 5, 6)) t(x, lo, m, hi)
 ----
 Series { kind: ErrorBarVertical(ErrorBarOptions { width: 10, min: [4.0, 1.0], max: [6.0, 3.0] }), x: Numeric([1.0, 2.0]), y: Numeric([5.0, 2.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 # error_bar_horizontal(y, min, avg, max): the key on y, the averages on x.
 query T
-SELECT __duckers_debug(error_bar_horizontal(k, lo, m, hi).width(4).filled()) FROM (VALUES ('b', 1, 2, 3), ('a', 4, 5, 6)) t(k, lo, m, hi)
+SELECT __plume_debug(error_bar_horizontal(k, lo, m, hi).width(4).filled()) FROM (VALUES ('b', 1, 2, 3), ('a', 4, 5, 6)) t(k, lo, m, hi)
 ----
 Series { kind: ErrorBarHorizontal(ErrorBarOptions { width: 4, min: [4.0, 1.0], max: [6.0, 3.0] }), x: Numeric([5.0, 2.0]), y: Category(["a", "b"]), style: Style { color: None, stroke_width: 1, filled: true }, label: None }
 
 query T
-SELECT __duckers_debug(error_bar_horizontal(ts, 1, 2, 3)).regexp_extract('y: [^)]*\)')
+SELECT __plume_debug(error_bar_horizontal(ts, 1, 2, 3)).regexp_extract('y: [^)]*\)')
 FROM (VALUES (TIMESTAMP '2024-01-01 00:00:01')) t(ts)
 ----
 y: Timestamp([1704067201000000])
 
 # candle_stick(x, open, high, low, close): the closes are the y column.
 query T
-SELECT __duckers_debug(candle_stick(d, o, h, l, c)) FROM (VALUES (DATE '2024-01-02', 1, 4, 0.5, 2), (DATE '2024-01-01', 2, 3, 1, 1)) t(d, o, h, l, c)
+SELECT __plume_debug(candle_stick(d, o, h, l, c)) FROM (VALUES (DATE '2024-01-02', 1, 4, 0.5, 2), (DATE '2024-01-01', 2, 3, 1, 1)) t(d, o, h, l, c)
 ----
 Series { kind: CandleStick(CandleStickOptions { width: 10, gain: Color { r: 0, g: 255, b: 0, a: 1.0 }, loss: Color { r: 255, g: 0, b: 0, a: 1.0 }, open: [2.0, 1.0], high: [3.0, 4.0], low: [1.0, 0.5] }), x: Date([19723, 19724]), y: Numeric([1.0, 2.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 query T
-SELECT __duckers_debug(candle_stick(1, 1, 2, 0, 1).gain_style('blue').loss_style('#000000').width(6).filled().stroke_width(2)).regexp_extract('width: 6, gain: [^}]*\}, loss: [^}]*\}|style: .*')
+SELECT __plume_debug(candle_stick(1, 1, 2, 0, 1).gain_style('blue').loss_style('#000000').width(6).filled().stroke_width(2)).regexp_extract('width: 6, gain: [^}]*\}, loss: [^}]*\}|style: .*')
 ----
 width: 6, gain: Color { r: 0, g: 0, b: 255, a: 1.0 }, loss: Color { r: 0, g: 0, b: 0, a: 1.0 }
 
 query T
-SELECT __duckers_debug(candle_stick(1, 1, 2, 0, 1).filled().stroke_width(2)).regexp_extract('style: Style \{[^}]*\}')
+SELECT __plume_debug(candle_stick(1, 1, 2, 0, 1).filled().stroke_width(2)).regexp_extract('style: Style \{[^}]*\}')
 ----
 style: Style { color: None, stroke_width: 2, filled: true }
 
 # boxplot_vertical(bucket, value): one box per distinct bucket, with plotters' Quartiles
 # (lower fence, lower quartile, median, upper quartile, upper fence); the medians are the y column.
 query T
-SELECT __duckers_debug(boxplot_vertical(k, v)) FROM (VALUES ('b', 10), ('b', 20), ('b', 30), ('b', 40), ('a', 5)) t(k, v)
+SELECT __plume_debug(boxplot_vertical(k, v)) FROM (VALUES ('b', 10), ('b', 20), ('b', 30), ('b', 40), ('a', 5)) t(k, v)
 ----
 Series { kind: BoxplotVertical(BoxplotOptions { width: 10, quartiles: [[5.0, 5.0, 5.0, 5.0, 5.0], [-5.0, 17.5, 25.0, 32.5, 55.0]] }), x: Category(["a", "b"]), y: Numeric([5.0, 25.0]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 # boxplot_horizontal: the buckets on y; integer and date buckets as for histograms.
 query T
-SELECT __duckers_debug(boxplot_horizontal(k, v).width(20)) FROM (VALUES (2, 10), (1, 20), (2, 30)) t(k, v)
+SELECT __plume_debug(boxplot_horizontal(k, v).width(20)) FROM (VALUES (2, 10), (1, 20), (2, 30)) t(k, v)
 ----
 Series { kind: BoxplotHorizontal(BoxplotOptions { width: 20, quartiles: [[20.0, 20.0, 20.0, 20.0, 20.0], [0.0, 15.0, 20.0, 25.0, 40.0]] }), x: Numeric([20.0, 20.0]), y: Integer([1, 2]), style: Style { color: None, stroke_width: 1, filled: false }, label: None }
 
 query T
-SELECT __duckers_debug(boxplot_vertical(d, 1)).regexp_extract('x: [^)]*\)')
+SELECT __plume_debug(boxplot_vertical(d, 1)).regexp_extract('x: [^)]*\)')
 FROM (VALUES (DATE '2024-01-02'), (DATE '2024-01-01')) t(d)
 ----
 x: Date([19723, 19724])
 
 # The buckets of a boxplot follow order_by, as a histogram's do.
 query T
-SELECT __duckers_debug(boxplot_vertical(k, v, order_by := -v)).regexp_extract('x: [^)]*\)')
+SELECT __plume_debug(boxplot_vertical(k, v, order_by := -v)).regexp_extract('x: [^)]*\)')
 FROM (VALUES ('a', 1), ('b', 3), ('c', 2)) t(k, v)
 ----
 x: Category(["b", "c", "a"])
@@ -114,7 +114,7 @@ SELECT error_bar_vertical(x, x, x, x, key := x % 2, order_by := -x)::VARCHAR FRO
 ['SERIES(error bar \'0\', 3 bars)', 'SERIES(error bar \'1\', 2 bars)']
 
 query T
-SELECT list_transform(candle_stick(x, 1, 2, 0, 1, key := x > 1, order_by := -x), lambda s: __duckers_debug(s).regexp_extract('x: [^)]*\)'))
+SELECT list_transform(candle_stick(x, 1, 2, 0, 1, key := x > 1, order_by := -x), lambda s: __plume_debug(s).regexp_extract('x: [^)]*\)'))
 FROM range(4) r(x)
 ----
 ['x: Numeric([1.0, 0.0])', 'x: Numeric([3.0, 2.0])']
@@ -125,7 +125,7 @@ SELECT boxplot_horizontal(k, v, key := g)::VARCHAR FROM (VALUES ('a', 1, 'x'), (
 ['SERIES(horizontal boxplot \'x\', 2 boxes)', 'SERIES(horizontal boxplot \'y\', 1 box)']
 
 query T
-SELECT __duckers_debug(area_series(x, y, order_by := -x)).regexp_extract('x: [^)]*\)')
+SELECT __plume_debug(area_series(x, y, order_by := -x)).regexp_extract('x: [^)]*\)')
 FROM (VALUES (1, 1), (2, 2), (3, 3)) t(x, y)
 ----
 x: Numeric([3.0, 2.0, 1.0])
@@ -138,7 +138,7 @@ SELECT dashed_line_series(i, i, key := i % 3)::VARCHAR FROM range(10) r(i)
 # Rows with a NULL, NaN or infinite value in any argument are skipped; zero usable rows give an
 # empty series.
 query T
-SELECT __duckers_debug(error_bar_vertical(x, lo, m, hi)).regexp_extract('min: [^\]]*\]|x: .*')
+SELECT __plume_debug(error_bar_vertical(x, lo, m, hi)).regexp_extract('min: [^\]]*\]|x: .*')
 FROM (VALUES (1, 0, 1, 2), (2, NULL, 1, 2), (3, 0, 'nan'::DOUBLE, 2), (4, 0, 1, 'inf'::DOUBLE), (NULL, 0, 1, 2)) t(x, lo, m, hi)
 ----
 min: [0.0]
@@ -156,7 +156,7 @@ SELECT len(boxplot_vertical(i::VARCHAR, i, key := i)) FROM range(0) r(i)
 
 # Enough rows for several threads: the quartiles do not depend on how the rows are split.
 query T
-SELECT __duckers_debug(boxplot_vertical(i % 2, i)).regexp_extract('quartiles: .*\]\] \}')
+SELECT __plume_debug(boxplot_vertical(i % 2, i)).regexp_extract('quartiles: .*\]\] \}')
 FROM range(100000) r(i)
 ----
 quartiles: [[-49999.0, 24999.5, 49999.0, 74998.5, 149997.0], [-49998.0, 25000.5, 50000.0, 74999.5, 149998.0]] }
@@ -287,7 +287,7 @@ true
 
 # step(s): numeric buckets binned into bands of width s from multiples of s.
 query T
-SELECT __duckers_debug(histogram_vertical(x, 1).step(5)).regexp_extract('kind: [^}]*\}|x: .*y: Numeric\(\[[^\]]*\]\)')
+SELECT __plume_debug(histogram_vertical(x, 1).step(5)).regexp_extract('kind: [^}]*\}|x: .*y: Numeric\(\[[^\]]*\]\)')
 FROM (VALUES (1.5), (7.0), (2.5)) t(x)
 ----
 kind: Histogram(HistogramOptions { margin: 5, baseline: 0.0, step: Some(5.0) }
@@ -300,7 +300,7 @@ SERIES(histogram, 2 buckets)
 
 # Integer buckets can be stepped too: they become numbers.
 query T
-SELECT __duckers_debug(histogram_horizontal(i, 1).step(10)).regexp_extract('y: [A-Za-z]*\(\[[^\]]*\]\)')
+SELECT __plume_debug(histogram_horizontal(i, 1).step(10)).regexp_extract('y: [A-Za-z]*\(\[[^\]]*\]\)')
 FROM range(3) r(i)
 ----
 y: Numeric([0.0, 1.0, 2.0])
@@ -356,7 +356,7 @@ true
 # Monthly and yearly key points: date and timestamp axes only, checked at the call when the axis
 # kind is known and at draw_series otherwise.
 query T
-SELECT __duckers_debug(chart().x_monthly().y_yearly()).regexp_extract('x_axis: .*y_axis: [^}]*\}')
+SELECT __plume_debug(chart().x_monthly().y_yearly()).regexp_extract('x_axis: .*y_axis: [^}]*\}')
 ----
 x_axis: AxisSpec { range: None, scale: Monthly }, y_axis: AxisSpec { range: None, scale: Yearly }
 

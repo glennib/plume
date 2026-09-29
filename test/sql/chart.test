@@ -1,42 +1,42 @@
 # name: test/sql/chart.test
 # description: chart(), the methods on CHART, MESH, SERIES_LABELS and SERIES, and mix
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
-# chart() is an empty chart with duckers' defaults.
+# chart() is an empty chart with plume' defaults.
 query T
-SELECT __duckers_debug(chart())
+SELECT __plume_debug(chart())
 ----
 Chart { caption: None, margin: Sides { top: 10, bottom: 10, left: 10, right: 10 }, label_area: LabelAreas { top: None, bottom: 30, left: 40, right: None }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, secondary: None, fill: Color { r: 255, g: 255, b: 255, a: 1.0 }, ops: [] }
 
 # The builder methods.
 query T
-SELECT __duckers_debug(chart().caption('Oslo').margin(4).x_label_area_size(50).y_label_area_size(60).root_fill('grey_100'))
+SELECT __plume_debug(chart().caption('Oslo').margin(4).x_label_area_size(50).y_label_area_size(60).root_fill('grey_100'))
 ----
 Chart { caption: Some(Caption { text: "Oslo", font: Font { family: "sans-serif", size: 30, style: Normal, color: None } }), margin: Sides { top: 4, bottom: 4, left: 4, right: 4 }, label_area: LabelAreas { top: None, bottom: 50, left: 60, right: None }, x_axis: AxisSpec { range: None, scale: Linear }, y_axis: AxisSpec { range: None, scale: Linear }, secondary: None, fill: Color { r: 245, g: 245, b: 245, a: 1.0 }, ops: [] }
 
 query T
-SELECT __duckers_debug(chart().caption('Oslo', 20)).regexp_extract('size: [0-9]+')
+SELECT __plume_debug(chart().caption('Oslo', 20)).regexp_extract('size: [0-9]+')
 ----
 size: 20
 
 # Every ChartBuilder size: margins per side and the four label areas.
 query T
-SELECT __duckers_debug(chart().margin_top(1).margin_bottom(2).margin_left(3).margin_right(4)
+SELECT __plume_debug(chart().margin_top(1).margin_bottom(2).margin_left(3).margin_right(4)
     .top_x_label_area_size(5).right_y_label_area_size(6)).regexp_extract('margin: .*right: Some\([0-9]+\) \}')
 ----
 margin: Sides { top: 1, bottom: 2, left: 3, right: 4 }, label_area: LabelAreas { top: Some(5), bottom: 30, left: 40, right: Some(6) }
 
 query TT
-SELECT __duckers_debug(chart().set_all_label_area_size(7)).regexp_extract('label_area: [^}]*\}'),
-       __duckers_debug(chart().top_x_label_area_size(5).set_left_and_bottom_label_area_size(8)).regexp_extract('label_area: [^}]*\}')
+SELECT __plume_debug(chart().set_all_label_area_size(7)).regexp_extract('label_area: [^}]*\}'),
+       __plume_debug(chart().top_x_label_area_size(5).set_left_and_bottom_label_area_size(8)).regexp_extract('label_area: [^}]*\}')
 ----
 label_area: LabelAreas { top: Some(7), bottom: 7, left: 7, right: Some(7) }	label_area: LabelAreas { top: Some(5), bottom: 8, left: 8, right: None }
 
 # x_log_scale and y_log_scale: plotters' log_scale(), base 10 unless given.
 query T
-SELECT __duckers_debug(chart().x_log_scale().y_log_scale(2)).regexp_extract('x_axis: .*Log \{ base: [0-9.]+ \} \}')
+SELECT __plume_debug(chart().x_log_scale().y_log_scale(2)).regexp_extract('x_axis: .*Log \{ base: [0-9.]+ \} \}')
 ----
 x_axis: AxisSpec { range: None, scale: Log { base: 10.0 } }, y_axis: AxisSpec { range: None, scale: Log { base: 2.0 } }
 
@@ -91,12 +91,12 @@ true	true	true	true	true	true
 
 # x_range and y_range take numbers of any type, DATEs and TIMESTAMPs.
 query T
-SELECT __duckers_debug(chart().x_range(0, 10.5).y_range(-10::TINYINT, 30::DECIMAL(4,1))).regexp_extract('x_axis.*y_axis[^}]*Linear')
+SELECT __plume_debug(chart().x_range(0, 10.5).y_range(-10::TINYINT, 30::DECIMAL(4,1))).regexp_extract('x_axis.*y_axis[^}]*Linear')
 ----
 x_axis: AxisSpec { range: Some(Numeric(0.0, 10.5)), scale: Linear }, y_axis: AxisSpec { range: Some(Numeric(-10.0, 30.0)), scale: Linear
 
 query T
-SELECT __duckers_debug(chart().x_range(DATE '2024-01-01', DATE '2024-02-01')).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
+SELECT __plume_debug(chart().x_range(DATE '2024-01-01', DATE '2024-02-01')).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
 ----
 x_axis: AxisSpec { range: Some(Date(19723, 19754)
 
@@ -106,7 +106,7 @@ SET TimeZone = 'UTC'
 foreach type TIMESTAMP TIMESTAMPTZ TIMESTAMP_MS TIMESTAMP_NS
 
 query T
-SELECT __duckers_debug(chart().x_range(TIMESTAMP '2024-01-01'::${type}, TIMESTAMP '2024-01-02'::${type})).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
+SELECT __plume_debug(chart().x_range(TIMESTAMP '2024-01-01'::${type}, TIMESTAMP '2024-01-02'::${type})).regexp_extract('x_axis: AxisSpec \{ range: [^,]*, [^)]*\)')
 ----
 x_axis: AxisSpec { range: Some(Timestamp(1704067200000000, 1704153600000000)
 
@@ -142,7 +142,7 @@ SELECT chart().caption('c').configure_mesh().x_desc('day').y_desc('°C')::VARCHA
 MESH(x_desc 'day', y_desc '°C') of CHART(empty, caption 'c')
 
 query T
-SELECT __duckers_debug(chart().configure_mesh().x_desc('x').draw().draw_series(line_series(1, 1))).regexp_extract('ops: \[[A-Za-z]+\([A-Za-z]+')
+SELECT __plume_debug(chart().configure_mesh().x_desc('x').draw().draw_series(line_series(1, 1))).regexp_extract('ops: \[[A-Za-z]+\([A-Za-z]+')
 ----
 ops: [Mesh(MeshStyle
 
@@ -163,31 +163,31 @@ SELECT typeof(chart().configure_series_labels().draw())
 CHART
 
 query T
-SELECT __duckers_debug(chart().configure_series_labels().draw()).regexp_extract('ops: .*')
+SELECT __plume_debug(chart().configure_series_labels().draw()).regexp_extract('ops: .*')
 ----
 ops: [SeriesLabels(SeriesLabelStyle { settings: [] })] }
 
 # The series methods.
 query T
-SELECT __duckers_debug(line_series(i, i).style('red').label('temp').point_size(2)).regexp_extract('kind: [^)]*\)')
+SELECT __plume_debug(line_series(i, i).style('red').label('temp').point_size(2)).regexp_extract('kind: [^)]*\)')
 FROM range(2) r(i)
 ----
 kind: Line(LineOptions { point_size: 2 })
 
 query T
-SELECT __duckers_debug(line_series(i, i).style('red').label('temp')).regexp_extract('style: .*')
+SELECT __plume_debug(line_series(i, i).style('red').label('temp')).regexp_extract('style: .*')
 FROM range(2) r(i)
 ----
 style: Style { color: Some(Color { r: 255, g: 0, b: 0, a: 1.0 }), stroke_width: 1, filled: false }, label: Some("temp") }
 
 query T
-SELECT __duckers_debug(point_series(i, i).style('#00ff0080', 3).size(4).filled()).regexp_extract('kind: .*')
+SELECT __plume_debug(point_series(i, i).style('#00ff0080', 3).size(4).filled()).regexp_extract('kind: .*')
 FROM range(2) r(i)
 ----
 kind: Point(PointOptions { size: 4, marker: Circle }), x: Numeric([0.0, 1.0]), y: Numeric([0.0, 1.0]), style: Style { color: Some(Color { r: 0, g: 255, b: 0, a: 0.5019607843137255 }), stroke_width: 3, filled: true }, label: None }
 
 query T
-SELECT __duckers_debug(histogram_vertical(i, 1).stroke_width(2)).regexp_extract('stroke_width: [0-9]+')
+SELECT __plume_debug(histogram_vertical(i, 1).stroke_width(2)).regexp_extract('stroke_width: [0-9]+')
 FROM range(2) r(i)
 ----
 stroke_width: 2
@@ -195,14 +195,14 @@ stroke_width: 2
 # marker picks the PointSeries element, case-insensitively.
 query T
 SELECT list_transform(['circle', 'Cross', 'TRIANGLE', 'pixel'],
-    lambda m: __duckers_debug(point_series(1, 1).marker(m)).regexp_extract('marker: [A-Za-z]+'))
+    lambda m: __plume_debug(point_series(1, 1).marker(m)).regexp_extract('marker: [A-Za-z]+'))
 ----
 ['marker: Circle', 'marker: Cross', 'marker: Triangle', 'marker: Pixel']
 
 # margin and baseline set Histogram::margin and Histogram::baseline, on both orientations.
 query TT
-SELECT __duckers_debug(histogram_vertical('a', 1).margin(0).baseline(-2.5)).regexp_extract('kind: [^)]*\)'),
-       __duckers_debug(histogram_horizontal('a', 1).margin(12).baseline(1)).regexp_extract('kind: [^)]*\)')
+SELECT __plume_debug(histogram_vertical('a', 1).margin(0).baseline(-2.5)).regexp_extract('kind: [^)]*\)'),
+       __plume_debug(histogram_horizontal('a', 1).margin(12).baseline(1)).regexp_extract('kind: [^)]*\)')
 ----
 kind: Histogram(HistogramOptions { margin: 0, baseline: -2.5, step: None })	kind: HistogramHorizontal(HistogramOptions { margin: 12, baseline: 1.0, step: None })
 
@@ -266,7 +266,7 @@ FROM range(4) r(i)
 ['SERIES(line \'0\', 2 points)', 'SERIES(line \'1\', 2 points)']
 
 query T
-SELECT list_transform(line_series(i, i, key := i % 2), lambda s: __duckers_debug(s.stroke_width(2)).regexp_extract('stroke_width: [0-9]+'))
+SELECT list_transform(line_series(i, i, key := i % 2), lambda s: __plume_debug(s.stroke_width(2)).regexp_extract('stroke_width: [0-9]+'))
 FROM range(4) r(i)
 ----
 ['stroke_width: 2', 'stroke_width: 2']
@@ -309,7 +309,7 @@ rgba(255, 0, 0, 0.25098039215686274)
 # Colour strings.
 query T
 SELECT list_transform(['red', 'BLUE_400', 'deeporange', '#123456', '#12345678', 'rgb(1, 2, 3)', 'rgba(1, 2, 3, 0.5)', 'hsl(0.5, 1, 0.5)', 'palette99:0', 'transparent'],
-    lambda c: __duckers_debug(chart().root_fill(c)).regexp_extract('fill: Color \{ ([^}]*) \}', 1))
+    lambda c: __plume_debug(chart().root_fill(c)).regexp_extract('fill: Color \{ ([^}]*) \}', 1))
 ----
 ['r: 255, g: 0, b: 0, a: 1.0', 'r: 66, g: 165, b: 245, a: 1.0', 'r: 255, g: 87, b: 34, a: 1.0', 'r: 18, g: 52, b: 86, a: 1.0', 'r: 18, g: 52, b: 86, a: 0.47058823529411764', 'r: 1, g: 2, b: 3, a: 1.0', 'r: 1, g: 2, b: 3, a: 0.5', 'r: 0, g: 255, b: 255, a: 1.0', 'r: 230, g: 25, b: 75, a: 1.0', 'r: 0, g: 0, b: 0, a: 0.0']
 
@@ -487,12 +487,12 @@ Invalid Input Error: mix alpha must be between 0 and 1, got 2
 statement error
 SELECT chart().draw_series(('abc'::SERIES))
 ----
-Invalid Input Error: draw_series: not a duckers SERIES value
+Invalid Input Error: draw_series: not a plume SERIES value
 
 statement error
 SELECT chart().draw_series(chart().configure_mesh()::BLOB::SERIES)
 ----
-Conversion Error: not a duckers SERIES value: the BLOB holds a MESH value
+Conversion Error: not a plume SERIES value: the BLOB holds a MESH value
 
 # Argument types are checked at bind time.
 statement error

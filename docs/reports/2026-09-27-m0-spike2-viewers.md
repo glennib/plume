@@ -1,7 +1,7 @@
-# M0 spike 2, standalone part: the `duckers-view` viewers
+# M0 spike 2, standalone part: the `plume-view` viewers
 
 Research date: 2026-09-27.
-Code: `crates/duckers-view` (library and `examples/show.rs`), with `minifb` 0.28.0, `png` 0.18.1, `base64` 0.22.1,
+Code: `crates/plume-view` (library and `examples/show.rs`), with `minifb` 0.28.0, `png` 0.18.1, `base64` 0.22.1,
 `libc` 0.2.189 (Unix) and `windows-sys` 0.61.2 (Windows).
 Hands-on: Arch Linux (kernel 7.2.6), Rust 1.98.1, sway 1.12
 (Wayland, Xwayland 24.1.13 on `:1`),
@@ -53,7 +53,7 @@ Calling them from a scalar function in the v2 preview CLI waits for the extensio
 
 ## The crate
 
-`duckers-view` has no DuckDB dependency.
+`plume-view` has no DuckDB dependency.
 The entry point for M3's `show()`:
 
 ```rust
@@ -81,7 +81,7 @@ pub mod settings {
   Kitty, iTerm2 and the browser need the PNG; sixel and the window need the pixels.
 - The `window` feature (default on) gates `minifb`.
   Without it the dependency tree shrinks from 43 to 14 crates on Linux, and `Viewer::Window` reports itself unavailable.
-- Settings start from `DUCKERS_VIEWER` and `DUCKERS_WAIT` on first use and hold `max_show`
+- Settings start from `PLUME_VIEWER` and `PLUME_WAIT` on first use and hold `max_show`
   (default 10, `0` shows nothing).
   An invalid environment value is not replaced by the default.
   `current()` returns an error naming the variable until `set` gives that key a valid value; other keys stay usable.
@@ -113,7 +113,7 @@ After a protocol is chosen, `/dev/tty` must open (`CONOUT$` on Windows); otherwi
 - **Konsole gets kitty graphics.**
   Konsole 26.08 drew the PNG sent with `a=T,f=100` (direct transfer) correctly, and iTerm2 too.
   The native-window report lists Konsole's kitty support as partial
-  (direct transfer only), and direct transfer is all that duckers sends.
+  (direct transfer only), and direct transfer is all that plume sends.
 - **xterm is never chosen automatically.**
   It draws sixel only when started with `-ti vt340`, and `XTERM_VERSION` does not say how it was started.
 - **VS Code's terminal and alacritty** fall to rule 6.
@@ -159,7 +159,7 @@ Not verified: kitty itself, WezTerm, iTerm2, foot, Windows Terminal.
 
 ### Design
 
-- One thread per window, named `duckers-window-N`.
+- One thread per window, named `plume-window-N`.
   The thread creates the `minifb` window, reports success or failure over a channel,
   and then redraws every 33 ms until the window is closed (title-bar button or Escape).
   X11 keeps no copy of the window contents, so the redraw loop also repairs exposed areas.
@@ -197,7 +197,7 @@ Not verified: kitty itself, WezTerm, iTerm2, foot, Windows Terminal.
 
 | # | Experiment | Result |
 |---|---|---|
-| 1 | Wayland, `wait = false`, exit after 1.5 s | sway showed `duckers chart 1` (`xdg_shell`); `show` returned in 17 ms; exit 0 after 1.54 s; window gone |
+| 1 | Wayland, `wait = false`, exit after 1.5 s | sway showed `plume chart 1` (`xdg_shell`); `show` returned in 17 ms; exit 0 after 1.54 s; window gone |
 | 2 | X11 (`WAYLAND_DISPLAY` unset), same | `xwayland` window; returned in 20 ms; exit 0 |
 | 3 | Three windows, Wayland and X11 | all three listed at once; exit 0 after 1.6 s |
 | 4 | 20 × four windows, exit after 0–90 ms, Wayland and X11 | 40 of 40 exited 0 in 114–431 ms; no stderr output; no window left |
@@ -226,7 +226,7 @@ Ways to remove it, none done here:
 ## Browser
 
 - The page is one HTML file with the PNG as a `data:` URI, scaled down to fit the browser window.
-  It is written to `duckers` in the cache directory: `$XDG_CACHE_HOME` or `~/.cache` on Linux,
+  It is written to `plume` in the cache directory: `$XDG_CACHE_HOME` or `~/.cache` on Linux,
   `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows.
   File names are `chart-<ms>-<pid>-<n>.html`, and pages older than a day are removed on the next write.
 - The opener is `xdg-open` (Linux, BSD) or `open` (macOS),

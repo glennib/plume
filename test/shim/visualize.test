@@ -1,21 +1,21 @@
 # name: test/shim/visualize.test
-# description: The VISUALIZE clause of the grammar shim, its activation per connection, and the duckers_* settings
-# group: [duckers]
+# description: The VISUALIZE clause of the grammar shim, its activation per connection, and the plume_* settings
+# group: [plume]
 
-# make test_shim points DUCKERS_SHIM at the built shim and hands the runner the core.
-require-env DUCKERS_SHIM
+# make test_shim points PLUME_SHIM at the built shim and hands the runner the core.
+require-env PLUME_SHIM
 
-require duckers
+require plume
 
 statement ok
-LOAD '${DUCKERS_SHIM}'
+LOAD '${PLUME_SHIM}'
 
 # The grammar is registered, but a connection has to switch it on. Until then VISUALIZE is an
 # ordinary word, here the implicit alias of 1, and the error is at what follows it.
 query T
 SELECT name FROM duckdb_grammar_extensions()
 ----
-duckers_visualize
+plume_visualize
 
 statement error
 SELECT 1 VISUALIZE chart()
@@ -23,7 +23,7 @@ SELECT 1 VISUALIZE chart()
 Parser Error: syntax error at or near "chart"
 
 statement ok
-SET active_grammar_extensions = ['duckers_visualize']
+SET active_grammar_extensions = ['plume_visualize']
 
 # <query> VISUALIZE <targets> is SELECT <targets> FROM (<query>).
 query T
@@ -103,49 +103,49 @@ SELECT 1 VISUALIZE chart()
 ----
 Parser Error: syntax error at or near "chart"
 
-# The duckers_* settings: NULL (unset) means the process-wide setting, which duckers_get reports.
+# The plume_* settings: NULL (unset) means the process-wide setting, which plume_get reports.
 query TTT
-SELECT current_setting('duckers_viewer'), current_setting('duckers_wait'), current_setting('duckers_max_show')
+SELECT current_setting('plume_viewer'), current_setting('plume_wait'), current_setting('plume_max_show')
 ----
 NULL	NULL	NULL
 
 statement error
-SET duckers_viewer = 'kitty'
+SET plume_viewer = 'kitty'
 ----
-Invalid Input Error: duckers_viewer: expected one of 'auto', 'terminal', 'window', 'browser', got 'kitty'
+Invalid Input Error: plume_viewer: expected one of 'auto', 'terminal', 'window', 'browser', got 'kitty'
 
 statement ok
-SET duckers_viewer = 'Browser'
+SET plume_viewer = 'Browser'
 
 query TT
-SELECT current_setting('duckers_viewer'), duckers_get('viewer')
+SELECT current_setting('plume_viewer'), plume_get('viewer')
 ----
 browser	auto
 
 statement error
-SET duckers_wait = 'maybe'
+SET plume_wait = 'maybe'
 ----
 Could not convert string 'maybe' to BOOL
 
 statement ok
-SET duckers_wait = true
+SET plume_wait = true
 
 statement error
-SET duckers_max_show = -1
+SET plume_max_show = -1
 ----
 out of range for the destination type UINT64
 
 statement ok
-SET GLOBAL duckers_max_show = 3
+SET GLOBAL plume_max_show = 3
 
 query I
-SELECT current_setting('duckers_max_show')
+SELECT current_setting('plume_max_show')
 ----
 3
 
-# With duckers_max_show = 0, show() shows nothing, so it succeeds where no viewer could work.
+# With plume_max_show = 0, show() shows nothing, so it succeeds where no viewer could work.
 statement ok
-SET duckers_max_show = 0
+SET plume_max_show = 0
 
 query T
 SELECT chart().show()::VARCHAR FROM range(3)
@@ -155,9 +155,9 @@ CHART(empty)
 CHART(empty)
 
 statement ok
-RESET duckers_max_show
+RESET plume_max_show
 
 query TTT
-SELECT current_setting('duckers_viewer'), current_setting('duckers_wait'), current_setting('duckers_max_show')
+SELECT current_setting('plume_viewer'), current_setting('plume_wait'), current_setting('plume_max_show')
 ----
 browser	true	NULL

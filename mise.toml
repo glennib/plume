@@ -1,4 +1,4 @@
-# Tool versions for working on duckers. Tasks live in the Makefile; Python packages in pyproject.toml.
+# Tool versions for working on plume. Tasks live in the Makefile; Python packages in pyproject.toml.
 [tools]
 uv = "0.12.19"
 jq = "1.8.2"

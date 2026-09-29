@@ -56,11 +56,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          # duckers.duckdb_extension is duckers.dll, libduckers.dylib or libduckers.so plus the
-          # footer; the file name must stay duckers.duckdb_extension, since DuckDB derives the
-          # entrypoint name (duckers_init_c_api_v2) from it.
-          name: duckers-${{ matrix.platform }}
-          path: build/release/duckers.duckdb_extension
+          # plume.duckdb_extension is plume.dll, libplume.dylib or libplume.so plus the
+          # footer; the file name must stay plume.duckdb_extension, since DuckDB derives the
+          # entrypoint name (plume_init_c_api_v2) from it.
+          name: plume-${{ matrix.platform }}
+          path: build/release/plume.duckdb_extension
           if-no-files-found: error
 
   # The VISUALIZE grammar shim is a C++ extension built inside DuckDB's own build against the
@@ -93,8 +93,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: duckers_visualize-${{ matrix.platform }}
-          path: build/shim/duckers_visualize.duckdb_extension
+          name: plume_visualize-${{ matrix.platform }}
+          path: build/shim/plume_visualize.duckdb_extension
           if-no-files-found: error
 
   lint:
@@ -112,4 +112,4 @@ jobs:
       - name: Bindings match the vendored headers
         run: |
           make bindings
-          git diff --exit-code crates/duckers-sys/src/bindings.rs
+          git diff --exit-code crates/plume-sys/src/bindings.rs

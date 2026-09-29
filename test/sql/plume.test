@@ -1,0 +1,23 @@
+# name: test/sql/plume.test
+# description: the extension loads and reports its version
+# group: [plume]
+
+require plume
+
+query T
+SELECT plume_version() LIKE 'v%.%.%'
+----
+true
+
+# The version matches the one the build wrote into the metadata footer.
+query T
+SELECT extension_version = plume_version()
+FROM duckdb_extensions()
+WHERE extension_name = 'plume'
+----
+true
+
+query T
+SELECT typeof(plume_version())
+----
+VARCHAR

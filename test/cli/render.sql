@@ -1,6 +1,6 @@
 -- The CLI renders custom-type values through their VARCHAR cast, in every output mode.
 .mode box
-SELECT duckers_version() LIKE 'v%' AS versioned,
+SELECT plume_version() LIKE 'v%' AS versioned,
        chart().caption('Oslo').draw_series(line_series(i, i, key := i % 2)) AS chart,
        line_series(i, i) AS series,
        point_series(i, i, key := i % 2) AS keyed

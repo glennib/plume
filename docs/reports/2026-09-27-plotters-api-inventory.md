@@ -175,7 +175,7 @@ pub fn register_font(name: &str, style: FontStyle, bytes: &'static [u8]) -> Resu
 - `FontDesc` resolves its font data when it is constructed,
   so fonts must be registered before any `FontDesc` or `TextStyle` is built.
 
-Minimal embedded-font setup, the shape used by the earlier duckers attempt:
+Minimal embedded-font setup, the shape used by the earlier plume attempt:
 
 ```toml
 plotters = { version = "0.3.7", default-features = false, features = [
@@ -874,4 +874,4 @@ Changes that affect the API or output:
 - Local sources: `~/.cargo/registry/src/index.crates.io-*/plotters-0.3.7`, `plotters-backend-0.3.7`,
   `plotters-bitmap-0.3.7`, `plotters-svg-0.3.7`, including `examples/` (`two-scales.rs`, `nested_coord.rs`,
   `histogram.rs`, `normal-dist.rs`, `boxplot.rs`, `tick_control.rs`, `3d-plot.rs`, `pie.rs`, `slc-temp.rs`, `stock.rs`)
-- The previous duckers README: `git show 3cc964dc26a1:README.md`
+- The previous plume README: `git show 3cc964dc26a1:README.md`

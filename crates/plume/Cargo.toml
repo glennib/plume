@@ -1,0 +1,15 @@
+[package]
+name = "plume"
+description = "plotters charts for DuckDB v2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+plume-chart = { path = "../plume-chart" }
+plume-sys = { path = "../plume-sys" }
+plume-view = { path = "../plume-view" }

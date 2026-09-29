@@ -15,7 +15,7 @@
 - test/show/*.test, sqllogictests run with no terminal and no display.
 
 Every process gets a scrubbed environment and a temporary HOME, so the user's terminal, display,
-DUCKERS_* variables and ~/.duckdbrc play no part and no window or browser can open.
+PLUME_* variables and ~/.duckdbrc play no part and no window or browser can open.
 The checks are Linux-only (the pty and error texts are Linux's); elsewhere the script says so and
 exits 0.
 
@@ -159,7 +159,7 @@ def check_terminal(duckdb: Path, ext: Path, tmp: Path) -> None:
 def check_max_show(duckdb: Path, ext: Path, tmp: Path) -> None:
     """max_show caps each show() call; a prepared statement keeps its count across EXECUTEs."""
     sql = (
-        "SELECT duckers_set('max_show', 2);"
+        "SELECT plume_set('max_show', 2);"
         "SELECT i, chart().show(width := 64, height := 48) AS c FROM range(5) r(i);"
         "PREPARE p AS SELECT chart().show(width := 64, height := 48) FROM range(3);"
         "EXECUTE p; EXECUTE p;"
@@ -200,7 +200,7 @@ def check_no_tty(duckdb: Path, ext: Path, tmp: Path) -> None:
 
 
 def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
-    """DUCKERS_VIEWER picks the browser; the stand-in opener receives one page per shown row."""
+    """PLUME_VIEWER picks the browser; the stand-in opener receives one page per shown row."""
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     log = tmp / "opened.txt"
@@ -212,11 +212,11 @@ def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
         PATH=f"{bin_dir}:/usr/bin:/bin",
         XDG_CACHE_HOME=str(tmp / "cache"),
         # The browser viewer only checks that a graphical session is named; the window viewer,
-        # which would connect to it, is never tried with DUCKERS_VIEWER=browser.
-        DISPLAY="duckers-test-no-such-display:0",
-        DUCKERS_VIEWER="browser",
+        # which would connect to it, is never tried with PLUME_VIEWER=browser.
+        DISPLAY="plume-test-no-such-display:0",
+        PLUME_VIEWER="browser",
     )
-    sql = "SELECT duckers_set('max_show', 2); SELECT chart().show() AS c FROM range(3)"
+    sql = "SELECT plume_set('max_show', 2); SELECT chart().show() AS c FROM range(3)"
     r = run_without_tty(cli(duckdb, ext, sql), env)
     check(r.returncode == 0, f"exit code {r.returncode}: {r.stderr!r}")
     check(b"\x1b" not in r.stdout, "stdout holds escape sequences")
@@ -232,9 +232,7 @@ def check_browser(duckdb: Path, ext: Path, tmp: Path) -> None:
     check(len(lines) == 2, f"expected 2 pages opened, got {lines}")
     for line in lines:
         page = Path(line)
-        check(
-            page.parent == tmp / "cache" / "duckers", f"page outside the cache: {page}"
-        )
+        check(page.parent == tmp / "cache" / "plume", f"page outside the cache: {page}")
         html = page.read_text(encoding="utf-8")
         m = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", html)
         check(m is not None, "the page embeds no PNG")
@@ -248,7 +246,7 @@ import duckdb
 con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 con.load_extension(sys.argv[1])
 chart, viewer = con.sql(
-    "SELECT chart().caption('python').show() AS c, duckers_get('viewer')"
+    "SELECT chart().caption('python').show() AS c, plume_get('viewer')"
 ).fetchone()
 print(type(chart).__name__, viewer, con.sql("SELECT ?::CHART::VARCHAR", params=[chart]).fetchone()[0])
 """
@@ -297,7 +295,7 @@ def check_python_auto(duckdb: Path, ext: Path, tmp: Path) -> None:
     lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
     check(len(lines) == 1, f"expected 1 page opened, got {lines}")
     page = Path(lines[0])
-    check(page.parent == tmp / "cache" / "duckers", f"page outside the cache: {page}")
+    check(page.parent == tmp / "cache" / "plume", f"page outside the cache: {page}")
     check(
         "data:image/png;base64," in page.read_text(encoding="utf-8"),
         "the page embeds no PNG",
@@ -305,13 +303,13 @@ def check_python_auto(duckdb: Path, ext: Path, tmp: Path) -> None:
 
 
 def check_headless_sql(ext: Path, tmp: Path) -> None:
-    """test/show/*.test with no terminal and no display, and invalid or set DUCKERS_* variables."""
+    """test/show/*.test with no terminal and no display, and invalid or set PLUME_* variables."""
     env = base_env(
         tmp,
         TERM="xterm-kitty",
-        DUCKERS_VIEWER="kitty",
-        DUCKERS_WAIT="yes",
-        DUCKERS_TEST_HEADLESS="1",
+        PLUME_VIEWER="kitty",
+        PLUME_WAIT="yes",
+        PLUME_TEST_HEADLESS="1",
     )
     argv = [sys.executable, "-m", "duckdb_sqllogictest", "--test-dir", "test/show"]
     argv += ["--external-extension", str(ext)]
@@ -343,14 +341,14 @@ def main() -> int:
     ]
     failed = 0
     for name, f in checks:
-        with tempfile.TemporaryDirectory(prefix="duckers-show-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="plume-show-") as tmp:
             try:
                 f(duckdb, ext, Path(tmp))
                 print(f"{name}: ok")
             except Failure as e:
                 failed += 1
                 print(f"{name}: FAILED: {e}")
-    with tempfile.TemporaryDirectory(prefix="duckers-show-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="plume-show-") as tmp:
         try:
             check_headless_sql(ext, Path(tmp))
             print("test/show: ok")

@@ -1,8 +1,8 @@
 # name: test/sql/types.test
 # description: the custom types, their casts and the value encoding
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 # typeof reports the custom type names.
 query TTTTT
@@ -76,16 +76,16 @@ SELECT chart()::BLOB::CHART::BLOB = chart()::BLOB
 ----
 true
 
-# Casting foreign bytes to a duckers type fails, and TRY_CAST gives NULL.
+# Casting foreign bytes to a plume type fails, and TRY_CAST gives NULL.
 statement error
 SELECT 'abc'::BLOB::CHART
 ----
-Conversion Error: not a duckers CHART value
+Conversion Error: not a plume CHART value
 
 statement error
 SELECT chart().configure_mesh()::BLOB::CHART
 ----
-Conversion Error: not a duckers CHART value: the BLOB holds a MESH value
+Conversion Error: not a plume CHART value: the BLOB holds a MESH value
 
 query T
 SELECT TRY_CAST('abc'::BLOB AS CHART) IS NULL
@@ -97,29 +97,29 @@ true
 statement error
 SELECT ('abc'::CHART)::VARCHAR
 ----
-Conversion Error: not a duckers CHART value
+Conversion Error: not a plume CHART value
 
 statement error
 SELECT ('abc'::CHART).caption('x')
 ----
-Invalid Input Error: caption: not a duckers CHART value
+Invalid Input Error: caption: not a plume CHART value
 
 statement error
 SELECT ('abc'::CHART).to_svg()
 ----
-Invalid Input Error: to_svg: not a duckers CHART value
+Invalid Input Error: to_svg: not a plume CHART value
 
-# Values written by an incompatible duckers name the format version.
+# Values written by an incompatible plume name the format version.
 statement error
 SELECT ('DKch'::BLOB || '\x07\x00'::BLOB)::CHART
 ----
-Conversion Error: CHART format version 7 not supported by this duckers (it reads version 4)
+Conversion Error: CHART format version 7 not supported by this plume (it reads version 4)
 
 # A CHART from before M6 (format version 3) fails the same way.
 statement error
 SELECT ('DKch'::BLOB || '\x03\x00'::BLOB)::CHART
 ----
-Conversion Error: CHART format version 3 not supported by this duckers (it reads version 4)
+Conversion Error: CHART format version 3 not supported by this plume (it reads version 4)
 
 statement error
 SELECT (chart()::BLOB || '\x00'::BLOB)::CHART

@@ -1,8 +1,8 @@
 # name: test/sql/copy.test
-# description: COPY ... TO with FORMAT png and FORMAT svg, the duckers copy functions
-# group: [duckers]
+# description: COPY ... TO with FORMAT png and FORMAT svg, the plume copy functions
+# group: [plume]
 
-require duckers
+require plume
 
 # Files go to build/test-sql/copy_*, in the directory the Makefile creates.
 

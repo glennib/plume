@@ -201,46 +201,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
-name = "duckers"
-version = "0.1.0"
-dependencies = [
- "duckers-chart",
- "duckers-sys",
- "duckers-view",
-]
-
-[[package]]
-name = "duckers-chart"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "insta",
- "plotters",
- "plotters-backend",
- "png",
- "postcard",
- "serde",
-]
-
-[[package]]
-name = "duckers-sys"
-version = "0.1.0"
-dependencies = [
- "bindgen",
-]
-
-[[package]]
-name = "duckers-view"
-version = "0.1.0"
-dependencies = [
- "base64",
- "libc",
- "minifb",
- "png",
- "windows-sys",
-]
-
-[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -700,6 +660,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "plume"
+version = "0.1.0"
+dependencies = [
+ "plume-chart",
+ "plume-sys",
+ "plume-view",
+]
+
+[[package]]
+name = "plume-chart"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "insta",
+ "plotters",
+ "plotters-backend",
+ "png",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "plume-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
+name = "plume-view"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "libc",
+ "minifb",
+ "png",
+ "windows-sys",
 ]
 
 [[package]]

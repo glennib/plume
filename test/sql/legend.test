@@ -1,8 +1,8 @@
 # name: test/sql/legend.test
 # description: the SeriesLabelStyle methods on SERIES_LABELS beyond position and the styles
-# group: [duckers]
+# group: [plume]
 
-require duckers
+require plume
 
 query T
 SELECT chart().configure_series_labels().margin(4).legend_area_size(40).label_font(14).label_font(font('serif', 10, 'italic').color('grey_700'))::VARCHAR
@@ -10,7 +10,7 @@ SELECT chart().configure_series_labels().margin(4).legend_area_size(40).label_fo
 SERIES_LABELS(margin 4px, legend_area_size 40px, label_font FONT(sans-serif, 14), label_font FONT(serif, 10, italic, #616161)) of CHART(empty)
 
 query T
-SELECT __duckers_debug(chart().configure_series_labels().margin(0).legend_area_size(12)).regexp_extract('settings: .*\] \}')
+SELECT __plume_debug(chart().configure_series_labels().margin(0).legend_area_size(12)).regexp_extract('settings: .*\] \}')
 ----
 settings: [Margin(0), LegendAreaSize(12)] }
 

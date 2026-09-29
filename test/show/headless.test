@@ -1,27 +1,27 @@
 # name: test/show/headless.test
 # description: show() where no viewer can work, and the environment defaults
-# group: [duckers]
+# group: [plume]
 
 # scripts/check_show.py runs this file on Linux with no controlling terminal and no display,
-# TERM=xterm-kitty, DUCKERS_VIEWER=kitty (invalid) and DUCKERS_WAIT=yes.
-require-env DUCKERS_TEST_HEADLESS 1
+# TERM=xterm-kitty, PLUME_VIEWER=kitty (invalid) and PLUME_WAIT=yes.
+require-env PLUME_TEST_HEADLESS 1
 
-require duckers
+require plume
 
-# An invalid DUCKERS_VIEWER is an error, not a silent fallback to 'auto', until duckers_set
+# An invalid PLUME_VIEWER is an error, not a silent fallback to 'auto', until plume_set
 # replaces it; the other keys stay usable.
 statement error
 SELECT chart().show()
 ----
-Invalid Input Error: show: environment variable DUCKERS_VIEWER='kitty' is invalid: expected one of 'auto', 'terminal', 'window', 'browser'; fix or unset it, or override it with duckers_set
+Invalid Input Error: show: environment variable PLUME_VIEWER='kitty' is invalid: expected one of 'auto', 'terminal', 'window', 'browser'; fix or unset it, or override it with plume_set
 
 statement error
-SELECT duckers_get('viewer')
+SELECT plume_get('viewer')
 ----
-Invalid Input Error: duckers_get: environment variable DUCKERS_VIEWER='kitty' is invalid
+Invalid Input Error: plume_get: environment variable PLUME_VIEWER='kitty' is invalid
 
 query TT
-SELECT duckers_get('wait'), duckers_get('max_show')
+SELECT plume_get('wait'), plume_get('max_show')
 ----
 true	10
 
@@ -42,7 +42,7 @@ SELECT chart().show(viewer := 'browser')
 IO Error: show: viewer 'browser' is unavailable: no graphical session: neither WAYLAND_DISPLAY nor DISPLAY is set
 
 query T
-SELECT duckers_set('viewer', 'auto')
+SELECT plume_set('viewer', 'auto')
 ----
 auto
 
@@ -65,7 +65,7 @@ SELECT count(*) FROM (SELECT (NULL::CHART).show() FROM range(3))
 3
 
 query T
-SELECT duckers_set('max_show', 0)
+SELECT plume_set('max_show', 0)
 ----
 0
 

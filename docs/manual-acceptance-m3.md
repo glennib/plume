@@ -42,10 +42,10 @@ FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(
 2. **One image per row, capped.**
 
    ```sql
-   SELECT duckers_set('max_show', 2);
+   SELECT plume_set('max_show', 2);
    SELECT city, chart().caption(city).draw_series(line_series(day, temp)).show(width := 320, height := 200) AS c
    FROM weather GROUP BY city;
-   SELECT duckers_set('max_show', 10);
+   SELECT plume_set('max_show', 10);
    ```
 
    Two small charts, each captioned with a city, stacked above a three-row table.
@@ -53,12 +53,12 @@ FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(
 3. **Redirected output stays clean.**
 
    ```sql
-   .once /tmp/duckers-once.txt
+   .once /tmp/plume-once.txt
    SELECT chart().show(width := 200, height := 150) AS c;
    ```
 
-   The image still appears in the terminal; `/tmp/duckers-once.txt` holds only the table
-   (`grep -c $'\e' /tmp/duckers-once.txt` prints 0).
+   The image still appears in the terminal; `/tmp/plume-once.txt` holds only the table
+   (`grep -c $'\e' /tmp/plume-once.txt` prints 0).
 
 4. **A window that does not block.**
 
@@ -68,7 +68,7 @@ FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(
    SELECT 42;
    ```
 
-   A window titled `duckers chart 1` opens with the chart; the result table and then `42` print at once,
+   A window titled `plume chart 1` opens with the chart; the result table and then `42` print at once,
    and the shell stays usable while the window is open.
    Resizing the window scales the chart, keeping its aspect ratio.
    Escape or the title-bar button closes it, and nothing is printed in the shell when it closes.
@@ -115,24 +115,24 @@ FROM (VALUES ('Oslo', 0), ('Bergen', 1), ('Tromsø', 2)) cities(city, c), range(
    ```
 
    The default browser opens a page with the chart scaled to fit, and the shell returns at once.
-   The page is in `~/.cache/duckers/` (or `$XDG_CACHE_HOME/duckers/`).
+   The page is in `~/.cache/plume/` (or `$XDG_CACHE_HOME/plume/`).
    *Agent: not run with a real browser; `make test_show_debug` checks the page with a stand-in opener.*
 
 10. **Environment defaults.**
-    Quit, then start the shell with `DUCKERS_VIEWER=window DUCKERS_WAIT=true make shell` and run
+    Quit, then start the shell with `PLUME_VIEWER=window PLUME_WAIT=true make shell` and run
 
     ```sql
     SELECT chart().show() AS c;
     ```
 
     A window opens and the shell blocks until it is closed.
-    With `DUCKERS_VIEWER=kitty make shell` the same query fails with an error naming `DUCKERS_VIEWER='kitty'`,
-    and works after `SELECT duckers_set('viewer', 'auto');`.
+    With `PLUME_VIEWER=kitty make shell` the same query fails with an error naming `PLUME_VIEWER='kitty'`,
+    and works after `SELECT plume_set('viewer', 'auto');`.
 
 11. **Native Wayland (optional build).**
-    Build with `cargo build --lib --features duckers-view/wayland && make footer_debug`, start the CLI directly
+    Build with `cargo build --lib --features plume-view/wayland && make footer_debug`, start the CLI directly
     (`make shell` would rebuild without the feature):
-    `.duckdb/v2.0.0-alpha43385/linux_amd64/duckdb -unsigned -cmd "LOAD 'build/debug/duckers.duckdb_extension'"`.
+    `.duckdb/v2.0.0-alpha43385/linux_amd64/duckdb -unsigned -cmd "LOAD 'build/debug/plume.duckdb_extension'"`.
     Run check 4 in a Wayland session and close the window:
     about 20 lines of `warning: queue ... destroyed while proxies still attached` appear in the shell.
     That warning is why the default build uses X11 only.

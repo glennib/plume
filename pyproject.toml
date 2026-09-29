@@ -1,7 +1,7 @@
 # Python environment for the tests: the DuckDB v2 preview wheel and DuckDB's sqllogictest runner.
 # `make test` syncs it with uv into .venv.
 [project]
-name = "duckers-dev"
+name = "plume-dev"
 version = "0"
 requires-python = ">=3.11"
 dependencies = [

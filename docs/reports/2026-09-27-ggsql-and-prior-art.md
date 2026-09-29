@@ -440,7 +440,7 @@ Checked against `duckdb -help`, `.help -all` and local runs of DuckDB 1.5.5.
   - `CREATE TYPE chart AS BLOB` from SQL resolves to plain `BLOB` (`typeof` returns `BLOB`).
 - So an extension controls display of a custom type by registering a cast from it to `VARCHAR`.
   There is no separate display hook: `duckdb_types()` lists types
-  but carries no rendering information. duckers' previous attempt (commit `3cc964dc`) did this through the C API
+  but carries no rendering information. plume' previous attempt (commit `3cc964dc`) did this through the C API
   (`duckdb_register_logical_type`, `duckdb_register_cast_function`);
   its commit message reports `CHART(line, 2 series, 240 points)` as the display.
 - On `v2.0-cyanoptera` (`d8a1bd4f`), duckbox calls `BoxRendererContext::CastToVarchar`,
@@ -461,7 +461,7 @@ Checked against `duckdb -help`, `.help -all` and local runs of DuckDB 1.5.5.
 - `duckdb_api` and `getenv('TERM')` would let an extension adapt its output to the CLI and terminal.
   No extension doing this was found.
 - ggsql-duckdb's sibling-connection limitation comes from re-running SQL from inside a table function.
-  An aggregate that consumes the query's rows directly, as in the duckers plan, does not need a second connection.
+  An aggregate that consumes the query's rows directly, as in the plume plan, does not need a second connection.
 
 ## Sources
 
