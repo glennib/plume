@@ -1,11 +1,11 @@
-# M3 manual acceptance: `show()`
+# Manual acceptance: `show()`
 
 The checks below need a person looking at a screen.
 Everything that can be asserted from bytes is automated in `make test_show_debug` (`scripts/check_show.py`);
 this list covers what those checks cannot see: pixels in a terminal, windows on a desktop, and the feel of the shell.
 
 Each check names the SQL to paste into the shell and what should be seen.
-Where a check was also run by the M3 agent on Linux, the result is noted;
+Where a check was also run by an agent on Linux, the result is noted;
 the agent drove the shell through a pseudo-terminal and read windows from `swaymsg -t get_tree`,
 and captured ghostty with ImageMagick's `import -window`.
 

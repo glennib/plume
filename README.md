@@ -1,67 +1,64 @@
 # plume
 
-plume is a DuckDB v2 extension for drawing charts with Rust's [plotters](https://github.com/plotters-rs/plotters) from
-SQL.
-A chart is a SQL value built with plotters' vocabulary
-(`chart().caption(...).draw_series(line_series(x, y))`),
-and output functions turn it into SVG or PNG, or show it in the terminal or a window.
-The design and roadmap are in [`plan/plume.md`](plan/plume.md);
-the research behind it is in [`docs/reports/`](docs/reports/).
+plume is a DuckDB v2 extension that draws charts from SQL with Rust's
+[plotters](https://github.com/plotters-rs/plotters).
+A chart is a SQL value built with plotters' own vocabulary, and output functions turn it into SVG or PNG,
+write it to a file, or show it in the terminal, a window or a browser.
 
-plume targets the stable DuckDB v2 C API (`v2.0.0`), so one build per platform keeps loading across DuckDB releases.
-DuckDB v2 is in preview, and plume is built and tested against a pinned preview build, `v2.0.0-alpha43385`.
-The optional `VISUALIZE` clause comes from a second, small extension, a C++ grammar shim built per DuckDB version
-([M8](#m8-visualize)).
-
-## M1: skeleton
-
-The extension loads and defines its value types.
-
-- `plume_version()` returns the extension version, e.g. `v0.1.0`.
-- The types `CHART`, `MESH`, `SERIES_LABELS`, `SERIES` and `FONT` exist.
-  Each is a custom type over `BLOB`, with casts to `VARCHAR`
-  (a one-line summary such as `CHART(line, 2 series, 240 points)`,
-  which is also how the DuckDB shell displays the value) and to and from `BLOB`.
-  Casting a `BLOB` that is not a plume value of that type fails, and `TRY_CAST` gives `NULL`.
-- Internal functions for the tests start with `__plume_`
-  (`__plume_debug(value)` prints a decoded value, `__plume_agg_probe` exercises the aggregate layer);
-  they are not part of the API and may change in any release.
-
-### Building
-
-Needed: a Rust toolchain, `make`, `jq`, `curl`, Python 3
-(for the footer script), and [uv](https://docs.astral.sh/uv/) for the tests.
-`mise install` installs the pinned versions of uv, jq, rumdl and cargo-nextest from [`mise.toml`](mise.toml).
-
-```sh
-make            # debug build: build/debug/plume.duckdb_extension
-make release    # optimised:   build/release/plume.duckdb_extension
+```sql
+SELECT chart()
+         .caption('Oslo temperature', 30)
+         .configure_mesh().x_desc('day').y_desc('°C').draw()
+         .draw_series(line_series(day, temp).style('red').label('temp'))
+         .show()
+FROM weather
+WHERE city = 'Oslo';
 ```
 
-Each build compiles the `cdylib` with cargo
-(into cargo's target directory, wherever it is configured)
-and then appends the 512-byte metadata footer DuckDB requires
-(`scripts/append_footer.py`: ABI `C_STRUCT`, C API `v2.0.0`, the platform, the extension version).
-`TARGET=<rust target triple>` cross-compiles, and the footer names the matching DuckDB platform
-(`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`, `windows_amd64`, ...).
-The output file must be called `plume.duckdb_extension`:
-DuckDB derives the entrypoint name (`plume_init_c_api_v2`) from the file name.
+![A grid of three charts: temperatures per city, articles per section, and a pie of the sections' shares](test/svg/grid.svg)
 
-### Loading
+If you know plotters, you can mostly guess the SQL: `ChartBuilder::caption` is `caption`, `LineSeries` is `line_series`,
+`MeshStyle::x_desc` is `x_desc`, and DuckDB's dot-call syntax
+(`x.f(y)` is `f(x, y)`) makes the query read like the Rust chain.
 
-plume is not signed, so DuckDB loads it only with unsigned extensions allowed:
+## Status
+
+plume is early, pre-release software.
+
+- It targets **DuckDB v2**, which is itself in preview.
+  plume is built against the stable v2 C API (`v2.0.0`), so one build per platform keeps loading across DuckDB
+  releases, and it is tested against a pinned preview build, `v2.0.0-alpha43385`.
+- There are no release binaries yet: you build it from source.
+  It is not signed, so DuckDB loads it only with unsigned extensions allowed.
+- The encoding of chart values can still change between versions.
+  A `CHART` stored in a table by one plume may fail to decode in another (with a clear error).
+- The optional `VISUALIZE` clause lives in a separate, [highly experimental shim](#the-visualize-clause-experimental).
+  Everything else in this README is the core extension and needs no shim.
+
+## Getting started
+
+### Build
+
+You need a Rust toolchain, `make`, `curl`, `jq` and Python 3.
 
 ```sh
-make shell      # the pinned preview CLI with the debug build loaded
+make release    # build/release/plume.duckdb_extension
 ```
 
-`make shell` downloads the preview CLI for the host into `.duckdb/` on first use
-and checks it against [`scripts/duckdb-cli.sha256`](scripts/duckdb-cli.sha256).
-With any other DuckDB v2 build:
+The file must keep the name `plume.duckdb_extension`: DuckDB derives the entrypoint from it.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers debug builds, cross-compiling and the tests.
+
+### Load
+
+In the DuckDB v2 shell:
 
 ```sh
 duckdb -unsigned -cmd "LOAD 'build/release/plume.duckdb_extension'"
 ```
+
+`make shell` downloads the pinned preview CLI into `.duckdb/` and starts it with a debug build loaded.
+
+In Python, with the `duckdb` v2 preview wheel (`pip install --pre duckdb`):
 
 ```python
 import duckdb
@@ -69,107 +66,89 @@ con = duckdb.connect(config={"allow_unsigned_extensions": "true"})
 con.load_extension("build/release/plume.duckdb_extension")
 ```
 
-The Python client returns plume values as `bytes`; cast them to `VARCHAR` for the summary.
-
-### Testing
-
-```sh
-make test           # everything below, on the debug build
-make test_release   # the same on the release build
-```
-
-- `make test_rust`: Rust unit tests with `cargo nextest run`.
-- `make test_sql_debug`: the sqllogictests in `test/sql/`,
-  run with DuckDB's Python sqllogictest runner against the pinned `duckdb` preview wheel.
-  `make venv` (run automatically) syncs the uv environment from `pyproject.toml` and `uv.lock`.
-- `make test_svg_debug`: SVG snapshots.
-  Each `test/svg/<name>.sql` renders a chart through the wheel
-  (after `test/svg/_setup.sql`), and the SVG must equal `test/svg/<name>.svg`.
-  `make update_svg` rewrites the expected files, to be reviewed like any other change.
-- `make test_cli_debug`: each `test/cli/<name>.sql` runs in the preview CLI and must print `test/cli/<name>.out`.
-  These cover the shell's rendering of plume values, which the Python runner cannot see.
-- `make test_show_debug`: `show()` in the preview CLI
-  (`scripts/check_show.py`, Linux only):
-  the terminal viewer in a pseudo-terminal, the browser viewer with a stand-in opener, the Python client
-  (the test venv's wheel)
-  in a pseudo-terminal and with no terminal, and the sqllogictests in `test/show/` with no terminal and no display.
-  Each process gets a scrubbed environment and a temporary `HOME`, so nothing opens on the desktop.
-- `make test_shim`: the `VISUALIZE` shim, see [M8](#m8-visualize); it builds the shim first.
-
-`make lint` runs rustfmt, clippy and ruff in check mode, and `make fmt` applies the formatters.
-CI (`.github/workflows/ci.yml`) runs the same targets on Linux (x86_64 and arm64), macOS (arm64) and Windows (x86_64).
-It also builds and tests the shim on Linux (x86_64) and macOS (arm64).
-
-### Layout
-
-- `crates/plume-sys`: raw bindings, generated by bindgen from the vendored `duckdb_extension_v2.h`
-  (`make bindings` regenerates them).
-  A loadable extension calls DuckDB through the function-pointer table the loader hands it, which this crate stores.
-- `crates/plume`: the extension.
-  `src/capi/` is a small safe layer over the C API
-  (scalar functions, aggregates, custom types, casts, vectors),
-  `src/types.rs` registers the custom types, and `src/functions/` holds the SQL functions,
-  which convert DuckDB vectors to calls on `plume-chart`.
-- `crates/plume-chart`: the chart values, their `BLOB` encoding and summaries, the series aggregates' state,
-  and the plotters renderer with the embedded font; it does not depend on DuckDB.
-- `crates/plume-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
-- `shim/`: the `VISUALIZE` grammar shim, a C++ extension built inside DuckDB's own build
-  (`make shim`); see [M8](#m8-visualize).
-- `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
-  `scripts/check_show.py`: the `show()` checks.
-- `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`, `test/shim/`: the SQL tests.
-
-## M2: first charts
-
-Charts are built with plotters' vocabulary and rendered to SVG or PNG.
-The paradigm and every name are in the [plan](plan/plume.md#the-user-api); M2 covers the following.
-
-- Series aggregates: `line_series(x, y)`, `point_series(x, y)` and `histogram_vertical(bucket, value)`
-  (plotters' `Histogram::vertical`; it sums `value` per bucket, so `histogram_vertical(x, 1)` counts rows).
-  Each takes `key := expr`, which returns a `SERIES[]` with one series per distinct key,
-  ordered by key and labelled `key::VARCHAR`, and `order_by := expr`, the drawing order within a series
-  (default: `x`, ties broken by `y`).
-  `x` is any numeric type (a continuous axis), `DATE` or any `TIMESTAMP` type (a time axis), or `VARCHAR`
-  (a category axis); a histogram bucket is `VARCHAR`, an integer or `DATE`.
-  Rows with a `NULL`, `NaN` or infinite value are skipped, and zero usable rows give an empty series.
-- Chart builder, on `CHART`: `chart()`, `caption(text [, size])`, `margin(px)`, `x_label_area_size(px)`,
-  `y_label_area_size(px)`, `x_range(lo, hi)`, `y_range(lo, hi)` (numbers, dates or timestamps; `lo > hi` reverses
-  the axis), `root_fill(color)` (plotters' `root.fill`), `draw_series(series | series[])`,
-  `configure_mesh()` and `configure_series_labels()`.
-- Mesh, on `MESH`: `x_desc(text)`, `y_desc(text)`, `draw()`.
-  Without a `configure_mesh().draw()` in the chain, plume draws the default mesh before the first series.
-- Legend, on `SERIES_LABELS`: `position(name)`, `position(x, y)`, `border_style(color [, stroke_width])`,
-  `background_style(color)`, `draw()`.
-  A chain with a labelled series and no legend call gets the default legend last.
-- Series methods, on `SERIES`: `style(color [, stroke_width])`, `stroke_width(px)`, `label(text)`, `point_size(px)`
-  (lines), `size(px)` (points), `filled()`.
-  Series without a style are coloured from `Palette99` in draw order.
-- Colours are strings: plotters' names (`'red'`), `full_palette` names (`'blue_400'`), `'#rrggbb'`, `'#rrggbbaa'`,
-  `'rgb(r, g, b)'`, `'rgba(r, g, b, a)'`, `'hsl(h, s, l)'` and `'palette99:n'`.
-  `mix(color, alpha)` mirrors `WHITE.mix(0.8)`.
-- Output: `to_svg(chart [, width, height])` returns `VARCHAR`, `to_png(chart [, width, height])` returns `BLOB`;
-  the default size is 640×480 and the maximum 8192 px per side.
-  Text is laid out with an embedded DejaVu Sans, so rendering needs no system fonts and is deterministic.
-
-`margin`, `x_label_area_size`, `y_label_area_size`, `border_style`,
-`background_style` and `mix` belong to M4's styling and are described there.
-Every scalar returns `NULL` for a `NULL` argument.
-Wrong argument types are bind errors; bad values
-(an unknown colour, `x_range(1, 1)`, series with different x axis kinds on one chart)
-are errors from the function that received them.
+### A first chart
 
 ```sql
-SELECT chart()
-         .caption('Oslo temperature', 30)
-         .y_range(-10, 30)
-         .configure_mesh().x_desc('day').y_desc('°C').draw()
-         .draw_series(line_series(day, temp).style('red').label('temp'))
-         .configure_series_labels().border_style('black').draw()
-         .to_svg(800, 600)
-FROM weather
-WHERE city = 'Oslo';
+SELECT plume_version();
 
--- One line per city; per-series styling of the list with a lambda.
+-- Render to an SVG string.
+SELECT chart().draw_series(line_series(i, i * i)).to_svg() FROM range(10) r(i);
+
+-- Write a PNG file.
+COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i)) TO 'squares.png';
+
+-- Show it in the terminal (kitty, ghostty, WezTerm, iTerm2, foot, ...), a window or a browser tab.
+SELECT chart().draw_series(line_series(i, i * i)).show() FROM range(10) r(i);
+```
+
+## How it works
+
+A few rules cover the whole API.
+The [design document](docs/design.md#the-plume-paradigm) has the full list and every name.
+
+1. **Builders are values.**
+   A chart, a mesh, a legend, a series and a font are SQL values of the types `CHART`, `MESH`, `SERIES_LABELS`,
+   `SERIES` and `FONT`.
+   Nothing is drawn until an output function such as `to_svg` or `show` runs.
+   Every method returns a new value, so the same series can be drawn on several charts.
+2. **Names are plotters names**, in snake_case, with the value as the first argument.
+   Where a DuckDB built-in takes the name, the plotters receiver qualifies it:
+   `Histogram::vertical` is `histogram_vertical`, `root.fill` is `root_fill`.
+3. **Rows become series through aggregates.**
+   `line_series(x, y)` consumes the rows of a group.
+   Rows have no order, so a series is sorted by `x` unless `order_by := expr` says otherwise.
+   `key := expr` splits one aggregate into a `SERIES[]`, one series per distinct key.
+   A chart expression in a query with `GROUP BY` gives one chart per group.
+4. **The chain is the Rust chain.**
+   `configure_mesh()` returns a `MESH`, `configure_series_labels()` a `SERIES_LABELS`,
+   and `draw()` on either returns the `CHART`.
+   Draw order is chain order: a series drawn after the mesh paints over it.
+5. **Closures become data.**
+   Where plotters takes a closure, SQL takes a value: a format string for a label formatter, a marker name, a colour.
+6. **The axis follows the data type.**
+   Numeric values make a continuous axis, `DATE` and `TIMESTAMP` a time axis, `VARCHAR` a category axis.
+7. **Defaults fill in where plotters would draw nothing.** plume infers ranges from the data, sizes the label areas,
+   draws a default mesh first, colours series from `Palette99` in draw order,
+   and draws a legend when a series has a label.
+   Every one of these can be overridden with the plotters call.
+
+Casting a plume value to `VARCHAR` gives a one-line summary, which is also how the DuckDB shell shows it:
+`CHART(line, 2 series, 240 points)`, `SERIES(dashed line '0', 4 points)`, `CHART(grid 2x2, 3 charts)`.
+
+Every scalar function returns `NULL` for a `NULL` argument.
+Wrong argument types are bind errors; bad values
+(an unknown colour, `x_range(1, 1)`, series with different x axis kinds on one chart)
+are errors from the function that received them, using plotters' terms.
+
+## Series
+
+Series are aggregates.
+Each takes `key :=` and `order_by :=`, and skips rows with a `NULL`, `NaN` or infinite value in any argument;
+zero usable rows give an empty series.
+
+| Aggregate | plotters | Notes |
+|---|---|---|
+| `line_series(x, y)` | `LineSeries` | |
+| `dashed_line_series(x, y)` | `DashedLineSeries` | |
+| `point_series(x, y)` | `PointSeries` | |
+| `area_series(x, y)` | `AreaSeries` | filled down to the baseline |
+| `histogram_vertical(bucket, value)` | `Histogram::vertical` | sums `value` per bucket; `histogram_vertical(x, 1)` counts rows |
+| `histogram_horizontal(bucket, value)` | `Histogram::horizontal` | buckets on the y axis, bars rightwards |
+| `error_bar_vertical(x, min, avg, max)` | `ErrorBar::new_vertical` | one per row |
+| `error_bar_horizontal(y, min, avg, max)` | `ErrorBar::new_horizontal` | one per row |
+| `candle_stick(x, open, high, low, close)` | `CandleStick` | one per row |
+| `boxplot_vertical(bucket, value)` | `Boxplot::new_vertical` | one per bucket, with plotters' `Quartiles` |
+| `boxplot_horizontal(bucket, value)` | `Boxplot::new_horizontal` | one per bucket |
+
+- `x` (and the key of an error bar or candle) is a number, a `DATE`, any `TIMESTAMP` type or a `VARCHAR`.
+  Histogram and boxplot buckets are `VARCHAR`, an integer or `DATE`; histograms also take `DOUBLE`,
+  `FLOAT` and `DECIMAL` buckets with [`.step(s)`](#stepped-histograms).
+- With `key := expr`, the series are ordered by key and labelled `key::VARCHAR`.
+- Boxplot whiskers are at the fences, 1.5 IQR beyond the quartiles; values past them are not drawn.
+  The first parameter is called `bucket` (plotters says `key`) because `key :=` is taken.
+
+```sql
+-- One line per city, each restyled with a lambda.
 SELECT chart()
          .draw_series(list_transform(line_series(day, temp, key := city), lambda s: s.stroke_width(2)))
          .to_png()
@@ -180,46 +159,304 @@ SELECT chart().caption('Articles per section')
          .draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
          .to_svg()
 FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
+
+-- Error bars over a line.
+SELECT chart()
+         .draw_series(line_series(i, i * i / 10).style('grey'))
+         .draw_series(error_bar_vertical(i, i * i / 10 - 1 - i % 3, i * i / 10, i * i / 10 + 2)
+                        .style('red').width(8).filled().label('measured'))
+         .to_svg()
+FROM range(11) r(i);
 ```
 
-A chart expression in a query with `GROUP BY` gives one chart per group.
+### Series methods
 
-### Writing files
+| Method | Applies to |
+|---|---|
+| `style(color [, stroke_width])`, `stroke_width(px)`, `label(text)` | every kind (except `style` on candles) |
+| `filled()` | point and line markers, histogram bars, error-bar dots, candle bodies; an area is always filled |
+| `point_size(px)` | lines (a dot at each point) |
+| `size(px)` | points; the dash length of a dashed line |
+| `spacing(px)` | dashed lines (the gap; 5 by default, as is the dash) |
+| `marker(name)` | points: `'circle'`, `'cross'`, `'triangle'` or `'pixel'` |
+| `margin(px)`, `step(s)` | histograms |
+| `baseline(v)` | histograms and areas (default 0) |
+| `border_style(color [, stroke_width])` | areas (transparent by default) |
+| `width(px)` | error bars (end marks and dot), candles (body), boxplots (box); 10 by default |
+| `gain_style(color)`, `loss_style(color)` | candles; `'green'` and `'red'` by default |
 
-Files are written with plume' copy functions, `COPY (SELECT <chart>) TO 'chart.png' (FORMAT png)` and `(FORMAT svg)`;
-see [M7](#m7-files-and-hosts).
+A method that does not apply to a series kind is an error that names the plotters term.
+Series without a style are coloured from `Palette99` in draw order.
+Legend glyphs follow the kind: a line, a dashed line, a filled rectangle for areas, a small error bar, candle or box.
 
-DuckDB's own `COPY ... (FORMAT blob)` also works,
-and is the route on DuckDB builds where the copy functions are not available, or for remote paths:
-it takes exactly one `BLOB` column (`to_png()`, or `to_svg().encode()`) and writes the bytes as they are.
-A `CHART` passes its check too (the custom type is a tagged `BLOB`), and the file then holds the encoded chart,
-not an image.
+## Charts
+
+### Chart builder
+
+On `CHART`, after plotters' `ChartBuilder` and `ChartContext`:
+
+- `chart()` starts one, and `draw_series(series | series[])` draws on it.
+- `caption(text [, size | font])`, `root_fill(color)`.
+- `margin(px)`, `margin_top`, `margin_bottom`, `margin_left`, `margin_right`.
+- `x_label_area_size(px)`, `y_label_area_size(px)`, `top_x_label_area_size(px)`, `right_y_label_area_size(px)`,
+  `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)`.
+- `x_range(lo, hi)`, `y_range(lo, hi)`: numbers, dates or timestamps; `lo > hi` reverses the axis.
+- `x_log_scale([base])`, `y_log_scale([base])`, `x_monthly()`, `x_yearly()`, `y_monthly()`, `y_yearly()`:
+  see [Axes](#axes).
+- `configure_mesh()`, `configure_series_labels()`, and the [secondary-axis](#secondary-axes) methods.
+
+### Mesh
+
+`configure_mesh()` returns a `MESH`; `draw()` returns the chart.
+Without a `configure_mesh().draw()` in the chain, plume draws the default mesh before the first series.
+The setters are `MeshStyle`'s, applied in chain order:
+
+- Descriptions and labels: `x_desc(text)`, `y_desc(text)`, `axis_desc_style(size | font)`, `x_labels(n)`,
+  `y_labels(n)`, `x_label_formatter(fmt)`, `y_label_formatter(fmt)`, `label_style(size | font)`,
+  `x_label_style(size | font)`, `y_label_style(size | font)`, `x_label_offset(px)`, `y_label_offset(px)`.
+- Lines: `x_max_light_lines(n)`, `y_max_light_lines(n)`, `max_light_lines(n)`, `light_line_style(color [, w])`,
+  `bold_line_style(color [, w])`, `axis_style(color [, w])`.
+- Switching off: `disable_x_mesh()`, `disable_y_mesh()`, `disable_mesh()`, `disable_x_axis()`, `disable_y_axis()`,
+  `disable_axes()`.
+- Ticks: `set_tick_mark_size(position, px)` (`'top'`, `'bottom'`, `'left'` or `'right'`), `set_all_tick_mark_size(px)`.
+  Offsets and tick sizes may be negative, as in plotters.
+
+### Legend
+
+`configure_series_labels()` returns a `SERIES_LABELS`; `draw()` returns the chart.
+A chain with a labelled series and no legend call gets the default legend last.
+The setters: `position(name)` (`'upper_left'`, `'upper_right'`, ...), `position(x, y)`, `margin(px)`,
+`legend_area_size(px)`, `border_style(color [, w])`, `background_style(color)`, `label_font(size | font)`.
 
 ```sql
-COPY (SELECT chart().draw_series(line_series(i, i * i)).to_png(800, 600) FROM range(10) r(i))
-TO 'squares.png' (FORMAT blob);
+SELECT chart()
+         .caption('Oslo, styled mesh', font('serif', 24, 'bold'))
+         .x_label_area_size(50).y_label_area_size(80)
+         .configure_mesh()
+           .x_desc('day').y_desc('temperature')
+           .x_label_formatter('%b %d')
+           .y_label_formatter('{:+.1f} °C')
+           .label_style(font('sans-serif', 11).color('grey_700'))
+           .light_line_style('blue_50').bold_line_style('blue_200', 1).axis_style('blue_900', 2)
+           .disable_x_mesh()
+           .draw()
+         .draw_series(line_series(day, temp).style('red', 2).label('temp'))
+         .configure_series_labels().position('upper_left').border_style('black')
+           .background_style(mix('white', 0.85)).draw()
+         .to_svg(800, 500)
+FROM weather
+WHERE city = 'Oslo';
 ```
 
-### Caveats
+### Colours and fonts
 
-- `ORDER BY` inside a series aggregate
-  (`line_series(x, y ORDER BY t)`)
-  is ignored: DuckDB v2 crashes on `ORDER BY` inside C-API aggregates
-  ([duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)), so the aggregates are declared order-independent and
-  the planner drops it.
-  Use `order_by := t`.
-- `line_series(x, y) OVER ()` crashes DuckDB (the same bug), so the series aggregates are not supported as window
-  functions until it is fixed.
-- Two plotters names clash with DuckDB built-ins that an extension cannot overload:
-  the aggregate `histogram` and the window function `fill`.
-  They are qualified with their plotters receiver: `histogram_vertical` for `Histogram::vertical`,
-  `root_fill` for `root.fill`.
-- The shell's `json` output mode prints the elements of a `SERIES[]` as raw bytes;
-  the other modes use the summary.
+- Colours are strings: plotters' names (`'red'`), `full_palette` names (`'blue_400'`), `'#rrggbb'`, `'#rrggbbaa'`,
+  `'rgb(r, g, b)'`, `'rgba(r, g, b, a)'`, `'hsl(h, s, l)'` and `'palette99:n'`.
+  `mix(color, alpha)` mirrors `WHITE.mix(0.8)`.
+- `font(family, size [, style])` returns a `FONT`
+  (`FontDesc::new`; style `'normal'`, `'bold'`, `'italic'` or `'oblique'`), and `color(font, color)` sets its colour.
+  Every text-style parameter takes a bare size (sans-serif of that size) or a `FONT`.
+- Text is laid out with an embedded DejaVu Sans, registered under every family a chart names,
+  so rendering needs no system fonts and is deterministic.
+  PNG output draws every family and style in that one regular face.
+  SVG output writes the family, size and style into the file, and the viewer draws the text with its own fonts.
 
-## M3: show
+## Axes
 
-`show()` renders a chart and hands it to a viewer: an inline image in the terminal, a native window, or a browser tab.
+### Label formatters
+
+`x_label_formatter(fmt)` and `y_label_formatter(fmt)` take a string in place of plotters' formatter closure:
+
+- On numeric, log, integer-bucket and category axes, a DuckDB `format()`-style template:
+  literal text around exactly one `{}`, with `{{` and `}}` for literal braces.
+  The placeholder takes an optional spec, `{:[[fill]align][sign][0][width][,][.precision][type]}`: `align` is `<`,
+  `>` or `^`, `sign` is `+`, `-` or a space, `,` groups thousands,
+  and `type` is `f` (fixed), `e` (exponent), `g` (general), `d` (rounded to an integer) or `%`
+  (times 100, fixed, with a percent sign).
+  A precision without a type is `g`.
+  `{}` alone is the axis' own label, so `'{} °C'` adds a unit and nothing else.
+  On a category axis only fill, alignment, width and precision apply (precision truncates the name).
+- On date, timestamp and date-bucket axes, a chrono `strftime` pattern: `'%b %d'`, `'%H:%M'`.
+
+The string is checked when it is set; whether it suits the axis is checked when the chart renders,
+with an error naming the axis kind.
+The last formatter call on an axis wins.
+
+### Log scales
+
+`x_log_scale([base])` and `y_log_scale([base])` use plotters' `LogCoord`, base 10 unless given.
+
+- Only numeric axes take a log scale, including a histogram's value axis.
+- Both bounds must be positive, whether they come from `x_range`/`y_range` or from the data.
+  A histogram's extent includes its baseline, 0 by default,
+  so bars on a log axis need `baseline(v)` with a positive value or an explicit range.
+- Labels read `1`, `100`, `0.001`, `1e6`; a label formatter applies as on a linear axis.
+
+```sql
+SELECT chart()
+         .x_log_scale().y_log_scale()
+         .draw_series(line_series(x, x * x).label('x²'))
+         .draw_series(point_series(x, x * x * x).marker('triangle').size(4).label('x³'))
+         .to_svg()
+FROM (SELECT pow(10, i / 10.0) AS x FROM range(0, 31) r(i));
+```
+
+### Monthly and yearly key points
+
+`x_monthly()` and `x_yearly()` (and `y_monthly()`, `y_yearly()`) stand for plotters' `.monthly()` and `.yearly()`:
+the axis keeps its range, and its labels and bold mesh lines fall on month or year starts.
+Only date and timestamp axes take them.
+The labels read `2024-1`, `2024-10`; a strftime formatter (`'%b'`, `'%Y'`) replaces them.
+On a histogram or boxplot with `DATE` buckets the bands stay one per day; to bin by month, bin in SQL:
+`histogram_vertical(date_trunc('month', day)::DATE, n)`.
+
+```sql
+SELECT chart().x_monthly()
+         .draw_series(line_series(DATE '2024-01-01' + i::INTEGER, 5 - 12 * cos(i / 58)).style('red'))
+         .to_svg(800, 400)
+FROM range(366) r(i);
+```
+
+### Stepped histograms
+
+Histograms with numeric buckets need `.step(s)`, which bins them into bands of width `s`
+(plotters' `(lo..hi).step(s).use_round().into_segmented()`):
+
+```sql
+SELECT chart()
+         .configure_mesh().x_label_formatter('{:.0f}').draw()
+         .draw_series(histogram_vertical(x, 1).step(5).style('teal_400').margin(1))
+         .to_svg()
+FROM measurements;
+```
+
+- Bin `k` holds the values from `k * s` up to `(k + 1) * s`, so bins start at multiples of `s` whatever the data.
+  Floating-point noise does not move a value across a bin edge: `0.3` is in the bin of `0.3` for a step of `0.1`.
+- The bands run from the lowest bin in the data to the highest, or cover `x_range(lo, hi)` when given.
+- Each band is labelled with its bin's start.
+  A line or point series drawn on a stepped axis goes to the centre of each value's bin.
+- Integer buckets can be stepped too (`histogram_vertical(age, 1).step(10)`).
+
+## Layout
+
+`chart()`, `split_evenly`, `titled` and `pie` all return a `CHART`.
+`root_fill`, `titled`, `split_evenly`, every output function and `COPY` work on any of them;
+the builder methods work only on a `chart()`, and are errors naming the method elsewhere.
+
+### Secondary axes
+
+- `draw_secondary_series(series | series[])` draws against a second coordinate system,
+  as `DualCoordChartContext::draw_secondary_series` does.
+  Its ranges are the extent of the secondary series, or `secondary_x_range(lo, hi)` and `secondary_y_range(lo, hi)`.
+  `set_secondary_coord()` exists, but these calls imply it.
+- `configure_secondary_axes()` returns a `MESH` with `SecondaryMeshStyle`'s setters: `axis_style`,
+  `x_label_offset`, `y_label_offset`, `x_labels`, `y_labels`, `x_label_formatter`, `y_label_formatter`,
+  `axis_desc_style`, `x_desc`, `y_desc`, `label_style`, `set_all_tick_mark_size` and `set_tick_mark_size`.
+- The secondary x axis must have the primary's kind; the secondary y axis can be any kind.
+- Secondary series continue the primary series' colours and share the legend.
+
+```sql
+-- Precipitation bars on the right axis, temperature on the left one.
+SELECT chart().caption('Bergen climate', 24)
+         .y_range(0, 16)
+         .configure_mesh().y_desc('°C').draw()
+         .configure_secondary_axes().y_desc('mm').y_label_formatter('{:.0f}').draw()
+         .draw_secondary_series(histogram_vertical(month, rain, order_by := m)
+                                  .style(mix('blue', 0.4)).label('precipitation'))
+         .draw_series(line_series(month, temp, order_by := m).style('red', 2).point_size(3)
+                        .label('temperature'))
+         .configure_series_labels().position('upper_left').background_style('white').draw()
+         .to_svg()
+FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211)) t(m, month, temp, rain);
+```
+
+### Grids and titles
+
+- `split_evenly(charts, rows, cols)` takes a `CHART[]` and draws the charts row-major into a grid,
+  as `DrawingArea::split_evenly((rows, cols))` does.
+  A `NULL` element is a blank cell, and so are the cells past the last chart; more charts than cells is an error.
+  `rows` and `cols` are 1 to 64, and a cell can be any chart, including another grid.
+- `titled(chart, text [, size | font])` puts a title across the top, as `DrawingArea::titled` does
+  (sans-serif 20 by default).
+- `list(chart)` over a `GROUP BY` gives one grid cell per group.
+
+```sql
+SELECT split_evenly([
+         (SELECT chart().draw_series(line_series(day, temp, key := city)) FROM weather)
+           .titled('Temperature'),
+         (SELECT chart().draw_series(histogram_vertical(section, n, order_by := -n)) FROM section_counts)
+           .titled('Articles'),
+         (SELECT pie(n, section).percentages(10) FROM section_counts)
+           .titled('Share'),
+       ], 2, 2)
+         .root_fill('grey_100')
+         .titled('Overview', 28)
+         .to_svg(800, 600);
+```
+
+### Pies
+
+`pie(size, label)` is an aggregate returning a `CHART`, one slice per row, coloured from `Palette99`.
+
+- Slices are in label order unless `order_by :=` says otherwise.
+  Rows with a `NULL`, `NaN`, infinite, zero or negative `size` are skipped.
+- Methods, after plotters' `Pie`: `start_angle(deg)`
+  (clockwise from three o'clock; `-90` starts at twelve),
+  `label_style(size | font)`, `percentages(size | font)`
+  (each slice's percentage inside it), `label_offset(px)` and `radius(px)`.
+  Without `radius` the pie takes the largest radius that keeps every label inside its area.
+- A pie has no `caption`; `titled` gives it a title.
+
+```sql
+SELECT pie(n, section, order_by := -n)
+         .start_angle(-90)
+         .percentages(font('sans-serif', 12).color('white'))
+         .to_svg()
+FROM section_counts;
+```
+
+## Output
+
+### SVG and PNG values
+
+`to_svg(chart [, width, height])` returns `VARCHAR`, `to_png(chart [, width, height])` returns `BLOB`.
+The default size is 640×480 and the maximum 8192 px per side.
+
+### Files
+
+`COPY` renders the chart and writes the file:
+
+```sql
+COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo')
+TO 'oslo.png' (FORMAT png);
+
+COPY (SELECT chart()) TO 'sized.svg' (FORMAT svg, WIDTH 300, HEIGHT 200);
+
+-- One file per group.
+COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
+TO 'cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
+```
+
+- Without `FORMAT`, DuckDB takes the format from the file extension.
+- Options: `WIDTH` and `HEIGHT` (640×480 by default), plus DuckDB's generic `COPY` options
+  (`OVERWRITE`, `FILENAME_PATTERN`, `RETURN_FILES`, ...).
+- The query gives exactly one column, of type `CHART`, and a file holds exactly one chart.
+  More rows is an error that points at `PARTITION_BY`.
+- With `PARTITION_BY`, `FILE_EXTENSION` is required
+  (the v2 C API cannot declare one, so the files would be called `data_0.`);
+  the example gives `cities/city=Bergen/data_0.png` and so on.
+- A failed `COPY` leaves no file behind, and an existing file is replaced only by a successful one.
+- **Local paths only.**
+  For remote targets (`s3://`, `https://`, ...), use DuckDB's own blob format, which goes through its file system:
+
+  ```sql
+  COPY (SELECT chart().draw_series(line_series(i, i * i)).to_png(800, 600) FROM range(10) r(i))
+  TO 's3://bucket/squares.png' (FORMAT blob);
+  ```
+
+### `show()`
+
+`show()` renders a chart and hands it to a viewer.
 It returns the chart unchanged, so it can sit anywhere in a query.
 
 ```sql
@@ -232,49 +469,27 @@ FROM (SELECT i / 20.0 AS t FROM range(126) r(i));
 
 `show(chart, viewer := ..., wait := ..., width := ..., height := ...)`:
 
-- `viewer`: `'auto'`, `'terminal'`, `'window'` or `'browser'` (case-insensitive).
-- `wait`: whether to block until the window is closed.
-  Only the window viewer can block; the others return at once either way.
-- `width`, `height`: the image size in px, 640×480 by default, at most 8192 per side.
-- A named argument left out, or passed as `NULL`, takes its default: the process-wide setting for `viewer` and `wait`,
-  640×480 for the size.
-  A `NULL` chart gives `NULL` and shows nothing.
-- A constant bad `viewer` or size is a bind error; one that comes from a column is an error at run time.
-  When no viewer can work, the query fails with the reason for each viewer tried, e.g. "IO Error: show:
-  no viewer can show the chart here: terminal: cannot open /dev/tty ...; window: no display:
-  neither WAYLAND_DISPLAY nor DISPLAY is set; browser: no graphical session: ...".
-- `show()` is volatile: it is never evaluated at plan time, and runs once per row.
+- `viewer`: `'auto'`, `'terminal'`, `'window'` or `'browser'`.
+- `wait`: block until the window is closed (the window viewer only).
+- `width`, `height`: the image size, 640×480 by default.
+- A named argument left out or `NULL` takes its default.
+  When no viewer works, the query fails with the reason for each viewer tried.
 
-### Viewers
+`'auto'` takes the first viewer that works:
 
-`'auto'` tries these in order and takes the first that works:
-
-1. **terminal**: the PNG as a kitty graphics, iTerm2 or sixel sequence, written to the controlling terminal
-   (`/dev/tty`, `CONOUT$` on Windows), never to stdout.
-   In the DuckDB shell the image appears above the result table, and output redirected with `.output`,
-   `.once` or `> file` stays free of escape sequences.
-   The protocol is chosen from environment variables only, and the terminal is never queried:
-   `TERM=xterm-kitty`/`xterm-ghostty`, Konsole and `TERM_PROGRAM=ghostty` get kitty graphics,
+1. **terminal**: an inline image (kitty graphics, iTerm2 or sixel), written to the controlling terminal,
+   never to stdout, so redirected output stays clean.
+   The protocol is picked from environment variables: kitty, ghostty and Konsole get kitty graphics,
    WezTerm and iTerm2 get iTerm2 images, foot and Windows Terminal get sixel.
-   It is unavailable inside tmux or screen, in terminals not on that list
-   (xterm, alacritty, VS Code), and without a controlling terminal.
-2. **window**: a native window ([minifb](https://github.com/emoon/rust_minifb)) on a thread of its own,
-   titled `plume chart N`, closed with the title-bar button or Escape.
-   Without `wait` the call returns once the window is up and the shell carries on;
-   the window stays until it is closed or the process exits.
-   On Linux and the BSDs it needs an X11 display (`DISPLAY`); Wayland desktops provide one through Xwayland.
+   Other terminals (xterm, alacritty, VS Code), tmux, screen, and processes without a terminal skip it.
+2. **window**: a native window titled `plume chart N`, closed with the title-bar button or Escape.
+   Without `wait` the call returns once the window is up, and the window stays until closed or the process exits.
+   On Linux it needs an X11 display (`DISPLAY`); Wayland desktops provide one through Xwayland.
 3. **browser**: a self-contained HTML page in the cache directory
-   (`$XDG_CACHE_HOME/plume` or `~/.cache/plume`, `~/Library/Caches/plume`, `%LOCALAPPDATA%\plume`),
-   opened with `xdg-open`, `open` or `ShellExecuteW`.
-   On Linux it needs a graphical session (`WAYLAND_DISPLAY` or `DISPLAY`).
+   (`~/.cache/plume`, `~/Library/Caches/plume`, `%LOCALAPPDATA%\plume`), opened with the system opener.
    Pages older than a day are removed on the next write.
 
-### Settings
-
-The defaults for `viewer` and `wait`, and the multi-row cap, are process-wide:
-a C-API extension cannot register `SET` options.
-(The `VISUALIZE` shim registers `plume_viewer`, `plume_wait` and `plume_max_show` as session settings on top,
-see [M8](#the-plume_-settings).)
+#### Settings
 
 | Key | Environment | Values | Default |
 |---|---|---|---|
@@ -282,775 +497,143 @@ see [M8](#the-plume_-settings).)
 | `wait` | `PLUME_WAIT` | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` | `false` |
 | `max_show` | | a non-negative integer | `10` |
 
-- `plume_set(key, value)` changes a setting and returns the new value; `value` may be text, a number or a boolean.
-  `plume_get(key)` returns the current value.
-  Keys and values are case-insensitive, and an invalid key or value is an error that changes nothing.
-- The environment is read the first time a setting is needed.
-  An invalid `PLUME_VIEWER` or `PLUME_WAIT` is an error from every `show()` that needs that default,
-  naming the variable, until `plume_set` gives the key a valid value.
-
 ```sql
 SELECT plume_set('viewer', 'browser');
-SELECT plume_set('max_show', 3), plume_get('wait');
+SELECT plume_get('wait');
 ```
 
-### The multi-row cap
-
-A query that shows more rows than `max_show` shows the first `max_show` it evaluates
-and still returns every row with its chart; `max_show = 0` shows nothing.
-
-- The count belongs to one `show()` call in one planned statement.
-  Two `show()` calls in the same query are capped separately.
-- Every statement run in the shell, and every `execute`, `sql` or relation fetch in the Python client,
-  is planned anew and starts from zero.
-  A statement prepared once and run many times
-  (`PREPARE` and `EXECUTE`, or a reused prepared statement in a client)
-  keeps one count across its executions,
-  so once `max_show` rows are shown it shows nothing more until it is prepared again.
-  DuckDB gives a scalar function no signal for the start of an execution; per-execution state exists,
-  but DuckDB creates and drops it per thread and task within one query, so it cannot mark a query's start either.
-- "First" means first evaluated.
-  When a query runs `show()` on several threads, which rows are shown is not determined; the number is.
-- Rows past the cap are still checked: a bad `viewer` or size in any row fails the query.
-
-### Caveats
-
-- **Ctrl-C does not close a waiting window.**
-  DuckDB gives a scalar function no way to notice an interrupt.
-  The shell returns to the prompt after the window is closed, without the interrupted result.
-- **tmux and screen** swallow inline images, so `'auto'` skips the terminal inside them and opens a window.
-- **Python** evaluates a query's `SELECT` list when the result is fetched:
-  `con.execute("SELECT plume_set('viewer', 'window')")` changes nothing until `.fetchall()` or similar,
-  and the same holds for `show()`.
-- **macOS** allows a window only on the process main thread, and nothing pumps its events once `show()` returns.
-  So the window viewer works there only with `wait := true` and only when DuckDB runs the call on the main thread,
-  which `SET threads = 1` makes likely for a small query; otherwise `'auto'` falls through to the browser.
-- **Wayland without Xwayland** has no window viewer: plume builds minifb's X11 backend only.
-  Its Wayland backend, as minifb builds it, loads the system libwayland,
-  which prints "queue ... destroyed while proxies still attached" to stderr
-  (about 20 lines, between shell prompts)
-  each time a window is closed; built without that, it would make the extension require `libxkbcommon.so.0` to load.
-  A build with the `plume-view/wayland` cargo feature
-  (`cargo build --lib --release --features plume-view/wayland && make footer_release`)
-  adds native Wayland windows with that warning.
-- The browser cannot close its tab when DuckDB exits.
-  Snap-packaged browsers cannot read `~/.cache`, so the page may not open in them.
-
-### Platforms
-
-Verified on Linux (Arch, sway with Xwayland) in the pinned preview CLI: the terminal viewer in ghostty,
-windows with and without `wait`, and exit with windows open.
-[`docs/manual-acceptance-m3.md`](docs/manual-acceptance-m3.md) lists the checks to repeat by hand.
-
-Unverified, inferred from the source and documentation:
-
-- **macOS:** the main-thread check (`pthread_main_np`), a blocking window on the main thread, `open` for the browser,
-  and iTerm2 inline images.
-  The macOS window code has not been compiled here.
-- **Windows:** the terminal viewer through `CONOUT$` (sixel in Windows Terminal 1.22 or later),
-  windows on worker threads and process exit with windows open, and `ShellExecuteW` for the browser.
-- Terminals: kitty, WezTerm, iTerm2, foot and Windows Terminal were not run at all;
-  Konsole (kitty graphics) and xterm (sixel) only with the standalone viewer example, not in the shell.
-
-## M4: styling breadth
-
-Every plotters styling call the plan lists for the builder, the mesh, the legend and the M2 series, plus fonts,
-log scales and horizontal histograms.
-The [plan](plan/plume.md#the-user-api) has the tables; M4 covers the following.
-
-- Series: `histogram_horizontal(bucket, value)`
-  (plotters' `Histogram::horizontal`: buckets on the y axis, bars rightwards from the baseline),
-  with the bucket types, `key :=` and `order_by :=` of `histogram_vertical`.
-  `marker(name)` on `point_series`: `'circle'`, `'cross'`, `'triangle'` or `'pixel'`
-  (plotters' `Circle`, `Cross`, `TriangleMarker`, `Pixel`).
-  `margin(px)` (`Histogram::margin`) and `baseline(v)` (`Histogram::baseline`) on both histograms.
-- Chart builder, on `CHART`: `margin(px)`, `margin_top(px)`, `margin_bottom(px)`, `margin_left(px)`,
-  `margin_right(px)`, `x_label_area_size(px)`, `y_label_area_size(px)`, `top_x_label_area_size(px)`,
-  `right_y_label_area_size(px)`, `set_all_label_area_size(px)`, `set_left_and_bottom_label_area_size(px)`,
-  and `x_log_scale([base])`, `y_log_scale([base])`.
-- Mesh, on `MESH`: `x_desc(text)`, `y_desc(text)`, `axis_desc_style(size | font)`, `x_labels(n)`, `y_labels(n)`,
-  `x_label_formatter(fmt)`, `y_label_formatter(fmt)`, `label_style(size | font)`, `x_label_style(size | font)`,
-  `y_label_style(size | font)`, `x_label_offset(px)`, `y_label_offset(px)`, `x_max_light_lines(n)`,
-  `y_max_light_lines(n)`, `max_light_lines(n)`, `light_line_style(color [, w])`, `bold_line_style(color [, w])`,
-  `axis_style(color [, w])`, `disable_x_mesh()`, `disable_y_mesh()`, `disable_mesh()`, `disable_x_axis()`,
-  `disable_y_axis()`, `disable_axes()`, `set_tick_mark_size(position, px)`
-  (position `'top'`, `'bottom'`, `'left'` or `'right'`), `set_all_tick_mark_size(px)` and `draw()`.
-  They apply in chain order, as the Rust chain does.
-- Legend, on `SERIES_LABELS`: `position(name)`, `position(x, y)`, `margin(px)`, `legend_area_size(px)`,
-  `border_style(color [, w])`, `background_style(color)`, `label_font(size | font)` and `draw()`.
-- Fonts: `font(family, size [, style])` returns a `FONT`
-  (`FontDesc::new`; style `'normal'`, `'bold'`, `'italic'` or `'oblique'`), and `color(font, color)` sets its colour.
-  Every text-style parameter takes a bare size,
-  meaning sans-serif of that size as plotters' `IntoTextStyle` for a `u32` does, or a `FONT`:
-  `caption(text, size | font)`, the mesh's label and description styles, and the legend's `label_font`.
-- `mix(color, alpha)` mirrors `WHITE.mix(0.8)`.
-
-`margin` is a method on `SERIES` (a histogram's bar margin), `CHART` (the builder margin) and `SERIES_LABELS`
-(the legend's padding); DuckDB picks the overload by the type of the first argument.
-Offsets and tick sizes may be negative, as in plotters.
-Methods that do not apply to a series kind
-(`marker` on a line, `baseline` on points) are errors that name the plotters term, like `point_size` and `size`.
-
-```sql
--- Shortened from test/svg/mesh_styled.sql.
-SELECT chart()
-         .caption('Oslo, styled mesh', font('serif', 24, 'bold'))
-         .x_label_area_size(50).y_label_area_size(80)
-         .configure_mesh()
-           .x_desc('day').y_desc('temperature')
-           .x_label_formatter('%b %d')
-           .y_label_formatter('{:+.1f} °C')
-           .label_style(font('sans-serif', 11).color('grey_700'))
-           .light_line_style('blue_50').bold_line_style('blue_200', 1).axis_style('blue_900', 2)
-           .disable_x_mesh()
-           .set_tick_mark_size('bottom', 8)
-           .draw()
-         .draw_series(line_series(day, temp).style('red', 2))
-         .to_svg(800, 500)
-FROM weather
-WHERE city = 'Oslo';
-
--- From test/svg/histogram_horizontal.sql: the largest bar on top, bars from 150 (counts below it go left).
-SELECT chart()
-         .caption('Articles per section', 20)
-         .y_label_area_size(70)
-         .draw_series(histogram_horizontal(section, n, order_by := n).style('teal_400').margin(2).baseline(150))
-         .to_svg()
-FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
-
--- Shortened from test/svg/log_scales.sql.
-SELECT chart()
-         .x_log_scale().y_log_scale()
-         .draw_series(line_series(x, x * x).label('x²'))
-         .draw_series(point_series(x, x * x * x).marker('triangle').size(4).label('x³'))
-         .configure_series_labels().position('upper_left').border_style('black').draw()
-         .to_svg()
-FROM (SELECT pow(10, i / 10.0) AS x FROM range(0, 31) r(i));
-
--- Shortened from test/svg/legend_styled.sql.
-SELECT chart()
-         .draw_series(line_series(day, temp, key := city))
-         .configure_series_labels()
-           .position(20, 10).margin(8).legend_area_size(40)
-           .border_style('grey_600', 2).background_style(mix('white', 0.85))
-           .label_font(font('serif', 16, 'italic').color('bluegrey_800'))
-           .draw()
-         .to_svg()
-FROM weather
-WHERE day < DATE '2024-02-01';
-```
-
-### Label formatters
-
-`x_label_formatter(fmt)` and `y_label_formatter(fmt)` take a string in place of plotters' formatter closure:
-
-- A DuckDB `format()`-style template for numeric, log, integer-bucket and category axes:
-  literal text around exactly one `{}`, with `{{` and `}}` for literal braces.
-  The placeholder takes an optional spec, `{:[[fill]align][sign][0][width][,][.precision][type]}`: `align` is `<`,
-  `>` or `^`, `sign` is `+`, `-` or a space, `,` groups thousands,
-  and `type` is `f` (fixed), `e` (exponent), `g` (general), `d` (rounded to an integer) or `%`
-  (times 100, fixed, with a percent sign).
-  A precision without a type is `g`.
-  `{}` alone is the axis' own label, as plotters writes it
-  (`2.5`, the category name, `1e6` on a log axis), so `'{} °C'` adds a unit and nothing else.
-  On a category axis only fill, alignment, width and precision apply (precision truncates the name).
-- A chrono `strftime` pattern for date, timestamp and date-bucket axes: `'%b %d'`, `'%H:%M'`.
-
-The string is checked when the formatter is set: a template must have one placeholder and a supported spec,
-and anything else must contain a strftime conversion.
-Whether it suits the axis is checked when the chart renders, since the axis kind can come from a series drawn later;
-a mismatch is an error naming the axis kind, e.g. "to_svg: x_label_formatter:
-a strftime pattern does not apply to the numeric x axis; use a format() template such as '{:.1f}'".
-The last formatter call on an axis wins, as in plotters.
-
-```sql
-SELECT chart().configure_mesh().x_label_formatter('[{}]').y_label_formatter('{:,.0f}').draw()
-         .draw_series(histogram_vertical(s, n)).to_svg()
-FROM (VALUES ('news', 1500), ('sport', 900)) t(s, n);
-```
-
-### Log scales
-
-`x_log_scale([base])` and `y_log_scale([base])` draw the axis with plotters' `LogCoord`
-(`(lo..hi).log_scale().base(base)`, base 10 unless given).
-The mapping is linear in `ln(v)` whatever the base; the base changes the key points only, as in plotters.
-
-- Only numeric axes take a log scale, including a histogram's value axis.
-  On a category, date, timestamp or integer-bucket axis it is an error naming the kind,
-  raised by the call when the axis kind is known and by `draw_series` otherwise.
-- Both bounds must be positive.
-  A bound of zero or below, from `x_range`/`y_range` or from the data, is an error when the chart renders,
-  which says where it came from and suggests the fix.
-  A histogram's extent includes its baseline, 0 by default,
-  so bars on a log axis need `baseline(v)` with a positive value or an explicit range.
-  With an explicit positive range, points at or below zero are not drawn,
-  and bars from a lower baseline start at the axis' low end.
-- Without data a log axis shows `1..base`; a single value `v` is widened to `v / base .. v * base`.
-- Labels are plotters' float printer with scientific notation (`1`, `100`, `0.001`, `1e6`) instead of `LogCoord`'s
-  `{:?}` (`1000000.0`); a label formatter applies as on a linear axis.
-
-### Fonts
-
-Every family renders with the embedded DejaVu Sans:
-plume registers it under each family any `FONT` in the chart names,
-so rendering needs no system fonts and stays deterministic.
-There is one embedded face, and plotters falls back to a family's normal face, so PNG output draws bold,
-italic and oblique text in the regular face.
-SVG output writes the family, size and style into the file
-(`font-family`, `font-size`, `font-style`),
-and the viewer draws the text with its own fonts. plotters' `FontDesc` sizes are in its own units;
-`ab_glyph` lays text out at `size / 1.24` px, the same for every plume text style.
-
-### Caveats
-
-- A horizontal histogram's first bucket is at the bottom of the y axis, which points up, as in plotters;
-  `order_by := n` puts the largest bar on top, `order_by := -n` at the bottom.
-- The default label areas (bottom 30 px, left 40 px) are sized for numbers; long category names or formatted labels
-  need `y_label_area_size`/`x_label_area_size`.
-- plotters draws the labels and axis descriptions again in the top and right label areas, and in 0.3.7 a negative
-  tick size also moves the labels and the axis line to the inner edge of the label area.
-- `set_tick_mark_size` and `set_all_tick_mark_size` take px; plotters' relative sizes (`5.percent()`) are not
-  exposed.
-- The legend glyph is 20 px wide whatever `legend_area_size` is, as in plotters' examples; below 20 px it runs into
-  the label text.
-- plotters' `Pixel` marker is one pixel, whatever `size` says.
-
-## M5: more series
-
-The rest of plotters' 2D series and elements, numeric histogram buckets with `.step(s)`,
-and monthly and yearly key points on time axes.
-The [plan](plan/plume.md#the-user-api) has the tables; M5 covers the following.
-
-- Series aggregates, each with `key :=` and `order_by :=` like the M2 ones:
-  - `area_series(x, y)`: plotters' `AreaSeries`, a filled polygon from the points down to the baseline.
-  - `dashed_line_series(x, y)`: `DashedLineSeries`.
-  - `error_bar_vertical(x, min, avg, max)` and `error_bar_horizontal(y, min, avg, max)`: one `ErrorBar` per row,
-    a line from `min` to `max` with end marks and a dot at `avg`.
-    The key (`x`, or `y` for the horizontal one) takes the types of a line's `x`: numbers, dates,
-    timestamps or categories.
-  - `candle_stick(x, open, high, low, close)`: one `CandleStick` per row.
-  - `boxplot_vertical(bucket, value)` and `boxplot_horizontal(bucket, value)`: one `Boxplot` per distinct bucket,
-    with plotters' `Quartiles` of that bucket's values
-    (whiskers at the fences, 1.5 IQR beyond the quartiles; values past them are not drawn).
-    Buckets are `VARCHAR`, an integer or `DATE`, as for histograms, on a band axis: x for the vertical one,
-    y for the horizontal one.
-    The first parameter is called `bucket` (plotters says `key`) because `key :=` is taken.
-  - Rows with a `NULL`, `NaN` or infinite value in any argument are skipped.
-    The value axis' default extent includes an area's baseline, the error bars' minima and maxima,
-    the candles' lows and highs, and the boxplots' fences.
-- Series methods, on `SERIES`:
-  - `baseline(v)` on `area_series` (default 0), as on histograms,
-    and `border_style(color [, stroke_width])` (`AreaSeries::border_style`, transparent by default).
-  - `size(px)` and `spacing(px)` on `dashed_line_series`: the dash and the gap, 5 and 5 by default.
-  - `width(px)` on error bars (the end marks; the dot's diameter), candles (the body) and boxplots (the box),
-    10 by default.
-  - `gain_style(color)` and `loss_style(color)` on `candle_stick`:
-    the colours of candles that close above their open and of the others, `'green'` and `'red'` by default.
-    `stroke_width` and `filled()` (filled bodies) apply to both; `style()` is an error naming the two.
-  - `filled()` fills error-bar dots and candle bodies.
-    An area is always filled, so `filled()` does nothing there; on a dashed line or a boxplot it is an error.
-  - `step(s)` on histograms, see below.
-- Chart builder, on `CHART`: `x_monthly()`, `x_yearly()`, `y_monthly()`, `y_yearly()`, see below.
-- Legend glyphs follow the kind: a filled rectangle for areas, a short dashed line, and a small error bar, candle
-  (in the gain colour) or box.
-
-```sql
--- From test/svg/area.sql.
-SELECT chart()
-         .caption('area_series', 20)
-         .draw_series(area_series(i, 20 + 10 * sin(i / 5))
-                        .style(mix('blue_400', 0.3)).border_style('blue_800', 2).baseline(5).label('level'))
-         .draw_series(area_series(i, 15 + 5 * cos(i / 3)).style(mix('orange', 0.5)).baseline(5).label('inflow'))
-         .configure_series_labels().position('upper_right').border_style('black').background_style('white').draw()
-         .to_svg()
-FROM range(41) r(i);
-
--- From test/svg/error_bars.sql.
-SELECT chart()
-         .draw_series(line_series(i, i * i / 10).style('grey'))
-         .draw_series(error_bar_vertical(i, i * i / 10 - 1 - i % 3, i * i / 10, i * i / 10 + 2)
-                        .style('red').width(8).filled().label('measured'))
-         .to_svg()
-FROM range(11) r(i);
-
--- Shortened from test/svg/candles.sql: daily prices on a date axis.
-SELECT chart()
-         .configure_mesh().x_label_formatter('%b %d').draw()
-         .draw_series(candle_stick(day, open, high, low, close)
-                        .gain_style('green_600').loss_style('red_600').width(9).filled())
-         .to_svg(800, 480)
-FROM (SELECT day, open, close, greatest(open, close) + 1 + i % 3 AS high, least(open, close) - 1 - i % 2 AS low
-      FROM (SELECT DATE '2024-01-01' + i::INTEGER AS day, i, round(100 + 10 * sin(i / 4)) AS open,
-                   round(round(100 + 10 * sin(i / 4)) + 3 * cos(i * 1.7)) AS close
-            FROM range(30) r(i)));
-
--- From test/svg/boxplots_horizontal.sql: one box per region, in a chosen order.
-SELECT chart()
-         .y_label_area_size(50)
-         .draw_series(boxplot_horizontal(g, v, order_by := list_position(['west', 'east', 'south', 'north'], g)).width(20))
-         .to_svg()
-FROM (SELECT g, 10 + 3 * gi + ((i * 37 + gi * 11) % 40) / 4 AS v
-      FROM (VALUES ('north', 0), ('south', 1), ('east', 2), ('west', 3)) t(g, gi), range(40) r(i)
-      UNION ALL SELECT 'east', 45);
-
--- From test/sql/more_series.test: key := splits any of them.
-SELECT dashed_line_series(i, i, key := i % 3)::VARCHAR FROM range(10) r(i);
--- ['SERIES(dashed line \'0\', 4 points)', 'SERIES(dashed line \'1\', 3 points)', ...]
-```
-
-### Stepped histograms
-
-`histogram_vertical(bucket, value)` and `histogram_horizontal` accept `DOUBLE`, `FLOAT` and `DECIMAL` buckets,
-and `.step(s)` bins them into bands of width `s`,
-standing for plotters' `(lo..hi).step(s).use_round().into_segmented()`:
-
-```sql
--- From test/svg/histogram_step.sql.
-SELECT chart()
-         .caption('histogram_vertical(x, 1).step(5)', 20)
-         .configure_mesh().x_desc('x').y_desc('count').x_label_formatter('{:.0f}').draw()
-         .draw_series(histogram_vertical(x, 1).step(5).style('teal_400').margin(1))
-         .to_svg()
-FROM (SELECT round(50 + 25 * sin(i * 0.37) * cos(i * 0.011) + 8 * sin(i * 1.3), 2) AS x FROM range(400) r(i));
-```
-
-- Bin `k` holds the values from `k * s` up to `(k + 1) * s`, so bins start at multiples of `s` whatever the data.
-  A quotient `x / s` within a relative 1e-9 of an integer counts as that integer,
-  so `0.3` is in the bin of `0.3` for a step of `0.1`, although `0.3 / 0.1` is `2.9999999999999996` in floating point.
-- The bands run from the lowest bin in the data to the highest; `x_range(lo, hi)` (or `y_range` for horizontal bars)
-  shows the bins that cover `lo..hi`.
-- Each band is labelled with its bin's start, at the band's centre, through the numeric label path:
-  plotters' number formatting (`20.0`), or `x_label_formatter`'s template (`'{:.0f}'` gives `20`).
-- A line or point series with numeric x drawn on a stepped axis goes to the centre of the bin of each x.
-- Integer buckets can be stepped too (`histogram_vertical(age, 1).step(10)`); without a step they keep one band per
-  integer.
-- Errors: numeric buckets drawn without `.step(s)` ("draw_series: histogram_vertical has numeric buckets, which need
-  .step(s) ..."), `.step(s)` on category or date buckets or on another series kind,
-  a step that is not a positive finite number, two histograms with different steps on one axis,
-  and a log scale on the stepped axis.
-
-### Monthly and yearly key points
-
-`x_monthly()` and `x_yearly()` (and `y_monthly()`, `y_yearly()`) stand for plotters' `(lo..hi).monthly()`
-and `.yearly()` (`IntoMonthly`, `IntoYearly`), the way `x_log_scale()` stands for `.log_scale()`:
-the axis keeps its range and mapping, and its key points (labels and bold mesh lines) are month or year starts.
-
-```sql
--- From test/svg/monthly.sql.
-SELECT chart()
-         .caption('x_monthly()', 20)
-         .x_monthly()
-         .draw_series(line_series(DATE '2024-01-01' + i::INTEGER, 5 - 12 * cos(i / 58)).style('red'))
-         .to_svg(800, 400)
-FROM range(366) r(i);
-
--- From test/svg/yearly.sql.
-SELECT chart().x_yearly()
-         .draw_series(line_series(TIMESTAMP '2015-01-01' + INTERVAL (m) MONTH, 100 + m + 15 * sin(m / 2)).style('purple', 2))
-         .to_svg(800, 400)
-FROM range(120) r(m);
-```
-
-- Only date and timestamp axes take them.
-  On any other axis they are an error naming the kind,
-  raised by the call when the axis kind is known and by `draw_series` otherwise, as for log scales.
-  The last scale call on an axis wins.
-- The labels are plotters' `Monthly`/`Yearly` labels: year and month, the month not padded (`2024-1`, `2024-10`).
-  A strftime `x_label_formatter` replaces them
-  (`'%b'`, `'%Y'`).
-  plotters picks fewer key points when there are too many months
-  (every quarter, half year or year), and for short ranges its light lines fall back to the daily key points.
-- On a date-bucket axis (a histogram or boxplot with `DATE` buckets) the bands stay one per day,
-  and the labels go on the bands of the days that start a month or year.
-  To bin by month, bin in SQL: `histogram_vertical(date_trunc('month', day)::DATE, n)`.
-
-### Caveats
-
-- plotters draws a boxplot's box unfilled and its lower whisker 1 px wide whatever the stroke width.
-  `Boxplot::whisker_width` and `offset` are not exposed.
-- The data extent has no padding (plotters' behaviour), so the first and last candle, error bar or box sit on the
-  plotting area's edge and are cut in half; `x_range` gives them room.
-- A boxplot stores the five numbers plotters' `Quartiles` computes per bucket, as `f32` values;
-  the raw values are not kept.
-- The value format changed (format version 3): `CHART` and `SERIES` values stored by an earlier plume do not
-  decode.
-
-## M6: layout
-
-Secondary axes, subplots and pies.
-The [plan](plan/plume.md#the-user-api) has the tables; M6 covers the following.
-
-- A `CHART` is now one of four roots, all of the same SQL type: a cartesian chart (`chart()`), a grid (`split_evenly`),
-  a titled chart (`titled`) or a pie (`pie`).
-  `typeof()` says `CHART` for each, and the summary names the root: `CHART(grid 2x2, 3 charts)`,
-  `CHART(titled 'Overview', grid 2x2, 3 charts)`, `CHART(pie, 5 slices)`.
-- `root_fill`, `titled`, `split_evenly`, `to_svg`, `to_png`, `show` and `COPY ... (FORMAT png|svg)` work on every root.
-  The `ChartBuilder` and `ChartContext` methods
-  (`caption`, `margin*`, the label areas, ranges and scales, `draw_series`,
-  `configure_*` and the secondary-axis methods) are errors on the other roots, naming the method and the root;
-  `caption` on them points at `titled`.
-
-### Secondary axes
-
-- `set_secondary_coord()` stands for plotters' `ChartContext::set_secondary_coord(x, y)`.
-  It takes no arguments: the secondary ranges are the extent of the secondary series,
-  or `secondary_x_range(lo, hi)` and `secondary_y_range(lo, hi)`, which take bounds like `x_range` and `y_range`.
-- `draw_secondary_series(series | series[])` is `DualCoordChartContext::draw_secondary_series`.
-  It, the secondary ranges and `configure_secondary_axes()` imply `set_secondary_coord()`, so a chain need not call it
-  (rule 8 of the paradigm: plotters would draw nothing without it).
-- `configure_secondary_axes()` returns a `MESH` for plotters' `SecondaryMeshStyle`; `draw()` on it returns the chart.
-  It has `SecondaryMeshStyle`'s setters: `axis_style`, `x_label_offset`, `y_label_offset`, `x_labels`, `y_labels`,
-  `x_label_formatter`, `y_label_formatter`, `axis_desc_style`, `x_desc`, `y_desc`, `label_style`,
-  `set_all_tick_mark_size` and `set_tick_mark_size`.
-  The other `MESH` methods (light and bold line styles, `disable_*`, `x_label_style`, `y_label_style`,
-  `*max_light_lines`) are errors on it naming `SecondaryMeshStyle`, which draws no mesh lines.
-- The secondary x axis has the primary's kind
-  (plotters' dual-coordinate charts share the x data in practice);
-  a mismatch is an error naming both kinds, from whichever call draws the second series.
-  The secondary y axis can be any kind the series allow: numbers, dates, timestamps, categories or buckets.
-- Defaults, as for the primary axes:
-  the secondary axes are drawn right after the primary mesh unless the chain calls
-  `configure_secondary_axes().draw()`;
-  the right label area is 40 px, and the top one too when the secondary x axis differs from the primary one,
-  unless the chain sets them (`right_y_label_area_size`, `top_x_label_area_size`, `set_all_label_area_size`);
-  a secondary x axis with neither series nor range is the primary x axis.
-- Secondary series take the next `Palette99` colours after the primary ones, in draw order,
-  and labelled ones are in the same legend.
-- The summary counts them: `CHART(histogram+line, 1 series + 1 secondary, 24 points)`.
-
-```sql
--- From test/svg/dual_axis.sql: precipitation bars on the right axis, temperature on the left one.
-SELECT chart().caption('Bergen climate', 24)
-         .y_range(0, 16)
-         .configure_mesh().y_desc('°C').draw()
-         .configure_secondary_axes().y_desc('mm').y_label_formatter('{:.0f}').draw()
-         .draw_secondary_series(histogram_vertical(month, rain, order_by := m)
-                                  .style(mix('blue', 0.4)).label('precipitation'))
-         .draw_series(line_series(month, temp, order_by := m).style('red', 2).point_size(3)
-                        .label('temperature'))
-         .configure_series_labels().position('upper_left').background_style('white')
-             .border_style('black').draw()
-         .to_svg()
-FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211), ...) t(m, month, temp, rain);
-```
-
-### Subplots: `split_evenly` and `titled`
-
-- `split_evenly(charts, rows, cols)` takes a `CHART[]` and returns a `CHART` drawn
-  as plotters' `DrawingArea::split_evenly((rows, cols))`, the charts filling the cells row-major.
-  A `NULL` element is a blank cell, and so are the cells past the last chart; more charts than cells is an error.
-  `rows` and `cols` are 1 to 64.
-  A cell can be any root, including another grid.
-- `titled(chart, text [, size | font])` is `DrawingArea::titled(text, style)`: the title across the top,
-  the chart below it.
-  plotters has no default size; plume uses sans-serif 20.
-- Each cell fills its own area with its own `root_fill`
-  (white by default); `root_fill` on the grid fills the whole area, which blank cells show.
-  The strip behind a title takes the fill of the chart it was put on, until `root_fill` on the titled chart changes it.
-- `list(chart)` over a `GROUP BY` gives the `CHART[]` for one grid cell per group.
-
-```sql
--- From test/svg/grid.sql: three titled charts and a blank cell.
-SELECT split_evenly([
-         (SELECT chart().configure_mesh().x_labels(4).draw()
-                   .draw_series(line_series(day, temp, key := city)) FROM weather)
-           .titled('Temperature'),
-         (SELECT chart().draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
-          FROM (SELECT section, count(*) AS n FROM articles GROUP BY section))
-           .titled('Articles'),
-         (SELECT pie(n, section).label_style(11).percentages(10)
-          FROM (SELECT section, count(*) AS n FROM articles GROUP BY section))
-           .titled('Share'),
-       ], 2, 2)
-         .root_fill('grey_100')
-         .titled('Overview', 28)
-         .to_svg(800, 600);
-
--- From test/sql/layout.test: one cell per group.
-SELECT split_evenly(list(c), 1, 2)::VARCHAR
-FROM (SELECT g, chart().draw_series(line_series(i, i)) AS c FROM range(4) t(i), (VALUES (1), (2)) v(g) GROUP BY g);
--- CHART(grid 1x2, 2 charts)
-```
-
-### Pies
-
-- `pie(size, label)` is an aggregate returning a `CHART` drawn as plotters' `Pie::new(center, radius, sizes, colors,
-  labels)`, one slice per row, coloured from `Palette99` in slice order.
-- The slices are in label order, ties by size, unless `order_by := expr` says otherwise; `key :=` does not apply.
-  Labels sort as their type does and are drawn as `label::VARCHAR`, the rule of `key :=`; a `NULL` label is empty.
-- Rows with a `NULL`, `NaN`, infinite, zero or negative `size` are skipped.
-- Methods on a pie `CHART`, after plotters' `Pie` setters: `start_angle(deg)`
-  (degrees clockwise from three o'clock, plotters' default 0; `-90` starts at twelve),
-  `label_style(size | font)` (plotters: sans-serif at 5% of the radius), `percentages(size | font)`
-  (draws each slice's percentage inside it, `37.9%`),
-  `label_offset(px)` (from the rim; plotters: 5% of the radius), and `radius(px)`, the `radius` argument of `Pie::new`.
-  Without `radius` the pie takes the largest radius that keeps every label inside its area, with a 10 px margin.
-- `caption` does not apply to a pie, which plotters draws without a `ChartBuilder`; `titled` gives it a title.
-
-```sql
--- From test/svg/pie.sql.
-SELECT pie(n, section, order_by := -n)
-         .start_angle(-90)
-         .label_style(14)
-         .percentages(font('sans-serif', 12).color('white'))
-         .to_svg()
-FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
-```
-
-### Caveats
-
-- The secondary axes have no scale calls: they are linear (or time, band and category axes by the data), without
-  `secondary_x_log_scale` or monthly key points.
-- plotters' `Pie::donut_hole` is not exposed, nor per-slice colours; the slices take the `Palette99` colours.
-- plotters draws the pie straight onto the backend, so an explicit `radius` too large for the area draws past it,
-  over neighbouring grid cells.
-- `titled` puts the title in a strip as high as the text plus up to 10 px, as plotters does; there is no margin
-  setting for it.
-- The value format changed (format version 4): values stored by an earlier plume do not decode.
-
-## M7: files and hosts
-
-### Writing files: `FORMAT png` and `FORMAT svg`
-
-`COPY` writes a chart to a file with plume' copy functions.
-The query gives the `CHART` itself, and the copy function renders it, exactly as `to_png()` and `to_svg()` would:
-
-```sql
-COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo')
-TO 'oslo.png' (FORMAT png);
-
-COPY (SELECT chart()) TO 'sized.svg' (FORMAT svg, WIDTH 300, HEIGHT 200);
-
--- Without FORMAT, DuckDB takes the format from the file extension (in any case).
-COPY (SELECT chart().draw_series(line_series(i, i * i)) FROM range(10) r(i)) TO 'squares.png';
-```
-
-- Options: `WIDTH` and `HEIGHT`, integer px, 640×480 by default and at most 8192 per side; either can be left out.
-  Any other option (`COMPRESSION`, a misspelling) is a binder error naming it.
-  DuckDB's generic `COPY` options (`OVERWRITE`, `FILENAME_PATTERN`, `FILE_EXTENSION`, `RETURN_FILES`, ...) work as
-  for any format.
-- The query must give exactly one column, of type `CHART`.
-  Anything else is a binder error naming the columns or the type; a `BLOB` or `VARCHAR` column
-  (the result of `to_png()` or `to_svg()`) gets a hint to pass the chart itself.
-- **One chart per file.** A file receives exactly one row.
-  A second row is an error ("a file holds one chart, and the query gave more than one row for '...';
-  use PARTITION_BY to write one file per group, or one COPY per chart"), zero rows is "no chart to write to '...'",
-  and a `NULL` chart is an error too.
-- **Local files only.**
-  The C API gives a copy function a path but no file system,
-  so plume writes the file itself with the operating system's file API.
-  Remote paths (`s3://`, `https://`, ...) are a binder error; `file://` paths are local and work.
-  For a remote target, write `to_png()`
-  (or `to_svg().encode()`) with `FORMAT blob`, which goes through DuckDB's file system.
-- A failed `COPY` leaves no file behind:
-  plume writes the file only once the chart has rendered and removes a partial write,
-  and DuckDB removes the files and directories the statement had already created.
-  An existing file is replaced only by a successful `COPY`
-  (DuckDB writes to `tmp_<name>` first, which is the name error messages then show).
-- The formats are called `png` and `svg`.
-  Neither DuckDB nor the extensions it knows of
-  (its list of extension formats and file suffixes) use either name, so they do not clash.
-
-### One file per group: `PARTITION_BY`
-
-`PARTITION_BY` writes one file per partition, with one chart each:
-
-```sql
-COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
-TO 'cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
-```
-
-gives `cities/city=Bergen/data_0.png`, `cities/city=Oslo/data_0.png` and `cities/city=Troms%C3%B8/data_0.png`
-(DuckDB percent-encodes partition values).
-
-`FILE_EXTENSION` is required.
-DuckDB names partition files `data_<n>.<extension>` with an extension the copy function declares,
-and the v2 C API has no way to declare one,
-so without the option the name would be `data_0.` with a bare dot. plume refuses that name before anything is written:
-"the file name 'cities/city=Bergen/data_0.' has no extension; with PARTITION_BY,
-add FILE_EXTENSION 'png' to the COPY options to get data_0.png".
-`FILENAME_PATTERN`, `OVERWRITE` and `WRITE_PARTITION_COLUMNS` behave as for DuckDB's own formats;
-with `WRITE_PARTITION_COLUMNS` the query has two columns, which is an error.
-A partition with two rows fails the whole `COPY`, and DuckDB removes what it had written.
-
-The rows are rendered on whichever threads DuckDB runs the copy on; each file is written once, by one thread.
-
-### Python
-
-The Python client returns plume values as `bytes`: a `CHART` from `fetchone()` is the encoded chart,
-`to_png()` gives the PNG bytes and `to_svg()` a `str`.
-Cast to `VARCHAR` for the summary.
-
-`show()` picks its viewer as in the shell:
-
-- In a Python REPL run from a terminal, the process has a controlling terminal (`/dev/tty`),
-  so `'auto'` draws inline in a terminal that supports images (kitty, ghostty, WezTerm, ...),
-  and opens a window elsewhere.
-- In Jupyter the kernel runs in a session of its own with no controlling terminal
-  (jupyter_client starts kernels that way),
-  so `'auto'` opens a window where there is a display and falls through to the browser otherwise.
-  A kernel on a remote machine opens them on that machine, where nobody sees them.
-
-The Python client has no display hook for custom types, so a `CHART` cannot render itself in a notebook cell.
-Inline display goes through `to_png()` or `to_svg()` and IPython's display classes:
-
-```python
-from IPython.display import Image, SVG
-
-Image(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_png() FROM range(10) r(i)").fetchone()[0])
-SVG(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_svg() FROM range(10) r(i)").fetchone()[0])
-```
-
-`make test_show_debug` runs the Python client from the test venv in a pseudo-terminal
-(the terminal viewer draws)
-and with no controlling terminal and no working display
-(`'auto'` falls through to the browser); Jupyter itself was not run.
-
-### R and Node (unverified)
-
-Neither was run: DuckDB v2 has an R build on r-universe (`duckdb.2.0.dev`) but no Node build yet.
-From how the clients treat `BLOB`s and how `show()` probes, expect:
-
-- Values come back as the client's blob type
-  (in R a `blob` column, a list of raw vectors); `to_svg()` comes back as a string.
-  Display in a notebook or IDE goes through the same route as in Python:
-  `to_png()` or `to_svg()` into the host's image display
+The settings are process-wide, since an extension built on the C API cannot register `SET` options
+(the experimental shim adds [`SET` options](#settings-with-set) on top).
+The environment is read the first time a setting is needed.
+
+`max_show` caps how many rows of one query open a viewer: the first `max_show` rows evaluated are shown,
+and every row still returns its chart.
+The count belongs to one `show()` call in one planned statement;
+a prepared statement run many times keeps one count across its executions.
+
+## Hosts
+
+- **Python** returns plume values as `bytes`: a `CHART` is the encoded chart,
+  `to_png()` gives PNG bytes and `to_svg()` a `str`.
+  Cast to `VARCHAR` for the summary.
+  Python evaluates the `SELECT` list when the result is fetched,
+  so `show()` and `plume_set()` act on `.fetchall()` or similar, not on `execute`.
+- **Jupyter** kernels have no controlling terminal, so `show()` opens a window or a browser tab
+  (on the kernel's machine).
+  For inline display, pass `to_png()` or `to_svg()` to IPython:
+
+  ```python
+  from IPython.display import Image, SVG
+
+  Image(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_png() FROM range(10) r(i)").fetchone()[0])
+  SVG(con.sql("SELECT chart().draw_series(line_series(i, i * i)).to_svg() FROM range(10) r(i)").fetchone()[0])
+  ```
+
+- **R and Node** have not been tried.
+  Values should come back as the client's blob type, and the same `to_png()`/`to_svg()` route applies
   (for instance `IRdisplay::display_png()` in an R Jupyter kernel).
-- `show()` in R or Node started from a terminal can use the terminal viewer;
-  in RStudio, an R Jupyter kernel or a Node process without a terminal, `'auto'` goes to a window or the browser.
-- `COPY ... (FORMAT png)` behaves the same in every client, since the engine runs it.
+  `COPY` behaves the same everywhere, since the engine runs it.
 
-## M8: VISUALIZE
+## Platforms
 
-The `VISUALIZE` clause, from the grammar shim `plume_visualize`: a second extension, in C++,
-that adds the clause to DuckDB's parser, registers the `plume_*` settings, and loads the core.
+CI builds and tests the core on Linux (x86_64 and arm64), macOS (arm64) and Windows (x86_64).
+`show()` has been verified by hand on Linux (sway with Xwayland, ghostty).
+On macOS and Windows its behaviour is inferred from source and documentation and not yet confirmed:
+[`docs/manual-acceptance-show.md`](docs/manual-acceptance-show.md) lists the checks.
+
+## Limitations
+
+- **`ORDER BY` inside a series aggregate is ignored**
+  (`line_series(x, y ORDER BY t)`),
+  and **`line_series(x, y) OVER ()` crashes DuckDB**: both are the same DuckDB v2 bug with C-API aggregates
+  ([duckdb#26109](https://github.com/duckdb/duckdb/issues/26109)).
+  Use `order_by := t`.
+- **Ctrl-C does not close a waiting window**, since DuckDB gives a scalar function no way to notice an interrupt.
+- **macOS** allows windows only on the main thread, so the window viewer works there only with `wait := true` when
+  DuckDB runs the call on the main thread (`SET threads = 1` makes that likely); otherwise `'auto'` goes to the
+  browser.
+- **Wayland without Xwayland** has no window viewer by default.
+  Native Wayland windows are a build option
+  (see [CONTRIBUTING.md](CONTRIBUTING.md#building));
+  they make the Wayland client library print "queue ... destroyed
+  while proxies still attached" to stderr each time a window closes.
+- The browser cannot close its tab when DuckDB exits, and snap-packaged browsers cannot read `~/.cache`.
+- The shell's `json` output mode prints the elements of a `SERIES[]` as raw bytes.
+- The default label areas are sized for numbers: long category names or formatted labels need
+  `x_label_area_size`/`y_label_area_size`.
+- A horizontal histogram's first bucket is at the bottom, as in plotters:
+  `order_by := n` puts the largest bar on top.
+- The data extent has no padding (plotters' behaviour), so the outer candles, error bars and boxes are cut in half
+  at the edge; `x_range` gives them room.
+- Not exposed: plotters' relative tick sizes (`5.percent()`), `Boxplot::whisker_width` and `offset`,
+  `Pie::donut_hole`, per-slice colours, scale calls on secondary axes, and grouped bars.
+- plotters draws a boxplot's box unfilled, the `Pixel` marker as one pixel whatever its size, and an explicit pie
+  `radius` past its area.
+
+## The `VISUALIZE` clause (experimental)
+
+> [!WARNING]
+> The `VISUALIZE` shim is **highly experimental and unstable**.
+> It is built on DuckDB v2's grammar-extension API, which is still changing, and it may change or break at any time.
+> It loads only into the exact DuckDB build it was compiled for, there are no binaries,
+> and building it compiles DuckDB from source.
+> Nothing in the core depends on it: every example above works without it.
+
+`plume_visualize` is a second, small extension in C++ that adds a `VISUALIZE` clause to DuckDB's parser:
 
 ```sql
-LOAD 'build/debug/plume.duckdb_extension';
-LOAD 'build/shim/plume_visualize.duckdb_extension';
-SET active_grammar_extensions = ['plume_visualize'];
-
 SELECT day, temp FROM weather WHERE city = 'Oslo'
 VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
 ```
 
-### The clause
+`<query> VISUALIZE <targets>` means `SELECT <targets> FROM (<query>)`, and `VISUALISE` is the same word.
+It adds no functions of its own.
 
-`<query> VISUALIZE <target list>` is `SELECT <target list> FROM (<query>)`; `VISUALISE` is the same word.
+- The query is any `SELECT`, with CTEs, `GROUP BY`, `ORDER BY`, `LIMIT` or set operations.
+  The series aggregates in the chart expression consume its rows,
+  and they sort by `x` whatever the query's `ORDER BY` says.
+- It is a statement suffix: `EXPLAIN` and `PREPARE` take it, but a subquery, a view body and `COPY (...) TO` do not.
+- While the grammar is active, `visualize` and `visualise` are reserved words and need quotes as bare identifiers.
 
-- The target list is one or more expressions with optional aliases, usually one chart expression ending in `show()`,
-  `to_svg()` or `to_png()`.
-  The query is any `SELECT`: with CTEs, `ORDER BY`, `LIMIT`, set operations.
-  `GROUP BY` belongs to the query, and the series aggregates in the chart expression consume the query's rows:
+### Using it
 
-  ```sql
-  SELECT section, count(*) AS n FROM articles GROUP BY section
-  VISUALIZE chart().draw_series(histogram_vertical(section, n, order_by := -n)).to_svg();
-  ```
-
-- It is a statement suffix.
-  `EXPLAIN` and `PREPARE` take a statement with it; a subquery, a view body and `COPY (...) TO` do not,
-  so a file is written with `COPY (SELECT chart()... FROM ...) TO 'f.png'` as before.
-- An `ORDER BY` before `VISUALIZE` does not order the drawing: the series aggregates sort by `x` unless `order_by :=`
-  says otherwise, as anywhere else.
-
-### Switching it on
-
-DuckDB activates grammar extensions per connection:
+Build it with `make shim` (it needs `cmake`, `git` and a C++17 compiler, and compiles DuckDB the first time), then,
+in the pinned preview DuckDB (`v2.0.0-alpha43385`) with unsigned extensions allowed:
 
 ```sql
-SET active_grammar_extensions = ['plume_visualize'];   -- on
-RESET active_grammar_extensions;                          -- off
+LOAD 'build/shim/plume_visualize.duckdb_extension';
+SET active_grammar_extensions = ['plume_visualize'];
 ```
 
-`~/.duckdbrc` is the place for the shell.
-`duckdb_grammar_extensions()` lists the registered grammars.
-While the grammar is active, `visualize` and `visualise` are reserved words: `SELECT 1 AS visualize` is fine,
-but as a bare identifier they need quotes (`"visualize"`).
-The shim does not switch itself on: the setting is local to a connection by DuckDB's design,
-and the extension entrypoint has no connection to set it on.
+`make shell_shim` does all of this.
+Loading the shim loads the core too, from the `plume.duckdb_extension` next to it or the installed one.
+The grammar is switched on per connection, and `RESET active_grammar_extensions` switches it off;
+`~/.duckdbrc` is the place to switch it on for the shell.
+Any other DuckDB build refuses the shim with a version mismatch.
+It has been run on Linux (x86_64), CI tests it on macOS (arm64) too, and Windows has not been tried.
 
-### Loading
+### Settings with `SET`
 
-Loading the shim loads the core when it is not loaded yet: the `plume.duckdb_extension` next to the shim's own file,
-or else the installed extension of that name.
-Without either the `LOAD` fails and names both places.
-Loading the core first, by any path, works too.
-
-Both are unsigned, so DuckDB needs `-unsigned` or `allow_unsigned_extensions`, as for the core.
-The shim loads only into the exact DuckDB version it was built for
-(`v2.0.0-alpha43385`, the pinned preview); any other DuckDB refuses it with a version mismatch.
-The core is not tied to a version.
-
-```sh
-make shell_shim     # the preview CLI with the debug core and the shim loaded, and the grammar active
-```
-
-### The `plume_*` settings
-
-The shim registers three settings, which `show()` reads when a query is bound:
+The shim registers session settings for `show()`,
+which take precedence over the process-wide ones while `show()`'s named arguments take precedence over both:
 
 | Setting | Type | Values |
 |---|---|---|
-| `plume_viewer` | `VARCHAR` | `auto`, `terminal`, `window`, `browser` (case-insensitive) |
+| `plume_viewer` | `VARCHAR` | `auto`, `terminal`, `window`, `browser` |
 | `plume_wait` | `BOOLEAN` | |
 | `plume_max_show` | `UBIGINT` | `0` shows nothing |
-
-- Each defaults to `NULL`, which means the process-wide setting of [M3](#settings)
-  (`plume_set`, `PLUME_VIEWER`, `PLUME_WAIT`), so loading the shim changes nothing until a `SET`.
-- A value set with `SET` (or `SET GLOBAL`) takes precedence over the process-wide setting, and `show()`'s named
-  parameter over both; `RESET` returns to the process-wide one.
-- A bad value fails at `SET` time: `SET plume_viewer = 'kitty'` is an error naming the four viewers,
-  a non-boolean or negative value fails the cast to the setting's type.
-- `current_setting('plume_viewer')` reads the session's value;
-  `plume_get('viewer')` keeps reporting the process-wide one.
-  `duckdb_settings()` lists the three with their descriptions.
-  One DuckDB wrinkle: after `RESET` of a value that was set with `SET GLOBAL`,
-  `current_setting` reports the option as unrecognized until the next `SET`,
-  since DuckDB drops a `NULL`-default option's value on a global reset;
-  `show()` and `duckdb_settings()` read it as unset.
-- A prepared statement reads the settings when it is prepared, like the rest of its bind.
 
 ```sql
 SET plume_viewer = 'browser';
 SET plume_max_show = 3;
-SELECT chart().draw_series(line_series(day, temp)).show() FROM weather GROUP BY city;
 ```
 
-### Building the shim
+Each defaults to `NULL`, meaning the process-wide setting, so loading the shim changes nothing until a `SET`,
+and `RESET` goes back.
+`plume_get` keeps reporting the process-wide value; `current_setting('plume_viewer')` reads the session's.
 
-A DuckDB v2 loadable C++ extension links DuckDB statically and hides its symbols
-(the release binaries export nothing an extension could resolve against),
-so the shim is built inside DuckDB's own CMake build against the pinned source, and only that DuckDB loads it.
+## Further reading
 
-```sh
-make shim           # build/shim/plume_visualize.duckdb_extension
-make test_shim      # the shim tests, on the debug core
-```
-
-- `make shim` fetches the pinned DuckDB commit into `.duckdb/v2.0.0-alpha43385/src`
-  (one commit, sparse and without unneeded blobs: about 40 MB),
-  configures the build in `build/shim/cmake` with `EXTENSION_STATIC_BUILD`, DuckDB's own version string,
-  its `EXTENSION` optimisation profile
-  (the x86-64-v2 baseline of DuckDB's distributed extensions),
-  and `shim/extension_config.cmake` as the extension config, and builds only the loadable extension target,
-  without the shell, the tests, parquet and jemalloc.
-  Compiling DuckDB takes a while the first time; the build directory is kept, and ccache or sccache on `PATH` is used.
-- Needed on top of the core's tools: `cmake`, `git` and a C++17 compiler.
-  `SHIM_CMAKE_FLAGS='-G Ninja'` picks a generator, `SHIM_JOBS=n` the parallelism.
-- `shim/src/plume_visualize_extension.cpp` is the whole shim: the grammar change
-  (`SelectStatement <- SelectStatementInternal VisualizeClause?`, the same for `EXPLAIN`'s own select rule,
-  both keywords reserved), its transform, the settings and the core loader;
-  `shim/CMakeLists.txt` and `shim/extension_config.cmake` plug it into DuckDB's build.
-- `make test_shim` runs `test/shim/*.test` through the wheel (the core registered, the shim loaded by path),
-  and `test/shim/cli.sql` in the preview CLI with only the shim loaded, which loads the core from the copy the
-  Makefile puts next to it.
-- When the pinned DuckDB moves, the shim is rebuilt against the new commit (`DUCKDB_SOURCE_COMMIT` in the Makefile)
-  and its grammar and transform are checked against the grammar-extension API, which may still change before v2.0 GA.
-
-### Platforms
-
-Verified on Linux (x86_64) in the pinned preview CLI and the wheel.
-CI builds and tests the shim on Linux (x86_64) and macOS (arm64).
-Windows is not tried: DuckDB's build supports static extension builds with MSVC,
-and the shim's own code has a Windows path (the module handle in place of `dladdr`), but nothing has been run there.
+- [`docs/design.md`](docs/design.md): the paradigm, the full API tables, and the decisions behind them.
+- [`docs/reports/`](docs/reports/): the research on DuckDB v2's C API, parser extensibility, plotters and prior art.
+- [CONTRIBUTING.md](CONTRIBUTING.md): building, testing and the code layout.

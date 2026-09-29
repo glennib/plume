@@ -130,7 +130,7 @@ shell_shim: debug shim $(DUCKDB)
 	$(DUCKDB) -unsigned -cmd "LOAD '$(DEBUG_EXTENSION)'" -cmd "LOAD '$(SHIM_EXTENSION)'" \
 		-cmd "SET active_grammar_extensions = ['$(SHIM_NAME)']"
 
-# The VISUALIZE grammar shim (M8): a C++ grammar extension for DuckDB's PEG parser, built inside
+# The VISUALIZE grammar shim: a C++ grammar extension for DuckDB's PEG parser, built inside
 # DuckDB's own CMake build against the pinned source. A v2 C++ extension links DuckDB statically and
 # loads only into the exact DuckDB version it was built from, so unlike the core it is rebuilt per
 # DuckDB version. Needs cmake, git and a C++17 compiler; the DuckDB build takes a while the first

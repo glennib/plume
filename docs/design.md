@@ -1,4 +1,4 @@
-# Plan: plume, plotters charts for DuckDB v2
+# plume design: plotters charts for DuckDB v2
 
 plume lets SQL users draw charts with Rust's [`plotters`](https://github.com/plotters-rs/plotters) from inside DuckDB
 v2, see them inline in the terminal or in a window, and write them as SVG or PNG.
@@ -6,16 +6,16 @@ Its API mirrors plotters, so a plotters user who knows the rules in [The plume p
 write the SQL for a chart without a reference.
 A `VISUALIZE` clause is optional sugar on top and comes last (see [The `VISUALIZE` clause](#the-visualize-clause)).
 
-This document decides the user API and the behaviour, and lays out the roadmap.
-The research behind it is in [`docs/reports/`](../docs/reports/):
+This document decides the user API and the behaviour.
+The research behind it is in [`reports/`](reports/):
 
-- [C API from Rust](../docs/reports/2026-09-27-duckdb-v2-c-api-from-rust.md) and
-  [parser extensibility](../docs/reports/2026-09-27-duckdb-v2-parser-extensibility.md): the two-extension split.
-- [v2 preview builds and C API details](../docs/reports/2026-09-27-duckdb-v2-preview-and-capi-details.md):
+- [C API from Rust](reports/2026-09-27-duckdb-v2-c-api-from-rust.md) and
+  [parser extensibility](reports/2026-09-27-duckdb-v2-parser-extensibility.md): the two-extension split.
+- [v2 preview builds and C API details](reports/2026-09-27-duckdb-v2-preview-and-capi-details.md):
   what the v2 C API can and cannot do, verified with a probe extension.
-- [plotters API inventory](../docs/reports/2026-09-27-plotters-api-inventory.md): every name the SQL API mirrors.
-- [Native window display](../docs/reports/2026-09-27-native-window-display.md): how a chart reaches the user.
-- [ggsql and prior art](../docs/reports/2026-09-27-ggsql-and-prior-art.md): what others chose.
+- [plotters API inventory](reports/2026-09-27-plotters-api-inventory.md): every name the SQL API mirrors.
+- [Native window display](reports/2026-09-27-native-window-display.md): how a chart reaches the user.
+- [ggsql and prior art](reports/2026-09-27-ggsql-and-prior-art.md): what others chose.
 
 ## Goals and non-goals
 
@@ -24,14 +24,13 @@ Goals:
 - Every 2D chart plotters can draw is reachable from SQL, in the same vocabulary.
 - Output as SVG (`VARCHAR`) and PNG (`BLOB`), files through `COPY`, and a `show()` that opens a viewer.
 - The extension is built once per platform against the stable v2 C API and keeps loading across DuckDB releases.
-- Each milestone ships something usable on its own.
 
 Non-goals:
 
 - A grammar-of-graphics layer (ggsql, ggplot).
   SQL does the statistics and reshaping; plume only draws rows.
 - Interactivity (zoom, hover). plotters is a static renderer.
-- 3D charts. plotters supports them and they can be added later, but they are not on the roadmap.
+- 3D charts. plotters supports them and they can be added later, but they are not planned.
 - Theming systems beyond what plotters exposes.
 
 ## The plume paradigm
@@ -336,7 +335,7 @@ The pie methods are errors on the other roots.
 | `to_png(chart [, width, height])` | `BitMapBackend::with_buffer` + PNG encoding | `BLOB` |
 | `show(chart, viewer := ..., wait := ..., width := ..., height := ...)` | | shows the chart, see [Display](#display); returns the `CHART` |
 | `plume_set(key, value)`, `plume_get(key)` | | set or read a process-wide `show()` default, see [Display](#display); `VARCHAR` |
-| `COPY (SELECT chart ...) TO 'f.png' (FORMAT png, WIDTH w, HEIGHT h)`, `(FORMAT svg)` | `BitMapBackend::new(path)`, `SVGBackend::new(path)` | one file per chart, one chart per file (M7) |
+| `COPY (SELECT chart ...) TO 'f.png' (FORMAT png, WIDTH w, HEIGHT h)`, `(FORMAT svg)` | `BitMapBackend::new(path)`, `SVGBackend::new(path)` | one file per chart, one chart per file |
 
 The default size is 640×480 and the maximum 8192 px per side.
 Rendering is deterministic: the same chart value renders to the same bytes, which the tests rely on.
@@ -384,7 +383,7 @@ Behaviour:
   and can be changed in a session with `plume_set('viewer', 'browser')`, which returns the new value;
   `plume_get('viewer')` reads one.
   They are process-wide because a v2 C-API extension cannot register `SET` options.
-  The grammar shim (M8) registers `plume_viewer`, `plume_wait` and `plume_max_show` as real options,
+  The grammar shim registers `plume_viewer`, `plume_wait` and `plume_max_show` as real options,
   which `show()` reads through its context when they exist:
   a value set with `SET` takes precedence over the process-wide default, and the named parameter over both.
   Their default is `NULL`, meaning the process-wide setting, so loading the shim changes nothing by itself.
@@ -399,14 +398,14 @@ Behaviour:
   Rows past the cap are returned unchanged.
 - A subprocess viewer (a helper binary owning its own main thread) is the only route to a detached native window on
   macOS.
-  It is deliberately not on the roadmap:
+  It is deliberately not planned:
   shipping a second binary inside a `.duckdb_extension` runs into Apple Silicon signing
   and managed-Windows application control, and the browser covers the case.
   A user-installed `plume-view` on `PATH` could be added as a fourth viewer without changing the API.
 
 ### The `VISUALIZE` clause
 
-The grammar shim `plume_visualize` (M8) adds a statement suffix to DuckDB's parser:
+The grammar shim `plume_visualize` adds a statement suffix to DuckDB's parser:
 
 ```sql
 <query> VISUALIZE <target list>
@@ -560,106 +559,20 @@ Prior art shaped a few choices: usql's `\chart` shows that inline terminal image
 ggsql-duckdb shows a browser viewer and an output-mode setting,
 and anofox's SVG-returning functions show that values in the result grid are enough for many uses.
 
-## Roadmap
+## Not yet done
 
-Each milestone ends with tests against a DuckDB v2 build and a README section for what it adds.
-Nothing in a later milestone changes the API of an earlier one; anything that would is a decision to take now.
-
-### M0: spikes
-
-De-risking only, no user-facing output.
-Each spike answers a question that a later milestone assumes.
-
-1. A minimal Rust cdylib with the v2 entrypoint loads in the pinned v2 preview
-   and registers a scalar with named parameters, an order-independent aggregate with `ANY` and named parameters,
-   and a custom type with a `VARCHAR` cast.
-   The v2 details report did all of this from C; the spike repeats it from Rust through the bindings.
-2. The kitty-graphics writer and a `minifb` window run from a scalar function in the preview CLI on Linux.
-   The macOS main-thread check and the Windows `CONOUT$` path are confirmed on real machines,
-   or recorded as unconfirmed in M3's acceptance.
-3. The build produces a loadable footer without extension-ci-tools.
-
-### M1: skeleton
-
-- `plume-sys` and the `plume` crate; entrypoint; `plume_version()`.
-- Build and test tooling: `make` targets for build, footer, test and shell; a uv-managed venv with the v2 wheel
-  for the sqllogictest runner; the pinned preview CLI.
-- CI matrix for Linux, macOS and Windows builds.
-- The custom types exist with `VARCHAR` casts, but no chart functions yet.
-
-### M2: first charts
-
-- `line_series`, `point_series`, `histogram_vertical`, with `key` and `order_by`.
-- `chart()`, `draw_series`, `caption`, `x_range`, `y_range`, `root_fill`.
-- `configure_mesh` with `x_desc`, `y_desc`, `draw`; the default mesh.
-- `label` with the automatic legend; `configure_series_labels` with `position` and `draw`.
-- `style`, `stroke_width`, `point_size`, `size`, `filled`; colour strings; default palette.
-- `to_svg`, `to_png`; the embedded font.
-- Numeric, time and category axes with default ranges.
-- Acceptance: the worked examples render; SVG snapshot tests; PNG header tests.
-
-### M3: show
-
-- `show()` with the terminal, window and browser viewers, `viewer`, `wait`, `width`, `height`, `plume_set`,
-  the environment defaults and the multi-row cap.
-- Acceptance: in the preview CLI on Linux, the terminal viewer draws above the result table in ghostty and a
-  window opens without blocking the shell; `wait := true` blocks; the process exits cleanly with viewers open.
-  macOS and Windows behaviour is verified on real machines before the milestone closes, or listed as unverified in
-  the README.
-
-### M4: styling breadth
-
-- All `MESH` methods, including formatters, label styles, light/bold line styles and `disable_*`.
-- All `SERIES_LABELS` methods.
-- `margin*`, `*_label_area_size`, `x_log_scale`, `y_log_scale`.
-- `font()`, `FONT` colour and style; `mix`.
-- `marker` for points; `histogram_horizontal`; histogram `margin` and `baseline`.
-
-### M5: more series
-
-- `area_series`, `dashed_line_series`, `error_bar_*`, `candle_stick`, `boxplot_*`.
-- `histogram_vertical(...).step(s)` (and horizontal) for numeric buckets (`.step(s).use_round().into_segmented()`).
-- Time-axis niceties: monthly and yearly key points (`x_monthly()`, `x_yearly()`, and the `y_` ones);
-  the `strftime` formatters came with M4.
-
-### M6: layout
-
-- Secondary axes: `set_secondary_coord`, `secondary_*_range`, `draw_secondary_series`,
-  `configure_secondary_axes`.
-- Subplots: `split_evenly(charts, rows, cols)` over a list of charts and `titled(chart, text)`, mirroring
-  `DrawingArea::split_evenly` and `titled`.
-- `pie(size, label)` as a chart of its own, with `start_angle`, `label_style`, `percentages`, `label_offset` and
-  `radius`.
-- Not covered: secondary scale calls (log, monthly, yearly), `Pie::donut_hole`, per-slice colours.
-
-### M7: files and hosts
-
-- The copy function: `COPY ... TO 'f.png' (FORMAT png)` and `(FORMAT svg)`, with `PARTITION_BY`.
-- Behaviour in Python, R and Node hosts: `show()` picks the browser when there is no terminal, and Jupyter
-  display is documented through `to_png` and the client's image display, since the Python client has no display
-  hook for custom types.
-
-### M8: VISUALIZE grammar shim
-
-- PEG rules for `VISUALIZE`/`VISUALISE`, desugaring onto the M2 API, enabling via `active_grammar_extensions`,
-  and a loader that ensures the core is loaded.
-- The shim also registers real `SET plume_*` options, which the core reads through the context.
-- Built per DuckDB version, with DuckDB's own build against the pinned source.
-  The grammar-extension API may still move before v2.0 GA; the shim follows the pin, the core does not need to.
-
-### M9: distribution
-
-- Core built once per platform; shim per DuckDB version.
-- Until the community-extensions repository deploys its v2 leg
+- Distribution: the core built once per platform, the shim per DuckDB version.
+  Until the community-extensions repository deploys its v2 leg
   ([community-extensions#2723](https://github.com/duckdb/community-extensions/issues/2723)), releases are GitHub
   assets loaded with `-unsigned`; the submission follows when the leg exists.
+- Secondary scale calls (log, monthly, yearly), `Pie::donut_hole` and per-slice colours are not covered.
 
 ## Decisions
 
 Each item records the choice, the alternative, and why.
 
 1. **Function API first, `VISUALIZE` last.**
-   The first plan led with the clause.
+   The first draft of this design led with the clause.
    The clause needs the version-locked C++ shim and an unstable API,
    and adds no expressiveness over the function API it desugars to.
    Alternative: keep the clause as the primary surface with a ggsql-like grammar.
@@ -768,7 +681,7 @@ Each item records the choice, the alternative, and why.
     Alternative: generic drawing code monomorphised per x × y coordinate pair.
     Rejected because every axis kind on either axis
     (horizontal histograms),
-    more series (M5) and secondary axes (M6) multiply the combinations,
+    the other series kinds and secondary axes multiply the combinations,
     while one `f64`-valued type keeps the drawing code free of axis kinds.
     Timestamps are exact as `f64` microseconds up to about the year 2255.
 17. **A series has one column per axis, of any kind.**
@@ -780,7 +693,7 @@ Each item records the choice, the alternative, and why.
     and `y_range` is checked against the y kind as `x_range` is against the x kind
     (before any series, the kind is open on both axes).
     Alternative: numeric y values plus an orientation flag on histograms.
-    Rejected because M5's horizontal error bars and boxplots and M6's secondary axes need buckets or times on y too.
+    Rejected because horizontal error bars and boxplots and secondary axes need buckets or times on y too.
 18. **Log axes need positive bounds; they do not guess.**
     `x_log_scale`/`y_log_scale` apply to numeric axes only
     (checked at the call when the axis kind is known, at `draw_series` otherwise).
@@ -857,7 +770,7 @@ Each item records the choice, the alternative, and why.
     but its `Histogram` does not sum the days of a month
     (it draws one overlapping bar per distinct day),
     so that is not a monthly histogram either; SQL's `date_trunc('month', d)` is the way to bin by month.
-24. **Styles of the M5 kinds follow the paradigm's defaults, with plotters' shapes.**
+24. **Styles of the area, dashed line, error bar, candlestick and boxplot kinds follow the paradigm's defaults, with plotters' shapes.**
     Series colours come from `Palette99` for every kind, including boxplots (plotters' default is black) and areas
     (plotters' examples use a translucent colour; `mix` gives one).
     A candlestick has no `style`: `CandleStick::new` takes a gain and a loss style,
@@ -898,7 +811,7 @@ Each item records the choice, the alternative, and why.
     and fills the cells row-major, with `NULL` elements and missing cells blank and more charts than cells an error.
     Rows and columns are capped at 64, since a cell of a 8192 px image is then at least 128 px.
     `titled(chart, text)` takes the chart
-    (the roadmap first wrote `titled(text)`),
+    (an earlier draft wrote `titled(text)`),
     with sans-serif 20 when no style is given: plotters' `titled` has no default.
 28. **A pie is an aggregate over rows, ordered like a series, and fits its labels.**
     `pie(size, label)` makes one slice per row, as `Pie::new` takes parallel slices;
@@ -966,11 +879,11 @@ Each item records the choice, the alternative, and why.
 ## Open questions
 
 - Named parameters are verified on v2 C-API aggregates; scalar functions use the same signature API but were not
-  tried (M0 spike 1).
+  tried (the first spike in [`reports/2026-09-27-spikes.md`](reports/2026-09-27-spikes.md)).
 - Whether duckdb#26109 gets fixed before v2.0 GA, which would also unblock `OVER ()` on series aggregates.
 - macOS and Windows viewer behaviour is inferred from source, not tested;
-  the README lists it as unverified and `docs/manual-acceptance-m3.md` has the checks to run.
+  the README lists it as unverified and [`manual-acceptance-show.md`](manual-acceptance-show.md) has the checks to run.
 - How far the grammar-extension API moves before v2.0 GA: the shim is built against the pinned preview and is
-  rebuilt with each pin (M8).
+  rebuilt with each pin.
 - Grouped bars (`histogram_vertical` with `key`) need bar offsets plotters does not provide;
   left out until someone needs it.

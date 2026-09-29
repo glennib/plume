@@ -1,4 +1,4 @@
-# M0 spike 2, standalone part: the `plume-view` viewers
+# Viewer spike, standalone part: the `plume-view` viewers
 
 Research date: 2026-09-27.
 Code: `crates/plume-view` (library and `examples/show.rs`), with `minifb` 0.28.0, `png` 0.18.1, `base64` 0.22.1,
@@ -13,7 +13,7 @@ which reads the window's own contents.
 Wayland windows could only be confirmed through `swaymsg -t get_tree`, since `grim` showed the lock screen.
 No macOS or Windows machine was available.
 
-This covers the standalone half of spike 2: the viewers as a pure-Rust library, exercised from a test binary.
+This covers the standalone half of the viewer spike: the viewers as a pure-Rust library, exercised from a test binary.
 Calling them from a scalar function in the v2 preview CLI waits for the extension skeleton.
 
 ## Summary
@@ -49,12 +49,12 @@ Calling them from a scalar function in the v2 preview CLI waits for the extensio
 - **Unconfirmed:** the macOS main-thread check and the Windows `CONOUT$` path, including sixel in Windows Terminal.
   Both compile, the Windows build with `cargo clippy --target x86_64-pc-windows-gnu`
   and macOS without the window feature, but neither ran.
-  They stay open for M3's acceptance.
+  They stay open for the manual acceptance of `show()`.
 
 ## The crate
 
 `plume-view` has no DuckDB dependency.
-The entry point for M3's `show()`:
+The entry point for `show()`:
 
 ```rust
 pub struct Image;                                 // PNG bytes, RGB8 pixels, or both; the missing one is made lazily
@@ -77,7 +77,7 @@ pub mod settings {
 }
 ```
 
-- plotters' `BitMapBackend` draws RGB8, so `Image::from_rgb` lets M3 skip PNG encoding when the window viewer is used.
+- plotters' `BitMapBackend` draws RGB8, so `Image::from_rgb` lets `show()` skip PNG encoding when the window viewer is used.
   Kitty, iTerm2 and the browser need the PNG; sixel and the window need the pixels.
 - The `window` feature (default on) gates `minifb`.
   Without it the dependency tree shrinks from 43 to 14 crates on Linux, and `Viewer::Window` reports itself unavailable.
@@ -250,7 +250,7 @@ Ways to remove it, none done here:
   window: no display: neither WAYLAND_DISPLAY nor DISPLAY is set; browser: no graphical session: neither
   WAYLAND_DISPLAY nor DISPLAY is set".
 
-## Unconfirmed, for M3's acceptance
+## Unconfirmed, for the manual acceptance of `show()`
 
 - **macOS:**
   - the `pthread_main_np()` check;

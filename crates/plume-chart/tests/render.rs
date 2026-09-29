@@ -1,8 +1,7 @@
-//! Render tests: the plan's worked examples that M2 covers, built with the calls the SQL layer
-//! makes, plus the axis kinds and edge cases, and M4's styling (mesh, legend, log scales,
-//! horizontal histograms, markers, builder sizes), M5's series kinds, stepped histograms and
-//! monthly and yearly axes, and M6's secondary axes, grids, titles and pies, as `test/svg/`
-//! renders them from SQL.
+//! Render tests: the design's worked examples, built with the calls the SQL layer makes, plus the
+//! axis kinds and edge cases, the styling (mesh, legend, log scales, horizontal histograms,
+//! markers, builder sizes), the other series kinds, stepped histograms and monthly and yearly
+//! axes, and secondary axes, grids, titles and pies, as `test/svg/` renders them from SQL.
 //!
 //! Set `PLUME_CHART_PNG_DIR` to also write every chart as a PNG into that directory.
 

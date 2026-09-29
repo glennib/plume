@@ -115,7 +115,7 @@ SELECT ('DKch'::BLOB || '\x07\x00'::BLOB)::CHART
 ----
 Conversion Error: CHART format version 7 not supported by this plume (it reads version 4)
 
-# A CHART from before M6 (format version 3) fails the same way.
+# An older CHART (format version 3) fails the same way.
 statement error
 SELECT ('DKch'::BLOB || '\x03\x00'::BLOB)::CHART
 ----
