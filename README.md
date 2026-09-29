@@ -11,11 +11,15 @@ SELECT chart()
          .configure_mesh().x_desc('day').y_desc('°C').draw()
          .draw_series(line_series(day, temp).style('red').label('temp'))
          .show()
-FROM weather
+FROM 'examples/weather.csv'
 WHERE city = 'Oslo';
 ```
 
-![A grid of three charts: temperatures per city, articles per section, and a pie of the sections' shares](test/svg/grid.svg)
+![A grid of four charts of the 2024 weather in Oslo, Bergen and Tromsø: weekly mean temperatures, boxplots of the daily temperatures, precipitation per city, and a pie of the kinds of days in Bergen](test/svg/grid.svg)
+
+The picture is the [grid example](#grids-and-titles), rendered by the test suite.
+The examples in this README read [`examples/weather.csv`](examples/),
+a year of real daily weather for three Norwegian cities, so they run as written from the repository root.
 
 If you know plotters, you can mostly guess the SQL: `ChartBuilder::caption` is `caption`, `LineSeries` is `line_series`,
 `MeshStyle::x_desc` is `x_desc`, and DuckDB's dot-call syntax
@@ -152,21 +156,21 @@ zero usable rows give an empty series.
 SELECT chart()
          .draw_series(list_transform(line_series(day, temp, key := city), lambda s: s.stroke_width(2)))
          .to_png()
-FROM weather;
+FROM 'examples/weather.csv';
 
 -- Bars in descending order.
-SELECT chart().caption('Articles per section')
-         .draw_series(histogram_vertical(section, n, order_by := -n).style('blue_400'))
+SELECT chart().caption('Precipitation in 2024 (mm)')
+         .draw_series(histogram_vertical(city, mm, order_by := -mm).style('blue_400'))
          .to_svg()
-FROM (SELECT section, count(*) AS n FROM articles GROUP BY section);
+FROM (SELECT city, sum(precipitation) AS mm FROM 'examples/weather.csv' GROUP BY city);
 
--- Error bars over a line.
-SELECT chart()
-         .draw_series(line_series(i, i * i / 10).style('grey'))
-         .draw_series(error_bar_vertical(i, i * i / 10 - 1 - i % 3, i * i / 10, i * i / 10 + 2)
-                        .style('red').width(8).filled().label('measured'))
+-- Each month's lowest and highest temperature as error bars around its mean, over a line.
+SELECT chart().caption('Oslo, per month').x_range(0, 13)
+         .draw_series(line_series(m, mean).style('grey'))
+         .draw_series(error_bar_vertical(m, lo, mean, hi).style('red').width(8).filled())
          .to_svg()
-FROM range(11) r(i);
+FROM (SELECT month(day) AS m, min(temp_min) AS lo, avg(temp) AS mean, max(temp_max) AS hi
+      FROM 'examples/weather.csv' WHERE city = 'Oslo' GROUP BY m);
 ```
 
 ### Series methods
@@ -244,7 +248,7 @@ SELECT chart()
          .configure_series_labels().position('upper_left').border_style('black')
            .background_style(mix('white', 0.85)).draw()
          .to_svg(800, 500)
-FROM weather
+FROM 'examples/weather.csv'
 WHERE city = 'Oslo';
 ```
 
@@ -312,9 +316,10 @@ On a histogram or boxplot with `DATE` buckets the bands stay one per day; to bin
 
 ```sql
 SELECT chart().x_monthly()
-         .draw_series(line_series(DATE '2024-01-01' + i::INTEGER, 5 - 12 * cos(i / 58)).style('red'))
+         .draw_series(line_series(day, temp).style('red'))
          .to_svg(800, 400)
-FROM range(366) r(i);
+FROM 'examples/weather.csv'
+WHERE city = 'Oslo';
 ```
 
 ### Stepped histograms
@@ -325,9 +330,10 @@ Histograms with numeric buckets need `.step(s)`, which bins them into bands of w
 ```sql
 SELECT chart()
          .configure_mesh().x_label_formatter('{:.0f}').draw()
-         .draw_series(histogram_vertical(x, 1).step(5).style('teal_400').margin(1))
+         .draw_series(histogram_vertical(temp, 1).step(2).style('teal_400').margin(1))
          .to_svg()
-FROM measurements;
+FROM 'examples/weather.csv'
+WHERE city = 'Oslo';
 ```
 
 - Bin `k` holds the values from `k * s` up to `(k + 1) * s`, so bins start at multiples of `s` whatever the data.
@@ -357,8 +363,8 @@ the builder methods work only on a `chart()`, and are errors naming the method e
 
 ```sql
 -- Precipitation bars on the right axis, temperature on the left one.
-SELECT chart().caption('Bergen climate', 24)
-         .y_range(0, 16)
+SELECT chart().caption('Bergen, 2024', 24)
+         .y_range(-5, 20)
          .configure_mesh().y_desc('°C').draw()
          .configure_secondary_axes().y_desc('mm').y_label_formatter('{:.0f}').draw()
          .draw_secondary_series(histogram_vertical(month, rain, order_by := m)
@@ -367,7 +373,8 @@ SELECT chart().caption('Bergen climate', 24)
                         .label('temperature'))
          .configure_series_labels().position('upper_left').background_style('white').draw()
          .to_svg()
-FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211)) t(m, month, temp, rain);
+FROM (SELECT month(day) AS m, strftime(day, '%b') AS month, avg(temp) AS temp, sum(precipitation) AS rain
+      FROM 'examples/weather.csv' WHERE city = 'Bergen' GROUP BY ALL);
 ```
 
 ### Grids and titles
@@ -382,15 +389,28 @@ FROM (VALUES (1, 'Jan', 2.1, 250), (2, 'Feb', 2.2, 191), (3, 'Mar', 3.9, 211)) t
 
 ```sql
 SELECT split_evenly([
-         (SELECT chart().draw_series(line_series(day, temp, key := city)) FROM weather)
-           .titled('Temperature'),
-         (SELECT chart().draw_series(histogram_vertical(section, n, order_by := -n)) FROM section_counts)
-           .titled('Articles'),
-         (SELECT pie(n, section).percentages(10) FROM section_counts)
-           .titled('Share'),
+         (SELECT chart()
+                   .configure_mesh().x_labels(4).x_label_formatter('%b').y_label_formatter('{:.0f}').draw()
+                   .draw_series(line_series(week, temp, key := city))
+                   .configure_series_labels().position('upper_left').background_style('white').draw()
+          FROM (SELECT city, date_trunc('week', day)::DATE AS week, avg(temp) AS temp
+                FROM 'examples/weather.csv' GROUP BY ALL))
+           .titled('Weekly mean temperature (°C)'),
+         (SELECT chart().configure_mesh().y_label_formatter('{:.0f}').draw()
+                   .draw_series(boxplot_vertical(city, temp).style('teal_600'))
+          FROM 'examples/weather.csv')
+           .titled('Daily mean temperature (°C)'),
+         (SELECT chart().configure_mesh().y_label_formatter('{:.0f}').draw()
+                   .draw_series(histogram_vertical(city, mm, order_by := -mm).style('blue_400'))
+          FROM (SELECT city, sum(precipitation) AS mm FROM 'examples/weather.csv' GROUP BY city))
+           .titled('Precipitation (mm)'),
+         (SELECT pie(days, weather, order_by := -days).start_angle(-90).label_style(11).percentages(10)
+          FROM (SELECT weather, count(*) AS days FROM 'examples/weather.csv'
+                WHERE city = 'Bergen' GROUP BY weather))
+           .titled('Days in Bergen'),
        ], 2, 2)
          .root_fill('grey_100')
-         .titled('Overview', 28)
+         .titled('Weather in 2024', 28)
          .to_svg(800, 600);
 ```
 
@@ -408,11 +428,11 @@ SELECT split_evenly([
 - A pie has no `caption`; `titled` gives it a title.
 
 ```sql
-SELECT pie(n, section, order_by := -n)
+SELECT pie(days, weather, order_by := -days)
          .start_angle(-90)
          .percentages(font('sans-serif', 12).color('white'))
          .to_svg()
-FROM section_counts;
+FROM (SELECT weather, count(*) AS days FROM 'examples/weather.csv' WHERE city = 'Tromsø' GROUP BY weather);
 ```
 
 ## Output
@@ -427,13 +447,14 @@ The default size is 640×480 and the maximum 8192 px per side.
 `COPY` renders the chart and writes the file:
 
 ```sql
-COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM weather WHERE city = 'Oslo')
+COPY (SELECT chart().caption('Oslo').draw_series(line_series(day, temp)) FROM 'examples/weather.csv' WHERE city = 'Oslo')
 TO 'oslo.png' (FORMAT png);
 
 COPY (SELECT chart()) TO 'sized.svg' (FORMAT svg, WIDTH 300, HEIGHT 200);
 
 -- One file per group.
-COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart FROM weather GROUP BY city)
+COPY (SELECT city, chart().caption(city).draw_series(line_series(day, temp)) AS chart
+      FROM 'examples/weather.csv' GROUP BY city)
 TO 'cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
 ```
 
@@ -460,7 +481,7 @@ TO 'cities' (FORMAT png, PARTITION_BY city, FILE_EXTENSION 'png');
 It returns the chart unchanged, so it can sit anywhere in a query.
 
 ```sql
-SELECT chart().draw_series(line_series(day, temp, key := city)).show() FROM weather;
+SELECT chart().draw_series(line_series(day, temp, key := city)).show() FROM 'examples/weather.csv';
 
 SELECT chart().draw_series(line_series(cos(t), sin(t), order_by := t))
          .show(viewer := 'window', wait := true, width := 800, height := 800)
@@ -582,7 +603,7 @@ On macOS and Windows its behaviour is inferred from source and documentation and
 `plume_visualize` is a second, small extension in C++ that adds a `VISUALIZE` clause to DuckDB's parser:
 
 ```sql
-SELECT day, temp FROM weather WHERE city = 'Oslo'
+SELECT day, temp FROM 'examples/weather.csv' WHERE city = 'Oslo'
 VISUALIZE chart().caption('Oslo').draw_series(line_series(day, temp)).show();
 ```
 

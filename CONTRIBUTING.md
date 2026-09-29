@@ -84,7 +84,9 @@ they are not part of the API and may change in any release.
 - `crates/plume-view`: the viewers behind `show()` and their process-wide settings; it does not depend on DuckDB.
 - `shim/`: the `VISUALIZE` grammar shim, a C++ extension built inside DuckDB's own build.
 - `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
-  `scripts/check_show.py`: the `show()` checks.
+  `scripts/check_show.py`: the `show()` checks; `scripts/fetch_weather.py`: downloads the example data.
+- `examples/`: the data the README's examples query.
+  `test/svg/grid.sql` is the README's grid example, verbatim, and renders its picture.
 - `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`, `test/shim/`: the SQL tests.
 
 ## The `VISUALIZE` shim
