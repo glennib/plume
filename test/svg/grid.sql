@@ -1,5 +1,5 @@
--- The README's grid example and its picture, verbatim: four charts of examples/weather.csv in a
--- 2x2 grid (split_evenly) under one title.
+-- The README's opening picture and its grid example, verbatim: four charts of
+-- examples/weather.csv in a 2x2 grid (split_evenly) under one title.
 SELECT split_evenly([
          (SELECT chart()
                    .configure_mesh().x_labels(4).x_label_formatter('%b').y_label_formatter('{:.0f}').draw()

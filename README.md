@@ -5,6 +5,47 @@ plume is a DuckDB v2 extension that draws charts from SQL with Rust's
 A chart is a SQL value built with plotters' own vocabulary, and output functions turn it into SVG or PNG,
 write it to a file, or show it in the terminal, a window or a browser.
 
+![A grid of four charts of the 2024 weather in Oslo, Bergen and Tromsø: weekly mean temperatures, boxplots of the daily temperatures, precipitation per city, and a pie of the kinds of days in Bergen](test/svg/grid.svg)
+
+<!-- markdownlint-disable MD033 -->
+<details>
+<summary>The SQL behind this picture</summary>
+
+```sql
+SELECT split_evenly([
+         (SELECT chart()
+                   .configure_mesh().x_labels(4).x_label_formatter('%b').y_label_formatter('{:.0f}').draw()
+                   .draw_series(line_series(week, temp, key := city))
+                   .configure_series_labels().position('upper_left').background_style('white').draw()
+          FROM (SELECT city, date_trunc('week', day)::DATE AS week, avg(temp) AS temp
+                FROM 'examples/weather.csv' GROUP BY ALL))
+           .titled('Weekly mean temperature (°C)'),
+         (SELECT chart().configure_mesh().y_label_formatter('{:.0f}').draw()
+                   .draw_series(boxplot_vertical(city, temp).style('teal_600'))
+          FROM 'examples/weather.csv')
+           .titled('Daily mean temperature (°C)'),
+         (SELECT chart().configure_mesh().y_label_formatter('{:.0f}').draw()
+                   .draw_series(histogram_vertical(city, mm, order_by := -mm).style('blue_400'))
+          FROM (SELECT city, sum(precipitation) AS mm FROM 'examples/weather.csv' GROUP BY city))
+           .titled('Precipitation (mm)'),
+         (SELECT pie(days, weather, order_by := -days).start_angle(-90).label_style(11).percentages(10)
+          FROM (SELECT weather, count(*) AS days FROM 'examples/weather.csv'
+                WHERE city = 'Bergen' GROUP BY weather))
+           .titled('Days in Bergen'),
+       ], 2, 2)
+         .root_fill('grey_100')
+         .titled('Weather in 2024', 28)
+         .to_svg(800, 600);
+```
+
+</details>
+<!-- markdownlint-enable MD033 -->
+
+The examples in this README read [`examples/weather.csv`](examples/),
+a year of real daily weather for three Norwegian cities, so they run as written from the repository root.
+
+A single chart is one chain of calls, rendered by the last one:
+
 ```sql
 SELECT chart()
          .caption('Oslo temperature, 2024', 30)
@@ -16,9 +57,6 @@ WHERE city = 'Oslo';
 ```
 
 ![A red line of Oslo's daily mean temperature through 2024, from about -23 °C in January to 20 °C in summer](test/svg/readme_oslo.svg)
-
-The examples in this README read [`examples/weather.csv`](examples/),
-a year of real daily weather for three Norwegian cities, so they run as written from the repository root.
 
 If you know plotters, you can mostly guess the SQL: `ChartBuilder::caption` is `caption`, `LineSeries` is `line_series`,
 `MeshStyle::x_desc` is `x_desc`, and DuckDB's dot-call syntax
@@ -413,7 +451,7 @@ SELECT split_evenly([
          .to_svg(800, 600);
 ```
 
-![A grid of four charts of the 2024 weather in Oslo, Bergen and Tromsø: weekly mean temperatures, boxplots of the daily temperatures, precipitation per city, and a pie of the kinds of days in Bergen](test/svg/grid.svg)
+This is the query behind the picture at the top of this README.
 
 ### Pies
 
