@@ -77,12 +77,12 @@ pub mod settings {
 }
 ```
 
-- plotters' `BitMapBackend` draws RGB8, so `Image::from_rgb` lets `show()` skip PNG encoding when the window viewer is used.
+- plotters' `BitMapBackend` draws RGB8,
+  so `Image::from_rgb` lets `show()` skip PNG encoding when the window viewer is used.
   Kitty, iTerm2 and the browser need the PNG; sixel and the window need the pixels.
 - The `window` feature (default on) gates `minifb`.
   Without it the dependency tree shrinks from 43 to 14 crates on Linux, and `Viewer::Window` reports itself unavailable.
-- Settings start from `PLUME_VIEWER` and `PLUME_WAIT` on first use and hold `max_show`
-  (default 10, `0` shows nothing).
+- Settings start from `PLUME_VIEWER` and `PLUME_WAIT` on first use and hold `max_show` (default 10, `0` shows nothing).
   An invalid environment value is not replaced by the default.
   `current()` returns an error naming the variable until `set` gives that key a valid value; other keys stay usable.
 

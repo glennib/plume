@@ -2,8 +2,8 @@
 
 plume lets SQL users draw charts with Rust's [`plotters`](https://github.com/plotters-rs/plotters) from inside DuckDB
 v2, see them inline in the terminal or in a window, and write them as SVG or PNG.
-Its API mirrors plotters, so a plotters user who knows the rules in [The plume paradigm](#the-plume-paradigm) can
-write the SQL for a chart without a reference.
+Its API mirrors plotters, so a plotters user who knows the rules in [The plume paradigm](#the-plume-paradigm) can write
+the SQL for a chart without a reference.
 A `VISUALIZE` clause is optional sugar on top and comes last (see [The `VISUALIZE` clause](#the-visualize-clause)).
 
 This document decides the user API and the behaviour.
@@ -398,8 +398,7 @@ Behaviour:
   Rows past the cap are returned unchanged.
 - A subprocess viewer (a helper binary owning its own main thread) is the only route to a detached native window on
   macOS.
-  It is deliberately not planned:
-  shipping a second binary inside a `.duckdb_extension` runs into Apple Silicon signing
+  It is deliberately not planned: shipping a second binary inside a `.duckdb_extension` runs into Apple Silicon signing
   and managed-Windows application control, and the browser covers the case.
   A user-installed `plume-view` on `PATH` could be added as a fourth viewer without changing the API.
 
@@ -563,8 +562,8 @@ and anofox's SVG-returning functions show that values in the result grid are eno
 
 - Distribution: the core built once per platform, the shim per DuckDB version.
   Until the community-extensions repository deploys its v2 leg
-  ([community-extensions#2723](https://github.com/duckdb/community-extensions/issues/2723)), releases are GitHub
-  assets loaded with `-unsigned`; the submission follows when the leg exists.
+  ([community-extensions#2723](https://github.com/duckdb/community-extensions/issues/2723)), releases are GitHub assets
+  loaded with `-unsigned`; the submission follows when the leg exists.
 - Secondary scale calls (log, monthly, yearly), `Pie::donut_hole` and per-slice colours are not covered.
 
 ## Decisions
@@ -770,7 +769,8 @@ Each item records the choice, the alternative, and why.
     but its `Histogram` does not sum the days of a month
     (it draws one overlapping bar per distinct day),
     so that is not a monthly histogram either; SQL's `date_trunc('month', d)` is the way to bin by month.
-24. **Styles of the area, dashed line, error bar, candlestick and boxplot kinds follow the paradigm's defaults, with plotters' shapes.**
+24. **Styles of the area, dashed line, error bar, candlestick and boxplot kinds follow the paradigm's defaults, with
+    plotters' shapes.**
     Series colours come from `Palette99` for every kind, including boxplots (plotters' default is black) and areas
     (plotters' examples use a translucent colour; `mix` gives one).
     A candlestick has no `style`: `CandleStick::new` takes a gain and a loss style,
