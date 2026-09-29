@@ -86,7 +86,8 @@ they are not part of the API and may change in any release.
 - `scripts/append_footer.py`: the footer step; `scripts/check_svg.py`: the SVG snapshot runner;
   `scripts/check_show.py`: the `show()` checks; `scripts/fetch_weather.py`: downloads the example data.
 - `examples/`: the data the README's examples query.
-  `test/svg/grid.sql` is the README's grid example, verbatim, and renders its picture.
+  `test/svg/readme_oslo.sql` (with `to_svg()` for `show()`) and `test/svg/grid.sql` are the README's first
+  and grid examples, verbatim, and render their pictures.
 - `test/sql/`, `test/svg/`, `test/cli/`, `test/show/`, `test/shim/`: the SQL tests.
 
 ## The `VISUALIZE` shim

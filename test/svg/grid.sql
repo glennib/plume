@@ -1,4 +1,4 @@
--- The README's picture and its grid example, verbatim: four charts of examples/weather.csv in a
+-- The README's grid example and its picture, verbatim: four charts of examples/weather.csv in a
 -- 2x2 grid (split_evenly) under one title.
 SELECT split_evenly([
          (SELECT chart()

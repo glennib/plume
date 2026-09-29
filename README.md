@@ -7,17 +7,16 @@ write it to a file, or show it in the terminal, a window or a browser.
 
 ```sql
 SELECT chart()
-         .caption('Oslo temperature', 30)
-         .configure_mesh().x_desc('day').y_desc('°C').draw()
-         .draw_series(line_series(day, temp).style('red').label('temp'))
+         .caption('Oslo temperature, 2024', 30)
+         .configure_mesh().x_desc('day').y_desc('°C').x_label_formatter('%b').draw()
+         .draw_series(line_series(day, temp).style('red'))
          .show()
 FROM 'examples/weather.csv'
 WHERE city = 'Oslo';
 ```
 
-![A grid of four charts of the 2024 weather in Oslo, Bergen and Tromsø: weekly mean temperatures, boxplots of the daily temperatures, precipitation per city, and a pie of the kinds of days in Bergen](test/svg/grid.svg)
+![A red line of Oslo's daily mean temperature through 2024, from about -23 °C in January to 20 °C in summer](test/svg/readme_oslo.svg)
 
-The picture is the [grid example](#grids-and-titles), rendered by the test suite.
 The examples in this README read [`examples/weather.csv`](examples/),
 a year of real daily weather for three Norwegian cities, so they run as written from the repository root.
 
@@ -413,6 +412,8 @@ SELECT split_evenly([
          .titled('Weather in 2024', 28)
          .to_svg(800, 600);
 ```
+
+![A grid of four charts of the 2024 weather in Oslo, Bergen and Tromsø: weekly mean temperatures, boxplots of the daily temperatures, precipitation per city, and a pie of the kinds of days in Bergen](test/svg/grid.svg)
 
 ### Pies
 
